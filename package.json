@@ -3,6 +3,9 @@
   "version": "1.0.50",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "bun build --compile --minify --sourcemap src/index.ts --outfile dist/mosdash",
+    "rss": "bun run scripts/measure-rss.ts",
+    "gate:rss": "bun run build && bun run rss",
     "dev": "bun run --watch src/index.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
