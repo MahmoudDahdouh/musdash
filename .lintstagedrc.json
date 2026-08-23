@@ -1,0 +1,7 @@
+{
+  "*.{ts,tsx,js,jsx,mjs,cjs}": [
+    "prettier --write",
+    "biome lint --error-on-warnings --no-errors-on-unmatched --files-ignore-unknown=true"
+  ],
+  "*.{json,jsonc,css,md,yml,yaml,html}": "prettier --write"
+}

@@ -1,0 +1,13 @@
+# Normalize line endings to LF in the repo and working tree so Prettier's
+# endOfLine: "lf" stays stable on Windows (core.autocrlf is ignored here).
+* text=auto eol=lf
+
+# Binary / generated
+bun.lock text eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

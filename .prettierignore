@@ -1,0 +1,13 @@
+node_modules
+bun.lock
+package-lock.json
+build
+dist
+.next
+out
+coverage
+.husky/_
+*.log
+
+# local plugin/session data
+.remember

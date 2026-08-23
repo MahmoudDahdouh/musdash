@@ -1,0 +1,59 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.10/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": ["**", "!bun.lock", "!.husky/_"]
+  },
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "linter": {
+    "enabled": true,
+    "domains": {
+      "test": "recommended"
+    },
+    "rules": {
+      "preset": "recommended",
+      "complexity": "on",
+      "correctness": "on",
+      "performance": "on",
+      "security": "on",
+      "a11y": "on",
+      "nursery": "off",
+      "style": {
+        "recommended": true,
+        "noNonNullAssertion": "error",
+        "useConst": "error",
+        "useTemplate": "error",
+        "useShorthandAssign": "error",
+        "useCollapsedElseIf": "error",
+        "useConsistentArrayType": {
+          "level": "error",
+          "options": { "syntax": "shorthand" }
+        },
+        "useNodejsImportProtocol": "error",
+        "noNamespace": "error",
+        "noYodaExpression": "error",
+        "useThrowOnlyError": "error",
+        "useNamingConvention": "off",
+        "useBlockStatements": "off",
+        "useExportsLast": "off",
+        "noDefaultExport": "off",
+        "noMagicNumbers": "off",
+        "noParameterProperties": "off",
+        "noProcessEnv": "off"
+      },
+      "suspicious": {
+        "preset": "all",
+        "noConsole": "off"
+      }
+    }
+  },
+  "javascript": {
+    "globals": ["Bun"]
+  }
+}
