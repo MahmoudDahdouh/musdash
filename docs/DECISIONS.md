@@ -22,7 +22,50 @@ implement. **If both work, prefer raw `fetch`**: the Engine API is plain
 HTTP + JSON, the client is roughly 200 lines, and it removes a dependency plus a
 Bun-compatibility risk for the life of the project.
 
-Record the spike outcome here when it happens.
+### Spike outcome — raw `fetch` wins (2026-08-23)
+
+**Verdict: raw `fetch` over the unix socket. `dockerode` is not used and must not
+reappear.** Both options passed all five steps, so this is §5's explicit
+tiebreaker ("if both work, prefer Option B"), not a disqualification.
+
+**What each did on step 4, the log stream.** Both decoded frames correctly under
+Bun — the anticipated failure did not materialise. `dockerode`'s
+`modem.demuxStream` worked and wrote into two `PassThrough` streams; raw `fetch`
+demultiplexed the same frames from a `ReadableStream` reader in ~25 lines. One
+asymmetry: `dockerode`'s stream never emitted `end` when the follow was torn down
+(`end event: false`), so cleanup relies on `destroy()`; with raw `fetch`,
+`AbortController` released the reader cleanly and the connection closed while
+subsequent API calls kept working.
+
+**Why B, given both work.** `dockerode` costs 72 packages and 20MB of
+`node_modules`, and pulls in `protobufjs`, whose blocked `postinstall` runs
+`node scripts/postinstall` — a dependency that wants a Node binary is a poor fit
+for a single-binary compile. Compiled with `--compile --minify`, Option A bundles
+213 modules against Option B's 1. Both binaries ran correctly, so this is about
+long-term surface area, not breakage.
+
+**Framing verified against the daemon, not assumed.** A 200-line/3000-byte-payload
+container produced 603,000 bytes in 200 frames, consumed exactly with no drift.
+Headers matched §6 precisely: `stream=1`, `pad=0`, length big-endian
+(`[0,0,11,191]` = 3007). Those 603KB arrived in **12 chunks**, so frames
+routinely span chunk boundaries — trap 1 confirmed in the wild, and buffering is
+mandatory rather than theoretical.
+
+**Findings that shape the client:**
+
+- `AbortController` **does** close the socket — `streamLogs` can rely on it for
+  the SSE-disconnect cleanup that trap 5 depends on.
+- The response body streams; it is not buffered. An image pull produced 126
+  progress lines over 101 chunks.
+- The `unix:` option accepts an **arbitrary socket path** (verified via a symlink),
+  so `MOSDASH_DOCKER_SOCKET` is viable.
+- **Pin the API version in the path.** The daemon reports `1.55` but serves
+  `/v1.44/` requests fine; unversioned URLs would shift under a daemon upgrade.
+
+**Environment proven in:** Ubuntu 24.04.4 LTS (WSL2, kernel 5.15.167.4), Docker
+Engine 29.7.2, Bun 1.4.0, non-root user in the `docker` group. Note the Windows
+host runs Bun 1.3.14; the Linux number is the one that counts, since it matches
+the deployment target.
 
 ## Reverse proxy — Caddy
 
@@ -218,3 +261,140 @@ whatever process it happens to find rather than booting one.
 **Baseline: 55.7MB idle** — hello-world Elysia, compiled with
 `--compile --minify --sourcemap`, measured 2026-08-23. That leaves roughly 44MB
 of headroom for everything else. Re-measure after any dependency addition.
+
+## Phase 1 deviations from PHASES.md (2026-08-23)
+
+Five decisions taken before Phase 1 implementation. Each resolves a genuine
+conflict or gap in the spec, and each is recorded because it **deviates from
+PHASES.md as literally written** — CLAUDE.md requires deviations to live here.
+
+### D1 — The Linux development environment is WSL2 Ubuntu 24.04
+
+Bun on Windows cannot reach Docker Desktop at all: the endpoint is a named pipe
+(`npipe:////./pipe/dockerDesktopLinuxEngine`), and `fetch({ unix })` needs a real
+unix socket. Probing both pipe path forms and TCP 2375 failed on all three.
+
+Docker Engine is therefore installed **natively inside a WSL2 Ubuntu 24.04
+distro** (not via Docker Desktop's WSL integration), giving a genuine
+`/var/run/docker.sock` and matching the §16 deployment target. Run mosdash from
+the Linux filesystem, not `/mnt/d/` — the 9p mount is slow and breaks file
+watching.
+
+Roughly half of Phase 1 (the Docker client, deploy job, Caddy, the swap, the
+reconciler) cannot be verified on Windows. Those acceptance criteria are marked
+`[manual, linux]` so a builder cannot claim verification it did not perform.
+
+### D2 — mosdash stays a host binary; health checks dial container IPs
+
+§9's health gate and §18's `MOSDASH_CADDY_ADMIN` default
+(`http://mosdash-caddy:2019`) both assume container-name DNS, which only resolves
+from inside the user-defined network. But §17's `install.sh` puts mosdash on the
+host with a mounted socket.
+
+**Resolution: mosdash remains a host process.** The health gate resolves the
+container's IP from `inspect` rather than its name, and Caddy's admin API is
+published loopback-only, so `MOSDASH_CADDY_ADMIN` defaults to
+`http://127.0.0.1:2019`. This keeps `install.sh`, socket access, and the RSS
+measurement method exactly as specified. Containerising mosdash would have
+changed all three, and would have meant measuring RSS inside a container.
+
+The admin API is still never exposed beyond loopback (§12).
+
+### D3 — Caddy routes the dashboard, with a first-run IP fallback
+
+§12 says bind `127.0.0.1` and route through Caddy; §16 step 2 says open
+`https://<server-ip>:8000` to create the admin account. On a fresh install
+nothing is routing yet, so those conflict.
+
+**Resolution: `install.sh` creates a Caddy route for the dashboard on its own
+subdomain from the start.** To avoid locking out an install whose DNS is not yet
+propagated — and to match the Coolify experience of reaching the dashboard by IP
+— mosdash binds `0.0.0.0:8000` while the `users` table is empty, then binds
+`127.0.0.1` once an admin exists. The insecure window is exactly one account
+creation, and it closes automatically.
+
+### D4 — `MOSDASH_ACME_STAGING` defaults to `true`
+
+§18 defaults it `false`, but §21 and this file both say to use the Let's Encrypt
+staging endpoint during development, always. A `false` default means the first
+careless dev run burns real certificates against a limit of 50 per registered
+domain per week.
+
+**Resolution: default `true`.** Production is the deliberate case, so
+`install.sh` sets `MOSDASH_ACME_STAGING=false` explicitly. Safe by default;
+impossible to burn the rate limit by accident.
+
+### D5 — `src/routes/**` ownership convention
+
+CLAUDE.md's role table assigns `src/routes/` to the UI-Builder, but
+`.claude/hooks/scope-guard.ts` also permits the Core-Builder there — its
+`EXCLUSIONS` list only blocks `src/views/**`. The hook permits what the table
+forbids.
+
+**Resolution, by convention rather than by tightening the hook:** the
+Core-Builder writes route handlers that enqueue jobs, query, and return data; the
+UI-Builder writes anything that renders a template. Slices straddling the seam
+(auth, resources) name the owning role per file in their spec.
+
+### Also settled
+
+- **ULIDs via a ~30-line helper**, not the `ulid` package. §7 permits either; the
+  helper costs nothing against the RSS budget.
+- **Hand-written `.sql` migrations**, not `drizzle-kit generate` — §2 forbids
+  migration DSL beyond Drizzle's basics. `drizzle-kit` stays a devDependency for
+  inspection only.
+
+## Phase 1 outcome (2026-08-23)
+
+Built and verified end to end against a real Docker daemon on Ubuntu 24.04
+(WSL2), running the compiled binary rather than `bun run dev`.
+
+**Measured idle RSS: 50.7MB** — compiled with `--compile --minify --sourcemap`,
+booted, idled 60s. That is roughly half the 100MB ceiling. Under a full workload
+(several deploys, live log streaming, the reconciler looping) it sat at 63.0MB
+and settled back to 60.0MB, so nothing is being retained across deploys.
+
+Earlier baselines for comparison: 55.7MB on Windows, 26.6MB on Linux for the
+hello-world scaffold; adding zod and pino cost about 8MB.
+
+### Two bugs the end-to-end run caught
+
+Both worked in isolation and failed only against the real thing, which is the
+argument for verifying on a live daemon rather than trusting unit tests.
+
+- **CSRF middleware called `request.clone().formData()`.** Elysia has already
+  consumed the body by `onBeforeHandle`, so every POST threw
+  `ERR_BODY_ALREADY_USED` and returned 500. The token is now read from the
+  parsed `body`, and the five routes that had no body schema gained
+  `t.Object({ csrf: t.String() })` so the token is present to check.
+- **`previous_image` was never recorded, so rollback had no target.** The deploy
+  job read the outgoing image from the resource row, but editing the image in
+  Settings writes the _new_ image to that row before the job runs — so the
+  outgoing image read back as the incoming one and the "different image" test
+  never fired. It now reads the image from the container that is actually
+  serving, captured before anything replaces it.
+
+A third finding was a test artifact, not a bug: an availability probe pinned to
+one container's IP counted failures after that container was deliberately
+removed post-drain. Following the current serving container, the way a proxy
+route does, shows zero gaps.
+
+### Verified
+
+19/19 end-to-end checks, plus zero-downtime and self-healing:
+
+- Admin setup, login, session revocation, CSRF rejection (403 on a bad token)
+- Project with an automatic `production` environment; resource CRUD
+- Resource-name and image-reference validation both reject bad input
+- Env vars absent from the database file in plaintext, present in the container
+- Deploy handler returns in **10ms** — it enqueues and redirects, never awaits Docker
+- Container carries all four `mosdash.*` labels, a 256MB cap, and `Tty:false`
+- **Zero failed requests across a redeploy** (§16 step 9)
+- Rollback returns the previous image (§16 step 10)
+- Reconciler restores a `docker rm -f`'d container within 30s (§16 step 11)
+- The compiled binary runs migrations, renders templates and serves assets —
+  trap 6 confirmed handled via static text imports
+
+Not verified here, because they need a public host with DNS: Let's Encrypt
+issuance, the Caddy route switch under a real domain, and a full server reboot
+(§16 steps 8 and 12).

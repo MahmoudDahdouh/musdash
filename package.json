@@ -2,7 +2,7 @@
   "name": "mosdash",
   "version": "1.0.50",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "bun test",
     "build": "bun build --compile --minify --sourcemap src/index.ts --outfile dist/mosdash",
     "rss": "bun run scripts/measure-rss.ts",
     "gate:rss": "bun run build && bun run rss",
@@ -11,15 +11,18 @@
     "format:check": "prettier --check .",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
-    "check": "prettier --write . && biome lint --error-on-warnings .",
-    "ci": "prettier --check . && biome ci --error-on-warnings .",
-    "prepare": "husky"
+    "check": "prettier --write . && biome lint --error-on-warnings . && tsc --noEmit",
+    "ci": "prettier --check . && biome ci --error-on-warnings . && tsc --noEmit",
+    "prepare": "husky",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@elysiajs/html": "^1.4.2",
     "drizzle-orm": "^0.45.2",
     "elysia": "^1.4.29",
-    "eta": "^4.6.0"
+    "eta": "^4.6.0",
+    "pino": "^10.3.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.10",
@@ -28,7 +31,7 @@
     "drizzle-kit": "^0.31.10",
     "husky": "^9.1.7",
     "lint-staged": "^17.3.0",
-    "prettier": "^3.9.6"
-  },
-  "module": "src/index.js"
+    "prettier": "^3.9.6",
+    "typescript": "^7.0.2"
+  }
 }

@@ -1,0 +1,26 @@
+<div class="narrow">
+  <h1>Welcome to mosdash</h1>
+  <p class="muted">
+    Create the administrator account. This is the only account — mosdash is
+    single-user by design.
+  </p>
+  <% if (it.error) { %><div class="flash flash-error"><%= it.error %></div><% } %>
+  <form method="post" action="/setup" class="card stack">
+    <label>
+      Email
+      <input type="email" name="email" required autofocus autocomplete="username" />
+    </label>
+    <label>
+      Password
+      <input
+        type="password"
+        name="password"
+        required
+        minlength="12"
+        autocomplete="new-password"
+      />
+      <small class="muted">At least 12 characters.</small>
+    </label>
+    <button type="submit" class="primary">Create account</button>
+  </form>
+</div>

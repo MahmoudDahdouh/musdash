@@ -7,10 +7,20 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!bun.lock", "!.husky/_"]
+    "includes": [
+      "**",
+      "!bun.lock",
+      "!.husky/_",
+      "!public/alpine.js",
+      "!dist/**"
+    ]
   },
-  "formatter": { "enabled": false },
-  "assist": { "enabled": false },
+  "formatter": {
+    "enabled": false
+  },
+  "assist": {
+    "enabled": false
+  },
   "linter": {
     "enabled": true,
     "domains": {
@@ -18,10 +28,28 @@
     },
     "rules": {
       "preset": "recommended",
-      "complexity": "on",
-      "correctness": "on",
-      "performance": "on",
-      "security": "on",
+      "complexity": {
+        "recommended": true,
+        "noVoid": "off",
+        "noExcessiveLinesPerFunction": "off",
+        "noExcessiveCognitiveComplexity": "off",
+        "noImportantStyles": "off"
+      },
+      "correctness": {
+        "recommended": true,
+        "noNodejsModules": "off",
+        "noProcessGlobal": "off"
+      },
+      "performance": {
+        "recommended": true,
+        "noAwaitInLoops": "off",
+        "useTopLevelRegex": "off",
+        "noNamespaceImport": "off"
+      },
+      "security": {
+        "recommended": true,
+        "noSecrets": "off"
+      },
       "a11y": "on",
       "nursery": "off",
       "style": {
@@ -33,7 +61,9 @@
         "useCollapsedElseIf": "error",
         "useConsistentArrayType": {
           "level": "error",
-          "options": { "syntax": "shorthand" }
+          "options": {
+            "syntax": "shorthand"
+          }
         },
         "useNodejsImportProtocol": "error",
         "noNamespace": "error",
@@ -49,11 +79,14 @@
       },
       "suspicious": {
         "preset": "all",
-        "noConsole": "off"
+        "noConsole": "off",
+        "noEmptyBlockStatements": "off",
+        "noBitwiseOperators": "off",
+        "useBiomeIgnoreFolder": "off"
       }
     }
   },
   "javascript": {
-    "globals": ["Bun"]
+    "globals": ["Bun", "Alpine", "EventSource", "FormData"]
   }
 }

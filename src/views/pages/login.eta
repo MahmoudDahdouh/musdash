@@ -1,0 +1,15 @@
+<div class="narrow">
+  <h1>Sign in</h1>
+  <% if (it.error) { %><div class="flash flash-error"><%= it.error %></div><% } %>
+  <form method="post" action="/login" class="card stack">
+    <label>
+      Email
+      <input type="email" name="email" required autofocus autocomplete="username" />
+    </label>
+    <label>
+      Password
+      <input type="password" name="password" required autocomplete="current-password" />
+    </label>
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+</div>

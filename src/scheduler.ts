@@ -1,0 +1,36 @@
+import { purgeExpiredSessions } from "./auth.ts"
+import { logger } from "./log.ts"
+import { enqueue, pruneFinishedJobs } from "./queue/index.ts"
+
+/**
+ * Periodic housekeeping on the existing loop — no cron daemon and no second
+ * process, per the single-process invariant. Docker-touching work is enqueued
+ * as a job rather than performed here, so it still runs through the one worker.
+ */
+
+const DAY_MS = 24 * 60 * 60 * 1000
+let timer: Timer | null = null
+
+function runDaily(): void {
+  // Image pruning is Docker work, so it goes on the queue.
+  enqueue("prune_images", { olderThanHours: 168 })
+
+  const jobs = pruneFinishedJobs(168)
+  const sessions = purgeExpiredSessions()
+  logger.info(
+    { prunedJobs: jobs, prunedSessions: sessions },
+    "daily housekeeping",
+  )
+}
+
+export function startScheduler(): void {
+  if (timer) return
+  // Wait a minute after boot so startup is not competing with a prune.
+  setTimeout(() => runDaily(), 60_000)
+  timer = setInterval(() => runDaily(), DAY_MS)
+}
+
+export function stopScheduler(): void {
+  if (timer) clearInterval(timer)
+  timer = null
+}

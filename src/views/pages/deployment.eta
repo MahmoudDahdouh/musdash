@@ -1,0 +1,26 @@
+<div class="breadcrumbs">
+  <a href="/">Projects</a> <span>/</span>
+  <a href="/r/<%= it.resource.id %>"><%= it.resource.name %></a> <span>/</span>
+  deployment
+</div>
+
+<div class="page-head">
+  <div class="row gap">
+    <h1 class="mono"><%= it.deployment.image %></h1>
+    <span class="pill pill-<%= it.pill %>" x-data="deployPill('<%= it.deployment.id %>', '<%= it.deployment.status %>')" :class="'pill-' + pill" x-text="status"></span>
+  </div>
+  <a class="link" href="/r/<%= it.resource.id %>">Back to resource</a>
+</div>
+
+<div class="card" x-data="logPanel('/d/<%= it.deployment.id %>/logs')">
+  <div class="row between">
+    <h3>Deploy log</h3>
+    <button class="link" x-show="paused" x-cloak @click="resume()">Jump to latest</button>
+  </div>
+  <pre class="logs" x-ref="box" @scroll="onScroll()"><% it.lines.forEach(function (l) { %><span><%= l %></span>
+<% }) %></pre>
+</div>
+
+<% if (it.deployment.error) { %>
+<div class="flash flash-error"><%= it.deployment.error %></div>
+<% } %>

@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run ci
+      - run: bun test
+
+  ram-gate:
+    # The number is the product. Without this gate it drifts silently and
+    # mosdash loses its reason to exist. Linux-only: the ceiling is a Linux
+    # number, measured the way users will measure it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Build, boot, idle 60s, measure RSS
+        run: bun run gate:rss

@@ -1,0 +1,97 @@
+<div class="breadcrumbs"><a href="/">Projects</a> <span>/</span> <%= it.project.name %></div>
+
+<div class="page-head">
+  <h1><%= it.project.name %></h1>
+  <button class="link" onclick="document.getElementById('new-env').showModal()">
+    New environment
+  </button>
+</div>
+
+<% it.environments.forEach(function (env) { %>
+<section class="env">
+  <div class="env-head">
+    <h2><%= env.environment.name %></h2>
+    <button
+      class="primary small"
+      onclick="document.getElementById('new-res-<%= env.environment.id %>').showModal()"
+    >
+      Add resource
+    </button>
+  </div>
+
+  <% if (env.resources.length === 0) { %>
+  <div class="empty card small">
+    <p class="muted">
+      Nothing deployed here yet. Add a resource with a public Docker image such
+      as <code>nginx:alpine</code>.
+    </p>
+  </div>
+  <% } else { %>
+  <div class="grid">
+    <% env.resources.forEach(function (r) { %>
+    <a class="card resource" href="/r/<%= r.resource.id %>">
+      <div class="row between">
+        <h3><%= r.resource.name %></h3>
+        <span class="pill pill-<%= r.state %>" data-resource="<%= r.resource.id %>">
+          <%= r.state %>
+        </span>
+      </div>
+      <p class="muted mono"><%= r.image %></p>
+      <div class="meta">
+        <% if (r.domainCount > 0) { %><span><%= r.domainCount %> domain<%= r.domainCount === 1 ? '' : 's' %></span><% } %>
+        <span><%= r.resource.memoryLimitMb %>MB</span>
+      </div>
+    </a>
+    <% }) %>
+  </div>
+  <% } %>
+</section>
+
+<dialog id="new-res-<%= env.environment.id %>">
+  <form method="post" action="/e/<%= env.environment.id %>/resources" class="stack">
+    <h2>Add resource to <%= env.environment.name %></h2>
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <label>
+      Name
+      <input name="name" required pattern="[a-z0-9-]{1,32}" placeholder="web" />
+      <small class="muted">Lowercase letters, digits and dashes. Becomes a DNS label.</small>
+    </label>
+    <label>
+      Docker image
+      <input name="image" required placeholder="nginx:alpine" />
+    </label>
+    <label>
+      Container port <small class="muted">optional</small>
+      <input name="containerPort" type="number" min="1" max="65535" placeholder="80" />
+      <small class="muted">The port the app listens on. Required to expose it over HTTPS.</small>
+    </label>
+    <label>
+      Health path <small class="muted">optional</small>
+      <input name="healthPath" placeholder="/health" />
+    </label>
+    <label>
+      Memory limit (MB)
+      <input name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.defaultMemoryMb %>" required />
+    </label>
+    <div class="row end">
+      <button type="button" class="link" onclick="this.closest('dialog').close()">Cancel</button>
+      <button type="submit" class="primary">Create</button>
+    </div>
+  </form>
+</dialog>
+<% }) %>
+
+<dialog id="new-env">
+  <form method="post" action="/p/<%= it.project.id %>/environments" class="stack">
+    <h2>New environment</h2>
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <label>
+      Name
+      <input name="name" required pattern="[a-z0-9-]{1,32}" placeholder="staging" autofocus />
+    </label>
+    <div class="row end">
+      <button type="button" class="link" onclick="this.closest('dialog').close()">Cancel</button>
+      <button type="submit" class="primary">Create</button>
+    </div>
+  </form>
+</dialog>

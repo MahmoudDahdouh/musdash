@@ -11,3 +11,4 @@ coverage
 
 # local plugin/session data
 .remember
+public/alpine.js

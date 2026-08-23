@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+#
+# mosdash installer. One command on a fresh Ubuntu host:
+#
+#   curl -fsSL https://raw.githubusercontent.com/<owner>/mosdash/main/scripts/install.sh | sudo bash
+#
+# Installs Docker if absent, creates the mosdash network, starts Caddy, installs
+# the binary and a systemd unit, and generates the secret key.
+set -euo pipefail
+
+MOSDASH_USER="${MOSDASH_USER:-mosdash}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/mosdash}"
+DATA_DIR="${DATA_DIR:-$INSTALL_DIR/data}"
+NETWORK="${MOSDASH_NETWORK:-mosdash}"
+CADDY_IMAGE="${CADDY_IMAGE:-caddy:2-alpine}"
+PORT="${MOSDASH_PORT:-8000}"
+
+log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "run this as root (sudo)"
+
+# --------------------------------------------------------------- Docker
+if ! command -v docker >/dev/null 2>&1; then
+  log "Installing Docker"
+  curl -fsSL https://get.docker.com | sh
+else
+  log "Docker already present: $(docker --version)"
+fi
+systemctl enable --now docker >/dev/null 2>&1 || true
+
+# ------------------------------------------------------------ user + dirs
+if ! id "$MOSDASH_USER" >/dev/null 2>&1; then
+  log "Creating system user $MOSDASH_USER"
+  useradd --system --create-home --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin "$MOSDASH_USER"
+fi
+usermod -aG docker "$MOSDASH_USER"
+install -d -o "$MOSDASH_USER" -g "$MOSDASH_USER" -m 0750 "$INSTALL_DIR" "$DATA_DIR" "$DATA_DIR/logs"
+
+# ---------------------------------------------------------------- network
+# Must be user-defined: the default bridge provides no name resolution, and
+# Caddy dials app containers by name.
+if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
+  log "Creating the $NETWORK network"
+  docker network create "$NETWORK" >/dev/null
+fi
+
+# ------------------------------------------------------------------ Caddy
+# Certificates and config live on named volumes. Losing the certificate store
+# means re-issuing everything and burning the Let's Encrypt rate limit.
+if ! docker inspect mosdash-caddy >/dev/null 2>&1; then
+  log "Starting Caddy"
+  docker volume create mosdash-caddy-data >/dev/null
+  docker volume create mosdash-caddy-config >/dev/null
+  docker run -d --name mosdash-caddy --restart unless-stopped \
+    --network "$NETWORK" \
+    -p 80:80 -p 443:443 -p 443:443/udp \
+    -p 127.0.0.1:2019:2019 \
+    -v mosdash-caddy-data:/data \
+    -v mosdash-caddy-config:/config \
+    "$CADDY_IMAGE" \
+    caddy run --config /config/caddy.json --resume >/dev/null
+else
+  log "Caddy already running"
+fi
+
+# ----------------------------------------------------------------- binary
+if [ -f "./dist/mosdash" ]; then
+  log "Installing the local build"
+  install -o "$MOSDASH_USER" -g "$MOSDASH_USER" -m 0755 ./dist/mosdash "$INSTALL_DIR/mosdash"
+elif [ -f "$INSTALL_DIR/mosdash" ]; then
+  log "Reusing the existing binary"
+else
+  die "no ./dist/mosdash found — build it first with 'bun run build'"
+fi
+
+# --------------------------------------------------------------- env file
+ENV_FILE="$INSTALL_DIR/mosdash.env"
+if [ ! -f "$ENV_FILE" ]; then
+  log "Writing $ENV_FILE"
+  cat > "$ENV_FILE" <<EOF
+MOSDASH_PORT=$PORT
+MOSDASH_DATA_DIR=$DATA_DIR
+MOSDASH_NETWORK=$NETWORK
+MOSDASH_CADDY_ADMIN=http://127.0.0.1:2019
+
+# Point a wildcard A record (*.example.com) at this host to get automatic
+# HTTPS subdomains for every resource.
+#MOSDASH_WILDCARD_DOMAIN=mos.example.com
+#MOSDASH_ACME_EMAIL=you@example.com
+
+# Staging is the safe default. Production issuance is rate limited to 50
+# certificates per registered domain per week, so switch it off deliberately.
+MOSDASH_ACME_STAGING=false
+
+MOSDASH_DEFAULT_MEMORY_MB=512
+MOSDASH_HEALTH_TIMEOUT_SEC=60
+MOSDASH_LOG_LEVEL=info
+NODE_ENV=production
+EOF
+  chown "$MOSDASH_USER:$MOSDASH_USER" "$ENV_FILE"
+  chmod 0600 "$ENV_FILE"
+fi
+
+# ---------------------------------------------------------------- systemd
+log "Installing the systemd unit"
+cat > /etc/systemd/system/mosdash.service <<EOF
+[Unit]
+Description=mosdash
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=$MOSDASH_USER
+WorkingDirectory=$INSTALL_DIR
+EnvironmentFile=$ENV_FILE
+ExecStart=$INSTALL_DIR/mosdash
+Restart=always
+RestartSec=3
+# The reconciler heals drift on boot, so an unattended restart is safe.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now mosdash
+
+sleep 2
+if systemctl is-active --quiet mosdash; then
+  IP=$(hostname -I | awk '{print $1}')
+  log "mosdash is running"
+  echo
+  echo "  Open http://$IP:$PORT to create your admin account."
+  echo "  After that it binds to 127.0.0.1 and is reached through Caddy."
+  echo
+  echo "  Edit $ENV_FILE to set your wildcard domain and ACME email,"
+  echo "  then: systemctl restart mosdash"
+else
+  die "mosdash failed to start — check: journalctl -u mosdash -n 50"
+fi

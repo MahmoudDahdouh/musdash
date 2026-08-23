@@ -1,0 +1,176 @@
+<div class="breadcrumbs">
+  <a href="/">Projects</a> <span>/</span>
+  <a href="/p/<%= it.project.id %>"><%= it.project.name %></a> <span>/</span>
+  <%= it.environment.name %> <span>/</span> <%= it.resource.name %>
+</div>
+
+<div class="page-head" x-data="statusPill('<%= it.resource.id %>', '<%= it.state %>')">
+  <div class="row gap">
+    <h1><%= it.resource.name %></h1>
+    <span class="pill" :class="'pill-' + state" x-text="state"></span>
+  </div>
+  <div class="row gap">
+    <form method="post" action="/r/<%= it.resource.id %>/deploy" class="inline">
+      <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+      <button class="primary" type="submit">Deploy</button>
+    </form>
+    <% if (it.resource.previousImage) { %>
+    <form method="post" action="/r/<%= it.resource.id %>/rollback" class="inline">
+      <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+      <button type="submit" title="Roll back to <%= it.resource.previousImage %>">
+        Rollback
+      </button>
+    </form>
+    <% } %>
+    <% if (it.resource.desiredState === 'running') { %>
+    <form method="post" action="/r/<%= it.resource.id %>/stop" class="inline">
+      <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+      <button type="submit">Stop</button>
+    </form>
+    <% } %>
+  </div>
+</div>
+
+<nav class="tabs">
+  <% ['overview','logs','env','domains','settings'].forEach(function (t) { %>
+  <a class="<%= it.tab === t ? 'active' : '' %>" href="/r/<%= it.resource.id %>?tab=<%= t %>"><%= t %></a>
+  <% }) %>
+</nav>
+
+<% if (it.tab === 'overview') { %>
+<div class="cols">
+  <div class="card stack">
+    <h3>Image</h3>
+    <p class="mono"><%= it.image %></p>
+    <% if (it.resource.previousImage) { %>
+    <p class="muted">Previous: <span class="mono"><%= it.resource.previousImage %></span></p>
+    <% } %>
+    <h3>URL</h3>
+    <% if (it.domains.length === 0) { %>
+    <p class="muted">No domain yet. Set a container port and add a domain to expose it.</p>
+    <% } else { %>
+    <ul class="plain">
+      <% it.domains.forEach(function (d) { %>
+      <li><a href="https://<%= d.host %>" target="_blank" rel="noopener"><%= d.host %></a></li>
+      <% }) %>
+    </ul>
+    <% } %>
+  </div>
+  <div class="card stack">
+    <h3>Deployments</h3>
+    <% if (it.deployments.length === 0) { %>
+    <p class="muted">Never deployed. Press Deploy to pull the image and start it.</p>
+    <% } else { %>
+    <table class="deployments">
+      <thead>
+        <tr><th>Image</th><th>Trigger</th><th>Duration</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <% it.deployments.forEach(function (d) { %>
+        <tr>
+          <td class="mono"><a href="/d/<%= d.id %>"><%= d.image %></a></td>
+          <td><%= d.trigger %></td>
+          <td><%= d.duration %></td>
+          <td><span class="pill pill-<%= d.pill %>"><%= d.status %></span></td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <% } %>
+  </div>
+</div>
+<% } %>
+
+<% if (it.tab === 'logs') { %>
+<div class="card" x-data="logPanel('/r/<%= it.resource.id %>/logs')">
+  <div class="row between">
+    <h3>Container logs</h3>
+    <button class="link" x-show="paused" x-cloak @click="resume()">Jump to latest</button>
+  </div>
+  <pre class="logs" x-ref="box" @scroll="onScroll()"><% it.logs.forEach(function (l) { %><span class="<%= l.stream %>"><%= l.text %></span>
+<% }) %></pre>
+</div>
+<% } %>
+
+<% if (it.tab === 'env') { %>
+<div class="card stack">
+  <h3>Environment variables</h3>
+  <p class="muted">
+    One <code>KEY=value</code> per line. Values are encrypted at rest and never
+    shown again after saving.
+  </p>
+  <% if (it.envError) { %><div class="flash flash-error"><%= it.envError %></div><% } %>
+  <form method="post" action="/r/<%= it.resource.id %>/env" class="stack">
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <textarea name="text" rows="12" spellcheck="false" placeholder="DATABASE_URL=postgres://..."><%= it.envText %></textarea>
+    <div class="row end"><button class="primary" type="submit">Save</button></div>
+  </form>
+  <% if (it.envKeys.length > 0) { %>
+  <p class="muted">Currently set: <span class="mono"><%= it.envKeys.join(', ') %></span></p>
+  <% } %>
+</div>
+<% } %>
+
+<% if (it.tab === 'domains') { %>
+<div class="card stack">
+  <h3>Domains</h3>
+  <% if (it.autoDomain) { %>
+  <p class="muted">Automatic: <span class="mono"><%= it.autoDomain %></span></p>
+  <% } else { %>
+  <p class="muted">
+    No wildcard domain configured, so there is no automatic subdomain. Set
+    <code>MOSDASH_WILDCARD_DOMAIN</code> to enable it.
+  </p>
+  <% } %>
+  <ul class="plain">
+    <% it.domains.forEach(function (d) { %>
+    <li class="row between">
+      <span class="mono"><%= d.host %><%= d.isAuto ? ' (auto)' : '' %></span>
+      <form method="post" action="/r/<%= it.resource.id %>/domains/<%= d.id %>/delete" class="inline">
+        <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+        <button class="link danger" type="submit">Remove</button>
+      </form>
+    </li>
+    <% }) %>
+  </ul>
+  <form method="post" action="/r/<%= it.resource.id %>/domains" class="row gap">
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <input name="host" placeholder="app.example.com" required />
+    <button type="submit">Add domain</button>
+  </form>
+</div>
+<% } %>
+
+<% if (it.tab === 'settings') { %>
+<div class="card stack">
+  <h3>Settings</h3>
+  <form method="post" action="/r/<%= it.resource.id %>/settings" class="stack">
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <label>Docker image<input name="image" value="<%= it.image %>" required /></label>
+    <label>
+      Container port
+      <input name="containerPort" type="number" min="1" max="65535" value="<%= it.resource.containerPort || '' %>" />
+    </label>
+    <label>Health path<input name="healthPath" value="<%= it.resource.healthPath || '' %>" /></label>
+    <label>
+      Memory limit (MB)
+      <input name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.resource.memoryLimitMb %>" required />
+      <small class="muted">Every container has a limit. There is no unlimited option.</small>
+    </label>
+    <div class="row end"><button class="primary" type="submit">Save</button></div>
+  </form>
+</div>
+
+<div class="card stack danger-zone">
+  <h3>Delete resource</h3>
+  <p class="muted">
+    Stops and removes the container, its route and its volumes. This cannot be
+    undone.
+  </p>
+  <form method="post" action="/r/<%= it.resource.id %>/delete"
+        onsubmit="return confirm('Delete <%= it.resource.name %> permanently?')">
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <button class="danger" type="submit">Delete this resource</button>
+  </form>
+</div>
+<% } %>

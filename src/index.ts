@@ -1,7 +1,56 @@
 import { Elysia } from "elysia"
+import { hasAdminUser } from "./auth.ts"
+import { bindHostname, config } from "./config.ts"
+import { migrate } from "./db/migrate.ts"
+import { logger } from "./log.ts"
+import { reconcileOnce, startReconciler } from "./reconciler.ts"
+import { appRoutes } from "./routes/app.ts"
+import { authRoutes } from "./routes/auth.ts"
+import { sseRoutes } from "./routes/sse.ts"
+import { startScheduler } from "./scheduler.ts"
+import { startWorker } from "./queue/worker.ts"
+import { assets } from "./views/render.ts"
 
-const app = new Elysia().get("/", () => "Hello Elysia").listen(3000)
+migrate()
 
-console.log(
-  `🦊 App is running at http://${app.server?.hostname}:${app.server?.port}`,
+// Heal before serving, so a rebooted box comes back without anyone asking.
+await reconcileOnce().catch((err: unknown) => {
+  logger.warn({ err: (err as Error).message }, "startup reconcile skipped")
+})
+
+startWorker()
+startReconciler()
+startScheduler()
+
+const app = new Elysia()
+  .onError(({ code, error, set }) => {
+    // Never hand an internal error to the browser; log the detail, show a line.
+    logger.error({ code, err: String(error) }, "request failed")
+    if (code === "NOT_FOUND") return new Response("Not found", { status: 404 })
+    set.status = 500
+    return "Something went wrong. Check the server logs."
+  })
+  .get("/assets/:file", ({ params, status }) => {
+    const asset = assets[params.file as keyof typeof assets]
+    if (!asset) return status(404, "not found")
+    return new Response(asset.body, {
+      headers: {
+        "content-type": asset.type,
+        "cache-control": "public, max-age=3600",
+      },
+    })
+  })
+  .get("/health", () => "ok")
+  .use(authRoutes)
+  .use(sseRoutes)
+  .use(appRoutes)
+  .listen({ port: config.port, hostname: bindHostname(hasAdminUser()) })
+
+logger.info(
+  {
+    port: config.port,
+    hostname: app.server?.hostname,
+    acmeStaging: config.acmeStaging,
+  },
+  "mosdash listening",
 )
