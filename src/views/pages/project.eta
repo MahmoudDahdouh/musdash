@@ -3,18 +3,20 @@
 <div class="page-head">
   <h1><%= it.project.name %></h1>
   <button class="link" onclick="document.getElementById('new-env').showModal()">
+    <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
     New environment
   </button>
 </div>
 
 <% it.environments.forEach(function (env) { %>
-<section class="env">
+<section class="env" id="env-<%= env.environment.id %>">
   <div class="env-head">
     <h2><%= env.environment.name %></h2>
     <button
       class="primary small"
       onclick="document.getElementById('new-res-<%= env.environment.id %>').showModal()"
     >
+      <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
       Add resource
     </button>
   </div>
@@ -74,7 +76,7 @@
       <input name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.defaultMemoryMb %>" required />
     </label>
     <div class="row end">
-      <button type="button" class="link" onclick="this.closest('dialog').close()">Cancel</button>
+      <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
       <button type="submit" class="primary">Create</button>
     </div>
   </form>
@@ -90,7 +92,7 @@
       <input name="name" required pattern="[a-z0-9-]{1,32}" placeholder="staging" autofocus />
     </label>
     <div class="row end">
-      <button type="button" class="link" onclick="this.closest('dialog').close()">Cancel</button>
+      <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
       <button type="submit" class="primary">Create</button>
     </div>
   </form>

@@ -15,7 +15,10 @@
 <div class="card" x-data="logPanel('/d/<%= it.deployment.id %>/logs')">
   <div class="row between">
     <h3>Deploy log</h3>
-    <button class="link" x-show="paused" x-cloak @click="resume()">Jump to latest</button>
+    <button class="link" x-show="paused" x-cloak @click="resume()">
+      <svg class="icon" aria-hidden="true"><use href="#i-arrow-down" /></svg>
+      Jump to latest
+    </button>
   </div>
   <pre class="logs" x-ref="box" @scroll="onScroll()"><% it.lines.forEach(function (l) { %><span><%= l %></span>
 <% }) %></pre>

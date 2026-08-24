@@ -42,12 +42,31 @@ export const assets = {
   },
 } as const
 
+export interface NavEnvironment {
+  id: string
+  name: string
+}
+
+/**
+ * Structurally identical to the data layer's NavProject, but declared here so
+ * the view layer keeps its independence from src/db — render.ts imports
+ * nothing from there today, and the shapes stay assignable without a cast.
+ */
+export interface NavProjectView {
+  id: string
+  name: string
+  environments: NavEnvironment[]
+}
+
 export interface LayoutData {
   title: string
   user?: { email: string } | null
   csrf?: string
   flash?: { kind: "ok" | "error"; text: string } | null
   wide?: boolean
+  nav?: NavProjectView[]
+  activeProjectId?: string
+  activeEnvironmentId?: string
 }
 
 export function renderPage(
@@ -62,6 +81,11 @@ export function renderPage(
     csrf: layout.csrf ?? "",
     flash: layout.flash ?? null,
     wide: layout.wide ?? false,
+    nav: layout.nav ?? [],
+    // Empty string rather than undefined: an id comparison in the template can
+    // then never accidentally match a missing value.
+    activeProjectId: layout.activeProjectId ?? "",
+    activeEnvironmentId: layout.activeEnvironmentId ?? "",
     body,
   })
 }

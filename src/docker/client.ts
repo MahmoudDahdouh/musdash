@@ -7,6 +7,25 @@
  * should change when it does.
  */
 
+/**
+ * A published port.
+ *
+ * `hostIp` is required and has no default on purpose. The proxy publishes
+ * 80/443 on every interface but its admin API on loopback only, and a defaulted
+ * binding address is exactly how that distinction gets silently lost. Making it
+ * explicit forces the caller to state which one it means.
+ *
+ * It is the binding address on whatever host the daemon runs on — not
+ * necessarily this machine. A remote implementation binds on the remote host,
+ * so nothing here may read it as "localhost".
+ */
+export interface PortBinding {
+  containerPort: number
+  hostPort: number
+  protocol: "tcp" | "udp"
+  hostIp: string
+}
+
 export interface ContainerSpec {
   name: string
   image: string
@@ -19,6 +38,10 @@ export interface ContainerSpec {
   memoryLimitBytes: number
   cpuShares?: number
   restartPolicy: "unless-stopped" | "no"
+  /** Published ports. Absent means the container is reachable only on its network. */
+  ports?: PortBinding[]
+  /** Overrides the image's CMD. */
+  command?: string[]
   healthcheck?: {
     test: string[]
     intervalSec: number
@@ -78,13 +101,30 @@ export interface DockerClient {
   removeContainer(id: string, force?: boolean): Promise<void>
   inspectContainer(id: string): Promise<ContainerState>
   listManagedContainers(): Promise<ManagedContainer[]>
+  /**
+   * Containers whose name is exactly `name`, running or not.
+   *
+   * Distinct from `listManagedContainers` because a container created by an
+   * earlier installer carries no mosdash labels and is therefore invisible to a
+   * label filter — bootstrap has to find it by name in order to adopt it rather
+   * than collide with it.
+   */
+  findContainersByName(name: string): Promise<ManagedContainer[]>
 
   streamLogs(id: string, opts: LogOpts): AsyncIterable<LogLine>
 
   ensureNetwork(name: string): Promise<void>
   createVolume(name: string): Promise<void>
   removeVolume(name: string): Promise<void>
-  pruneImages(olderThanHours: number): Promise<{ reclaimedBytes: number }>
+  /**
+   * Reclaims image disk. `keep` lists references that must survive — rollback
+   * targets, which the Engine cannot be asked to exempt (its prune filters
+   * reject `reference`), so the implementation removes selectively instead.
+   */
+  pruneImages(
+    olderThanHours: number,
+    keep: string[],
+  ): Promise<{ reclaimedBytes: number; protectedCount: number }>
 }
 
 export class DockerError extends Error {
@@ -132,6 +172,8 @@ export const LABEL_MANAGED = "mosdash.managed"
 export const LABEL_RESOURCE = "mosdash.resource_id"
 export const LABEL_DEPLOYMENT = "mosdash.deployment_id"
 export const LABEL_PROJECT = "mosdash.project_id"
+/** Marks infrastructure mosdash runs for itself (the proxy), not a user resource. */
+export const LABEL_ROLE = "mosdash.role"
 
 export function managedLabels(args: {
   resourceId: string
@@ -143,5 +185,20 @@ export function managedLabels(args: {
     [LABEL_RESOURCE]: args.resourceId,
     [LABEL_DEPLOYMENT]: args.deploymentId,
     [LABEL_PROJECT]: args.projectId,
+  }
+}
+
+/**
+ * Labels for a container mosdash runs for itself.
+ *
+ * Deliberately carries NO resource id, not even a synthetic one: a resource id
+ * is a foreign key into the resources table, and inventing a value that resolves
+ * to no row is precisely what the orphan sweep is built to delete. The role
+ * label is what marks it as not-a-resource, and both sweeps skip on it.
+ */
+export function sidecarLabels(role: string): Record<string, string> {
+  return {
+    [LABEL_MANAGED]: "true",
+    [LABEL_ROLE]: role,
   }
 }

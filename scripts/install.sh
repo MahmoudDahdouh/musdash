@@ -12,7 +12,6 @@ MOSDASH_USER="${MOSDASH_USER:-mosdash}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/mosdash}"
 DATA_DIR="${DATA_DIR:-$INSTALL_DIR/data}"
 NETWORK="${MOSDASH_NETWORK:-mosdash}"
-CADDY_IMAGE="${CADDY_IMAGE:-caddy:2-alpine}"
 PORT="${MOSDASH_PORT:-8000}"
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -48,21 +47,13 @@ fi
 # ------------------------------------------------------------------ Caddy
 # Certificates and config live on named volumes. Losing the certificate store
 # means re-issuing everything and burning the Let's Encrypt rate limit.
-if ! docker inspect mosdash-caddy >/dev/null 2>&1; then
-  log "Starting Caddy"
-  docker volume create mosdash-caddy-data >/dev/null
-  docker volume create mosdash-caddy-config >/dev/null
-  docker run -d --name mosdash-caddy --restart unless-stopped \
-    --network "$NETWORK" \
-    -p 80:80 -p 443:443 -p 443:443/udp \
-    -p 127.0.0.1:2019:2019 \
-    -v mosdash-caddy-data:/data \
-    -v mosdash-caddy-config:/config \
-    "$CADDY_IMAGE" \
-    caddy run --config /config/caddy.json --resume >/dev/null
-else
-  log "Caddy already running"
-fi
+#
+# The container itself is created by mosdash on first boot, not here: one code
+# path that also re-creates the proxy if it is ever removed, instead of a second
+# definition in shell that only runs at install time and silently drifts.
+docker volume create mosdash-caddy-data >/dev/null
+docker volume create mosdash-caddy-config >/dev/null
+log "Caddy volumes ready; mosdash starts Caddy on first boot"
 
 # ----------------------------------------------------------------- binary
 if [ -f "./dist/mosdash" ]; then

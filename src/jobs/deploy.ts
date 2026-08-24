@@ -1,6 +1,6 @@
 import { autoDomainFor, caddy, routeIdFor } from "../caddy/client.ts"
 import { config } from "../config.ts"
-import { managedLabels } from "../docker/client.ts"
+import { LABEL_RESOURCE, LABEL_ROLE, managedLabels } from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
 import {
   createDeployment,
@@ -65,6 +65,10 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
 
   const oldContainerId = resource.containerId
   let newContainerId: string | null = null
+  // Whether the route switch was entered, and whether it finished. The failure
+  // cleanup differs entirely between the two, so they are tracked separately.
+  let routeSwitchAttempted = false
+  let routeSwitched = false
 
   // What is genuinely running right now. The resource row cannot be trusted for
   // this: editing the image in Settings writes the NEW image to the row before
@@ -83,10 +87,17 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     await docker.ensureNetwork(config.network)
     emit(`Network ${config.network} ready`)
 
-    // 3. pull
-    emit(`Pulling ${image}...`)
-    await docker.pullImage(image, (line) => emit(safe(line)))
-    emit("Image pulled")
+    // 2b. reclaim containers a previous attempt left behind.
+    //
+    // A deploy whose route switch failed deliberately keeps its healthy
+    // container (the old one is still serving, so destroying the new one would
+    // throw away work), and the resource row is never repointed at it. Nothing
+    // else collects it: the orphan sweep skips containers whose resource row
+    // still exists, so without this they accumulate one per failed attempt.
+    await reclaimStrays(resourceId, oldContainerId, emit)
+
+    // 3. pull, falling back to a local image if there is one
+    await resolveImage(image, emit, safe)
 
     // 4/5. create the new container alongside the old one
     const name = containerName(resourceId, deploymentId)
@@ -127,6 +138,11 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     if (hosts.length > 0 && resource.containerPort) {
       const state = await docker.inspectContainer(newContainerId)
       const upstream = `${state.ipAddress}:${resource.containerPort}`
+      // Flipped immediately before the Caddy call itself, not before the block:
+      // everything above this line fails while nothing points at the new
+      // container, so it is still safe to remove. Only once the swap is in play
+      // does keeping it become the right cleanup, and the two are opposites.
+      routeSwitchAttempted = true
       await caddy.upsertRoute({
         id: routeIdFor(resourceId),
         hosts,
@@ -136,9 +152,17 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     } else if (hosts.length > 0) {
       emit("No container port set — skipping route (set one to expose it)")
     }
+    // Only reached if nothing above threw; a failure propagates to the outer
+    // catch, which knows to keep the healthy container rather than remove it.
+    routeSwitched = true
 
-    // 8b. only now is the old container expendable
-    if (oldContainerId && oldContainerId !== newContainerId) {
+    // 8b. only now is the old container expendable.
+    //
+    // Gated on the route switch having SUCCEEDED as well as on there being a
+    // distinct old container. Stopping the old one while traffic still points
+    // at it is the exact outage the zero-downtime guarantee exists to prevent,
+    // and an unreachable Caddy is precisely when that mistake would be made.
+    if (routeSwitched && oldContainerId && oldContainerId !== newContainerId) {
       emit(`Draining old container for ${DRAIN_MS / 1000}s...`)
       await Bun.sleep(DRAIN_MS)
       stopLogStream(resourceId)
@@ -177,10 +201,31 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     const message = safe((err as Error).message)
     logger.error({ resourceId, deploymentId, err: message }, "deploy failed")
 
-    // 9. the old container is still serving; tear down only what we created.
-    if (newContainerId) {
+    // 9. clean up, and what that means depends on how far the deploy got.
+    //
+    // Before the route switch (pull, create, start, health gate) the new
+    // container is useless: nothing points at it and nothing ever did, so
+    // removing it is right.
+    //
+    // The route switch itself failing is a different situation. The container
+    // is HEALTHY — it passed the gate — and only the proxy update failed, which
+    // an unreachable or misconfigured Caddy causes routinely. Destroying it
+    // there would throw away good work and, with the reconciler redeploying
+    // every 30 seconds, do it again on a loop. Keep it, and say plainly that
+    // traffic has not moved.
+    //
+    // The resource row is deliberately NOT pointed at the kept container (8c
+    // runs only on success). The reconciler therefore still sees the OLD
+    // container running and matching the row, and leaves it alone — no
+    // redeploy loop.
+    if (newContainerId && !routeSwitchAttempted) {
       await docker.removeContainer(newContainerId, true).catch(() => {})
       emit("Removed the failed container; the previous one is still serving")
+    } else if (newContainerId) {
+      emit(
+        "The new container is healthy but the route could not be switched, so traffic is unchanged. " +
+          "The container was kept; check that Caddy is running, then deploy again.",
+      )
     }
     markDeploymentFailed(deploymentId, message)
     publishDeployment({ deploymentId, resourceId, status: "failed" })
@@ -191,6 +236,80 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     })
     emit(`Deploy failed: ${message}`)
     throw err
+  }
+}
+
+/**
+ * Makes the image available locally, preferring a fresh pull.
+ *
+ * An image built on the box and never pushed anywhere is a legitimate source:
+ * `POST /images/create` 404s for it, so an unconditional pull made those
+ * resources undeployable.
+ *
+ * The gate is `imageExists`, deliberately NOT the pull's 404 status. A private
+ * image whose registry credentials have lapsed also 404s, and so does a typo'd
+ * tag that happens to be absent from the registry. Branching on the status
+ * would silently deploy whatever stale copy of that name is sitting in the
+ * local store while the user believes they got the registry's current one —
+ * exactly the failure this is written to prevent. Asking the daemon "do I
+ * actually hold this?" answers the only question that matters, and the log line
+ * says plainly that the image was not refreshed.
+ *
+ * Any pull error qualifies, not just a 404: the Engine also reports failures
+ * inside the 200 progress stream, and an unreachable daemon throws too. If the
+ * existence probe itself fails, the ORIGINAL pull error is what surfaces — the
+ * probe must never mask the reason the pull failed.
+ */
+async function resolveImage(
+  image: string,
+  emit: (s: string) => void,
+  safe: (s: string) => string,
+): Promise<void> {
+  emit(`Pulling ${image}...`)
+  try {
+    await docker.pullImage(image, (line) => emit(safe(line)))
+    emit("Image pulled")
+    return
+  } catch (pullError) {
+    let local = false
+    try {
+      local = await docker.imageExists(image)
+    } catch {
+      throw pullError
+    }
+    if (!local) throw pullError
+
+    const reason = safe((pullError as Error).message)
+    emit(
+      `Pull of ${image} failed (${reason}) — using the local image, which will not be refreshed from a registry`,
+    )
+  }
+}
+
+/**
+ * Removes containers belonging to this resource that are neither the one
+ * currently serving nor a sidecar.
+ *
+ * Only failed attempts leave these behind, so on the common path the loop finds
+ * nothing. Best-effort throughout: a deploy must not fail because a leftover
+ * from a previous attempt could not be removed.
+ */
+async function reclaimStrays(
+  resourceId: string,
+  keepContainerId: string | null,
+  emit: (s: string) => void,
+): Promise<void> {
+  const containers = await docker.listManagedContainers().catch(() => [])
+  for (const c of containers) {
+    // Never a sidecar — see the identical guard in the reconciler's orphan
+    // sweep. A resource deploy must not be able to remove the shared proxy.
+    if (c.labels[LABEL_ROLE]) continue
+    if (c.labels[LABEL_RESOURCE] !== resourceId) continue
+    if (c.id === keepContainerId) continue
+
+    await docker.stopContainer(c.id, 10).catch(() => {})
+    await docker.removeContainer(c.id, true).catch(() => {})
+    emit("Reclaimed a container left behind by an earlier failed deploy")
   }
 }
 

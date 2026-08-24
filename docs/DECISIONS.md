@@ -300,6 +300,22 @@ changed all three, and would have meant measuring RSS inside a container.
 
 The admin API is still never exposed beyond loopback (§12).
 
+**Amendment (2026-08-24): `-p 127.0.0.1:2019:2019` alone does not work.** Caddy
+binds its admin API to `localhost:2019` _inside_ the container by default, so the
+port mapping forwards to a listener that rejects it. Verified against a real
+daemon: without `CADDY_ADMIN`, `curl http://127.0.0.1:2019/config/` returns
+connection refused; with `-e CADDY_ADMIN=0.0.0.0:2019` it returns 200. Every
+deploy carrying a domain therefore failed with `cannot reach the Caddy admin API`,
+and `scripts/install.sh` reproduces this on every production install.
+
+The env var is the _implementation_ of the resolution above, not a deviation from
+it: only the container-internal bind widens. The host-side binding stays
+`127.0.0.1`, so nothing is reachable off-box and §12 is preserved. This matches
+§10, which already specifies the listen address as `0.0.0.0:2019`.
+
+This survived the Phase 1 checks because, as recorded above, the Caddy route
+switch under a real domain was never exercised.
+
 ### D3 — Caddy routes the dashboard, with a first-run IP fallback
 
 §12 says bind `127.0.0.1` and route through Caddy; §16 step 2 says open
@@ -398,3 +414,111 @@ route does, shows zero gaps.
 Not verified here, because they need a public host with DNS: Let's Encrypt
 issuance, the Caddy route switch under a real domain, and a full server reboot
 (§16 steps 8 and 12).
+
+## Slice A deviations from PHASES.md (2026-08-24)
+
+### D6 — Locally-built images deploy, and prune cannot be told to spare them
+
+§9 step 3 (`PHASES.md:436`) says "Pull the image", unconditionally. That makes an
+image built on the box with `docker build` undeployable: the Engine answers
+`POST /images/create?fromImage=demo-app&tag=v1` with a 404, verified against a
+real daemon. Phase 2 will build images from source, but until then the only way
+to run one's own code is to bring an image, and requiring a registry for that is
+a needless obstacle on a single-server product.
+
+**Resolution: try the pull, and fall back to the local image only when
+`docker.imageExists()` confirms it is present.** The gate is deliberately
+`imageExists` and not the 404 status. A private image whose registry credentials
+have lapsed returns exactly the same 404, so branching on the status alone would
+silently deploy a stale local copy while the operator believes they pulled a
+fresh one — a wrong-version deploy that reports success. Any thrown pull error
+qualifies for the probe, not just a 404, because `pullImage` also throws for
+in-stream errors and for an unreachable daemon. `:latest` against a working
+registry is unaffected: the pull succeeds and the fallback never runs.
+
+§18's prune (`PHASES.md:618-620`) says "remove dangling images and images unused
+for more than 168 hours". Taken literally that reclaims rollback targets. An
+image referenced only by `resources.previous_image` is invisible to Docker — no
+container uses it — so the old `dangling: ["false"]` filter deleted it at 168h
+and rollback worked for a week and then did not.
+
+The Engine offers no way to exempt an image list: `filters={"reference":[...]}`
+is rejected outright (`400 invalid filter 'reference'`), and `label!=` is
+inapplicable because mosdash does not build these images and cannot label them.
+Both verified against a real daemon.
+
+**Resolution: dangling-prune plus selective removal.** `/images/prune` is
+narrowed to `dangling: ["true"]` — an untagged image can never be a rollback
+target — and tagged images are enumerated and removed individually, skipping any
+whose tags intersect a keep-set derived from `resources`. Two consequences worth
+recording: one image ID can carry several tags and removing by one tag only
+_untags_ it, so an image is protected if **any** of its tags is protected and its
+bytes are only counted once every tag is gone; and historical `deployments` rows
+are deliberately **not** protected, since the UI offers only `previous_image` as
+a rollback target.
+
+### D7 — mosdash owns the Caddy container, and adopts one it did not create
+
+`scripts/install.sh` created the proxy with `docker run` at install time. That put
+the container definition in shell, where it ran exactly once and drifted: the D2
+amendment (`CADDY_ADMIN=0.0.0.0:2019`) could be fixed in the installer and still
+leave every already-installed box broken, and `docker rm -f mosdash-caddy` was
+unrecoverable without re-running the installer. Separately, `ensureBaseConfig()`
+had no caller at all, so `srv0` never existed and `upsertRoute` POSTed 404 even
+against a reachable Caddy — an independent defect the same absent bootstrap
+explains.
+
+**Resolution: an `ensure_caddy` job owns the proxy.** `src/caddy/bootstrap.ts`
+ensures the network, both named volumes, the container, its start, a bounded
+readiness poll on the admin API, and finally `ensureBaseConfig()`. It is enqueued
+at boot and re-enqueued by the reconciler whenever no running `mosdash-caddy` is
+present, so removing the proxy heals within 30 seconds. `install.sh` keeps only
+the volume creation.
+
+Consequences of note:
+
+- **Discovery is by container name, not by label.** A proxy from an older install
+  carries no `mosdash.*` labels and is invisible to a `managed=true` filter; a
+  label lookup would conclude nothing is there and try to bind `:80` twice. The
+  Engine's name filter substring-matches (verified against a real daemon:
+  filtering `caddy` returns `/caddy`), so `findContainersByName` compares exact
+  names after stripping the leading slash.
+- **An existing container is adopted, never recreated.** It is holding live TLS
+  connections. If an adopted container fails the readiness poll — which every
+  pre-amendment container will, its admin API being bound inside the container —
+  the error names `CADDY_ADMIN=0.0.0.0:2019` as the cause and `docker rm -f
+mosdash-caddy` as the fix. Destroying an operator's running proxy unasked is
+  worse than a clear error.
+- **The volume names `mosdash-caddy-data` / `mosdash-caddy-config` are frozen.** A
+  new name means an empty certificate store, re-issuance of everything, and a
+  burnt Let's Encrypt rate limit.
+- **The proxy's memory cap is hardcoded at 512MB**, deliberately not
+  `MOSDASH_DEFAULT_MEMORY_MB`. That setting is the default for user apps; lowering
+  it to fit more apps on a small box must not throttle the component they are all
+  served through.
+- **The sidecar carries `mosdash.managed=true` + `mosdash.role=proxy` and no
+  resource id.** A synthetic resource id would resolve to no row, which is exactly
+  what the orphan sweep deletes. Both sweeps (`reconciler.ts`, `jobs/index.ts`)
+  now skip on `mosdash.role` explicitly, ahead of the resource-id check that
+  spares it today by coincidence — relying on that coincidence is one refactor
+  away from mosdash force-removing its own proxy every 30 seconds.
+- **The reconciler's re-enqueue uses a time-bucketed job id.** `enqueue` inserts
+  without `OR IGNORE`, so a duplicate id throws; that conflict is caught and read
+  as "already queued", which is what stops the tick crashing every 30s while the
+  proxy is down. The id is bucketed rather than constant because `complete()`
+  leaves the row as `done` under the same id and `pruneFinishedJobs` only clears
+  it after 168 hours — a constant id would collide with its own completed row, so
+  the self-heal would fire once per install and never again. `maxAttempts` is 1:
+  concurrency is exactly 1, and a bootstrap retrying internally while Docker is
+  down occupies the worker that user deploys are queued behind.
+
+**Amendment to the zero-downtime guarantee.** `deploy.ts` destroyed the new
+container on _any_ error, including a Caddy failure, after which the reconciler
+re-enqueued the deploy every 30 seconds — an unbounded loop. The drain step is now
+gated on the route switch having succeeded (the literal enforcement of "the old
+container is never stopped until the new one passes the health gate _and_ the
+Caddy route has switched"), and the failure path distinguishes the two cases: a
+failure before the switch removes the new container, a failure of the switch
+itself keeps the healthy container and says traffic is unchanged. The resource row
+is not repointed at a kept-but-unrouted container, so the reconciler still sees
+the old container matching the row and does not redeploy.

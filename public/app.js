@@ -1,4 +1,5 @@
-/* mosdash client behaviour. Alpine components only — no framework, no router. */
+/* mosdash client behaviour. Alpine components plus one delegated DOM
+   listener — no framework, no router. */
 
 document.addEventListener("alpine:init", () => {
   /**
@@ -93,3 +94,103 @@ document.addEventListener("alpine:init", () => {
     },
   }))
 })
+
+// --------------------------------------------------------- confirm dialog
+
+/**
+ * Forms marked confirmed by the user, so the second pass through the submit
+ * listener lets them through. A WeakSet holds no strong reference, so a form
+ * removed from the DOM stays collectable — which matters in a codebase with an
+ * explicit memory budget.
+ */
+const confirmedForms = new WeakSet()
+
+/**
+ * Shared confirm dialog.
+ *
+ * One <dialog> in the layout serves every state-changing form on the page.
+ * Forms opt in with `data-confirm` plus `data-confirm-*` text attributes and
+ * hold no Alpine state, so a resource with eight removable domains still has
+ * one dialog and one listener rather than eight components.
+ *
+ * All copy travels as HTML attributes and is written with textContent. Nothing
+ * is ever interpolated into a JavaScript string, which is what the old
+ * `onsubmit="return confirm('...')"` did — it escaped for HTML and then landed
+ * in a JS literal, a mismatch that only stayed safe because resource names are
+ * restricted to [a-z0-9-].
+ *
+ * This is plain DOM rather than an Alpine component: it needs no reactivity,
+ * and living outside `alpine:init` means it still works if Alpine fails to
+ * boot. If the script does not run at all the form simply submits without a
+ * prompt — failing open, because a fail-closed confirm would leave a user
+ * unable to log out.
+ */
+document.addEventListener("submit", (event) => {
+  const form = event.target
+  if (!(form instanceof HTMLFormElement)) return
+  if (!form.hasAttribute("data-confirm")) return
+  // Second pass, after the user accepted: let it through.
+  if (confirmedForms.has(form)) {
+    confirmedForms.delete(form)
+    return
+  }
+
+  event.preventDefault()
+
+  const dialog = document.getElementById("confirm-dialog")
+  // With no dialog to confirm against, submitting beats a button that
+  // silently does nothing.
+  if (!(dialog instanceof HTMLDialogElement)) {
+    confirmedForms.add(form)
+    form.requestSubmit()
+    return
+  }
+
+  // Show native validation rather than a confirm for a form that cannot post.
+  if (!form.reportValidity()) return
+
+  openConfirm(dialog, form)
+})
+
+function openConfirm(dialog, form) {
+  const data = form.dataset
+  const title = dialog.querySelector("#confirm-title")
+  const body = dialog.querySelector("#confirm-body")
+  const accept = dialog.querySelector("[data-confirm-accept]")
+  const cancel = dialog.querySelector("[data-confirm-cancel]")
+  if (!title || !body || !accept || !cancel) return
+
+  title.textContent = data.confirmTitle || "Are you sure?"
+  body.textContent = data.confirmBody || ""
+  accept.textContent = data.confirmLabel || "Confirm"
+  // Assigned wholesale so the button cannot accumulate both classes across
+  // successive opens. A bare `data-confirm-danger` yields "", which is falsy,
+  // so presence is tested against undefined rather than truthiness.
+  accept.className = data.confirmDanger === undefined ? "primary" : "danger"
+
+  const onAccept = () => {
+    confirmedForms.add(form)
+    dialog.close()
+    // requestSubmit, not submit: submit() skips HTML5 constraint validation,
+    // which would let a form with required or min/max inputs POST junk.
+    form.requestSubmit()
+  }
+  const onCancel = () => dialog.close()
+  const onClose = () => {
+    accept.removeEventListener("click", onAccept)
+    cancel.removeEventListener("click", onCancel)
+    // Escape and an explicit close both fire `close`, so unwinding here covers
+    // every exit path and the next open starts with no stale listeners.
+    dialog.removeEventListener("close", onClose)
+  }
+
+  accept.addEventListener("click", onAccept)
+  cancel.addEventListener("click", onCancel)
+  dialog.addEventListener("close", onClose)
+
+  dialog.showModal()
+  // Focus the safe choice, never the destructive one — Enter must not be able
+  // to delete something the user has not read yet. showModal() already gives
+  // us Escape-to-close, a focus trap, and focus restored to the trigger.
+  cancel.focus()
+}

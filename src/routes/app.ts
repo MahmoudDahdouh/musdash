@@ -25,6 +25,7 @@ import {
   listEnvironments,
   listProjects,
   listResources,
+  navTree,
   resourceImage,
   setEnvVars,
   setResourceImage,
@@ -135,7 +136,7 @@ export const appRoutes = new Elysia()
           csrf: session?.csrfToken,
           defaultMemoryMb: config.defaultMemoryMb,
         },
-        layout(session, project.name),
+        layout(session, project.name, { activeProjectId: project.id }),
       ),
     )
   })
@@ -236,21 +237,28 @@ export const appRoutes = new Elysia()
           logs: tail(resource.id, 300),
           csrf: session?.csrfToken,
         },
-        layout(session, resource.name),
+        layout(session, resource.name, {
+          activeProjectId: project.id,
+          activeEnvironmentId: environment.id,
+        }),
       ),
     )
   })
 
-  .post("/r/:resourceId/deploy", ({ params, redirect, status }) => {
-    const ctx = getResourceContext(params.resourceId)
-    if (!ctx) return status(404, "resource not found")
-    const image = resourceImage(ctx.resource)
-    if (!image) return status(400, "this resource has no image set")
+  .post(
+    "/r/:resourceId/deploy",
+    ({ params, redirect, status }) => {
+      const ctx = getResourceContext(params.resourceId)
+      if (!ctx) return status(404, "resource not found")
+      const image = resourceImage(ctx.resource)
+      if (!image) return status(400, "this resource has no image set")
 
-    // Enqueue and redirect immediately — never await Docker in a handler.
-    const deploymentId = enqueueDeploy(ctx.resource.id, image, "manual")
-    return redirect(`/d/${deploymentId}`, 303)
-  })
+      // Enqueue and redirect immediately — never await Docker in a handler.
+      const deploymentId = enqueueDeploy(ctx.resource.id, image, "manual")
+      return redirect(`/d/${deploymentId}`, 303)
+    },
+    { body: t.Object({ csrf: t.String() }) },
+  )
 
   .post(
     "/r/:resourceId/rollback",
@@ -370,6 +378,9 @@ export const appRoutes = new Elysia()
   .get("/d/:deploymentId", ({ params, session, status }) => {
     const deployment = deploymentWithResource(params.deploymentId)
     if (!deployment) return status(404, "deployment not found")
+    // This page has no project context of its own; resolve it from the
+    // resource so the sidebar highlights the branch the user came from.
+    const ctx = getResourceContext(deployment.resource.id)
     return html(
       renderPage(
         "deployment",
@@ -379,18 +390,38 @@ export const appRoutes = new Elysia()
           pill: deployment.deployment.status,
           lines: deployLines(params.deploymentId),
         },
-        layout(session, "Deployment"),
+        layout(session, "Deployment", {
+          activeProjectId: ctx?.project.id,
+          activeEnvironmentId: ctx?.environment.id,
+        }),
       ),
     )
   })
 
 // --------------------------------------------------------------- helpers
 
-function layout(session: SessionUser | null, title: string) {
+interface LayoutOptions {
+  activeProjectId?: string
+  activeEnvironmentId?: string
+  wide?: boolean
+}
+
+function layout(
+  session: SessionUser | null,
+  title: string,
+  options: LayoutOptions = {},
+) {
   return {
     title,
     user: session ? { email: session.email } : null,
     csrf: session?.csrfToken ?? "",
+    // Built per request and never retained — see navTree()'s comment. Guarded
+    // on the session because the layout only draws the sidebar for a signed-in
+    // user, so an anonymous render would query for nothing.
+    nav: session ? navTree() : [],
+    activeProjectId: options.activeProjectId,
+    activeEnvironmentId: options.activeEnvironmentId,
+    wide: options.wide,
   }
 }
 

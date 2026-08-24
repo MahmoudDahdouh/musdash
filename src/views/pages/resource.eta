@@ -10,22 +10,54 @@
     <span class="pill" :class="'pill-' + state" x-text="state"></span>
   </div>
   <div class="row gap">
-    <form method="post" action="/r/<%= it.resource.id %>/deploy" class="inline">
+    <form
+      method="post"
+      action="/r/<%= it.resource.id %>/deploy"
+      class="inline"
+      data-confirm
+      data-confirm-title="Deploy now?"
+      data-confirm-body="Pulls the image and starts a new container. Traffic only switches once it passes the health check."
+      data-confirm-label="Deploy"
+    >
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-      <button class="primary" type="submit">Deploy</button>
+      <button class="primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-play" /></svg>
+        Deploy
+      </button>
     </form>
     <% if (it.resource.previousImage) { %>
-    <form method="post" action="/r/<%= it.resource.id %>/rollback" class="inline">
+    <form
+      method="post"
+      action="/r/<%= it.resource.id %>/rollback"
+      class="inline"
+      data-confirm
+      data-confirm-title="Roll back to the previous image?"
+      data-confirm-body="A new deploy starts from the previous image. The current one stays available to roll forward."
+      data-confirm-label="Roll back"
+    >
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />
       <button type="submit" title="Roll back to <%= it.resource.previousImage %>">
+        <svg class="icon" aria-hidden="true"><use href="#i-rotate-ccw" /></svg>
         Rollback
       </button>
     </form>
     <% } %>
     <% if (it.resource.desiredState === 'running') { %>
-    <form method="post" action="/r/<%= it.resource.id %>/stop" class="inline">
+    <form
+      method="post"
+      action="/r/<%= it.resource.id %>/stop"
+      class="inline"
+      data-confirm
+      data-confirm-danger
+      data-confirm-title="Stop this resource?"
+      data-confirm-body="The container is stopped and the site goes offline until you deploy again."
+      data-confirm-label="Stop"
+    >
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-      <button type="submit">Stop</button>
+      <button type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-square" /></svg>
+        Stop
+      </button>
     </form>
     <% } %>
   </div>
@@ -85,7 +117,10 @@
 <div class="card" x-data="logPanel('/r/<%= it.resource.id %>/logs')">
   <div class="row between">
     <h3>Container logs</h3>
-    <button class="link" x-show="paused" x-cloak @click="resume()">Jump to latest</button>
+    <button class="link" x-show="paused" x-cloak @click="resume()">
+      <svg class="icon" aria-hidden="true"><use href="#i-arrow-down" /></svg>
+      Jump to latest
+    </button>
   </div>
   <pre class="logs" x-ref="box" @scroll="onScroll()"><% it.logs.forEach(function (l) { %><span class="<%= l.stream %>"><%= l.text %></span>
 <% }) %></pre>
@@ -100,10 +135,23 @@
     shown again after saving.
   </p>
   <% if (it.envError) { %><div class="flash flash-error"><%= it.envError %></div><% } %>
-  <form method="post" action="/r/<%= it.resource.id %>/env" class="stack">
+  <form
+    method="post"
+    action="/r/<%= it.resource.id %>/env"
+    class="stack"
+    data-confirm
+    data-confirm-title="Replace all environment variables?"
+    data-confirm-body="Saving replaces the entire set — any key not in the box is deleted. The change takes effect on the next deploy."
+    data-confirm-label="Save variables"
+  >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <textarea name="text" rows="12" spellcheck="false" placeholder="DATABASE_URL=postgres://..."><%= it.envText %></textarea>
-    <div class="row end"><button class="primary" type="submit">Save</button></div>
+    <div class="row end">
+      <button class="primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Save
+      </button>
+    </div>
   </form>
   <% if (it.envKeys.length > 0) { %>
   <p class="muted">Currently set: <span class="mono"><%= it.envKeys.join(', ') %></span></p>
@@ -126,9 +174,21 @@
     <% it.domains.forEach(function (d) { %>
     <li class="row between">
       <span class="mono"><%= d.host %><%= d.isAuto ? ' (auto)' : '' %></span>
-      <form method="post" action="/r/<%= it.resource.id %>/domains/<%= d.id %>/delete" class="inline">
+      <form
+        method="post"
+        action="/r/<%= it.resource.id %>/domains/<%= d.id %>/delete"
+        class="inline"
+        data-confirm
+        data-confirm-danger
+        data-confirm-title="Remove this domain?"
+        data-confirm-body="Traffic to this hostname will stop being routed here as soon as the change applies."
+        data-confirm-label="Remove domain"
+      >
         <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-        <button class="link danger" type="submit">Remove</button>
+        <button class="link danger" type="submit">
+          <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
+          Remove
+        </button>
       </form>
     </li>
     <% }) %>
@@ -136,7 +196,10 @@
   <form method="post" action="/r/<%= it.resource.id %>/domains" class="row gap">
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <input name="host" placeholder="app.example.com" required />
-    <button type="submit">Add domain</button>
+    <button type="submit">
+      <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+      Add domain
+    </button>
   </form>
 </div>
 <% } %>
@@ -157,7 +220,12 @@
       <input name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.resource.memoryLimitMb %>" required />
       <small class="muted">Every container has a limit. There is no unlimited option.</small>
     </label>
-    <div class="row end"><button class="primary" type="submit">Save</button></div>
+    <div class="row end">
+      <button class="primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Save
+      </button>
+    </div>
   </form>
 </div>
 
@@ -167,10 +235,20 @@
     Stops and removes the container, its route and its volumes. This cannot be
     undone.
   </p>
-  <form method="post" action="/r/<%= it.resource.id %>/delete"
-        onsubmit="return confirm('Delete <%= it.resource.name %> permanently?')">
+  <form
+    method="post"
+    action="/r/<%= it.resource.id %>/delete"
+    data-confirm
+    data-confirm-danger
+    data-confirm-title="Delete this resource?"
+    data-confirm-body="The container, its route, its volumes and its deployment history are removed. This cannot be undone."
+    data-confirm-label="Delete resource"
+  >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <button class="danger" type="submit">Delete this resource</button>
+    <button class="danger" type="submit">
+      <svg class="icon" aria-hidden="true"><use href="#i-trash" /></svg>
+      Delete this resource
+    </button>
   </form>
 </div>
 <% } %>

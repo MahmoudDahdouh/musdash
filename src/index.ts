@@ -3,7 +3,11 @@ import { hasAdminUser } from "./auth.ts"
 import { bindHostname, config } from "./config.ts"
 import { migrate } from "./db/migrate.ts"
 import { logger } from "./log.ts"
-import { reconcileOnce, startReconciler } from "./reconciler.ts"
+import {
+  queueCaddyBootstrap,
+  reconcileOnce,
+  startReconciler,
+} from "./reconciler.ts"
 import { appRoutes } from "./routes/app.ts"
 import { authRoutes } from "./routes/auth.ts"
 import { sseRoutes } from "./routes/sse.ts"
@@ -19,6 +23,7 @@ await reconcileOnce().catch((err: unknown) => {
 })
 
 startWorker()
+queueCaddyBootstrap() // Docker work: the queue owns it, serving never waits.
 startReconciler()
 startScheduler()
 

@@ -13,21 +13,166 @@
   </head>
   <body>
     <% if (it.user) { %>
-    <header class="topbar">
-      <a class="brand" href="/">mosdash</a>
-      <nav>
-        <span class="muted"><%= it.user.email %></span>
-        <form method="post" action="/logout" class="inline">
-          <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-          <button class="link" type="submit">Log out</button>
-        </form>
-      </nav>
-    </header>
-    <% } %>
+    <!--
+      Icon sprite. Inline <symbol> definitions referenced by <use href="#i-...">.
+      An icon library would be 625KB at the very smallest for the ~1KB of
+      geometry actually used here, and would need tree-shaking — a build step
+      this project does not have. See docs/DECISIONS.md.
+
+      Two things here are load-bearing:
+      - The wrapper is zero-sized and overflow-hidden rather than display:none,
+        which stops <use> rendering in some engines.
+      - No symbol hard-codes `stroke`, so `currentColor` on .icon inherits
+        through <use> and a danger button's icon turns red with its label.
+    -->
+    <svg
+      aria-hidden="true"
+      style="position: absolute; width: 0; height: 0; overflow: hidden"
+    >
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14" /><path d="M12 5v14" /></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" /></symbol>
+      <symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></symbol>
+      <symbol id="i-square" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M10 11v6" /><path d="M14 11v6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></symbol>
+      <symbol id="i-log-out" viewBox="0 0 24 24"><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /></symbol>
+      <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 5h16" /><path d="M4 12h16" /><path d="M4 19h16" /></symbol>
+    </svg>
+
+    <div
+      class="shell"
+      x-data="{ navOpen: false }"
+      @keydown.escape.window="navOpen = false"
+    >
+      <div class="mobilebar">
+        <button
+          class="iconbtn"
+          type="button"
+          aria-label="Open navigation"
+          :aria-expanded="navOpen ? 'true' : 'false'"
+          @click="navOpen = true"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#i-menu" /></svg>
+        </button>
+        <a class="brand" href="/">mosdash</a>
+      </div>
+
+      <div
+        class="nav-scrim"
+        x-show="navOpen"
+        x-cloak
+        @click="navOpen = false"
+        aria-hidden="true"
+      ></div>
+
+      <aside class="sidebar" :class="navOpen ? 'open' : ''">
+        <div class="sidebar-head">
+          <a class="brand" href="/">mosdash</a>
+          <button
+            class="iconbtn sidebar-close"
+            type="button"
+            aria-label="Close navigation"
+            @click="navOpen = false"
+          >
+            <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
+          </button>
+        </div>
+
+        <nav class="sidebar-nav" aria-label="Main">
+          <a
+            class="nav-top <%= it.activeProjectId ? '' : 'active' %>"
+            href="/"
+            <%= it.activeProjectId ? '' : 'aria-current="page"' %>
+          >
+            Projects
+          </a>
+
+          <% if (it.nav.length === 0) { %>
+          <p class="nav-empty muted">No projects yet.</p>
+          <% } else { %>
+          <ul class="nav-tree plain">
+            <% it.nav.forEach(function (p) { %>
+            <li>
+              <a
+                class="nav-project <%= it.activeProjectId === p.id ? 'active' : '' %>"
+                href="/p/<%= p.id %>"
+                <%= it.activeProjectId === p.id ? 'aria-current="true"' : '' %>
+              >
+                <%= p.name %>
+              </a>
+              <% if (p.environments.length > 0) { %>
+              <ul class="nav-envs plain">
+                <% p.environments.forEach(function (e) { %>
+                <li>
+                  <a
+                    class="nav-env <%= it.activeEnvironmentId === e.id ? 'active' : '' %>"
+                    href="/p/<%= p.id %>#env-<%= e.id %>"
+                    <%= it.activeEnvironmentId === e.id ? 'aria-current="true"' : '' %>
+                  >
+                    <%= e.name %>
+                  </a>
+                </li>
+                <% }) %>
+              </ul>
+              <% } %>
+            </li>
+            <% }) %>
+          </ul>
+          <% } %>
+        </nav>
+
+        <div class="sidebar-foot">
+          <span class="muted nav-email" title="<%= it.user.email %>">
+            <%= it.user.email %>
+          </span>
+          <form
+            method="post"
+            action="/logout"
+            data-confirm
+            data-confirm-danger
+            data-confirm-title="Log out?"
+            data-confirm-body="You will need your email and password to sign back in."
+            data-confirm-label="Log out"
+          >
+            <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+            <button class="link" type="submit">
+              <svg class="icon" aria-hidden="true"><use href="#i-log-out" /></svg>
+              Log out
+            </button>
+          </form>
+        </div>
+      </aside>
+
+      <main class="<%= it.wide ? 'wide' : '' %>">
+        <% if (it.flash) { %>
+        <div class="flash flash-<%= it.flash.kind %>"><%= it.flash.text %></div>
+        <% } %> <%~ it.body %>
+      </main>
+    </div>
+
+    <dialog
+      id="confirm-dialog"
+      class="confirm"
+      aria-labelledby="confirm-title"
+      aria-describedby="confirm-body"
+    >
+      <div class="stack">
+        <h2 id="confirm-title"></h2>
+        <p id="confirm-body" class="muted"></p>
+        <div class="row end">
+          <button type="button" data-confirm-cancel>Cancel</button>
+          <button type="button" class="primary" data-confirm-accept></button>
+        </div>
+      </div>
+    </dialog>
+    <% } else { %>
     <main class="<%= it.wide ? 'wide' : '' %>">
       <% if (it.flash) { %>
       <div class="flash flash-<%= it.flash.kind %>"><%= it.flash.text %></div>
       <% } %> <%~ it.body %>
     </main>
+    <% } %>
   </body>
 </html>

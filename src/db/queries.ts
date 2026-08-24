@@ -150,6 +150,24 @@ export function resourceImage(resource: Resource): string {
   return src.image ?? ""
 }
 
+/**
+ * Every image reference the prune job must not delete: what each resource is
+ * running now, plus its rollback target.
+ *
+ * A rollback target is referenced only by this row — no container holds it, so
+ * Docker sees it as unused and would happily reclaim it, silently turning the
+ * rollback button into a re-pull that fails offline or against a deleted tag.
+ */
+export function listProtectedImages(): string[] {
+  const keep = new Set<string>()
+  for (const resource of listAllResources()) {
+    const current = resourceImage(resource)
+    if (current) keep.add(current)
+    if (resource.previousImage) keep.add(resource.previousImage)
+  }
+  return [...keep]
+}
+
 export function setResourceImage(id: string, image: string): void {
   updateResource(id, { sourceJson: JSON.stringify({ image }) })
 }
@@ -394,6 +412,52 @@ export function findResourceByNameInEnv(
       and(eq(resources.environmentId, environmentId), eq(resources.name, name)),
     )
     .get()
+}
+
+/** One project with its environments, for the sidebar tree. */
+export interface NavProject {
+  id: string
+  name: string
+  environments: { id: string; name: string }[]
+}
+
+/**
+ * The sidebar tree, built with one joined query regardless of project count.
+ *
+ * Per-page cost is deliberate: SQLite is in-process, so this is a function
+ * call against a memory-mapped file, not a network round trip. Caching the
+ * tree would mean holding it — and invalidating it on every create and delete
+ * — which trades microseconds for resident memory and a staleness bug.
+ */
+export function navTree(): NavProject[] {
+  const rows = orm
+    .select({
+      projectId: projects.id,
+      projectName: projects.name,
+      environmentId: environments.id,
+      environmentName: environments.name,
+    })
+    .from(projects)
+    .leftJoin(environments, eq(environments.projectId, projects.id))
+    .orderBy(desc(projects.createdAt), environments.createdAt)
+    .all()
+
+  const out: NavProject[] = []
+  let current: NavProject | undefined
+  for (const row of rows) {
+    if (!current || current.id !== row.projectId) {
+      current = { id: row.projectId, name: row.projectName, environments: [] }
+      out.push(current)
+    }
+    // A leftJoin yields a null environment row for a project that has none.
+    if (row.environmentId !== null && row.environmentName !== null) {
+      current.environments.push({
+        id: row.environmentId,
+        name: row.environmentName,
+      })
+    }
+  }
+  return out
 }
 
 export type {

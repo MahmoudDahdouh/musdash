@@ -1,6 +1,7 @@
 <div class="page-head">
   <h1>Projects</h1>
   <button class="primary" onclick="document.getElementById('new-project').showModal()">
+    <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
     New project
   </button>
 </div>
@@ -14,6 +15,7 @@
     environment ready to use.
   </p>
   <button class="primary" onclick="document.getElementById('new-project').showModal()">
+    <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
     Create your first project
   </button>
 </div>
@@ -47,7 +49,7 @@
       <input name="description" maxlength="200" />
     </label>
     <div class="row end">
-      <button type="button" class="link" onclick="this.closest('dialog').close()">
+      <button type="button" onclick="this.closest('dialog').close()">
         Cancel
       </button>
       <button type="submit" class="primary">Create</button>

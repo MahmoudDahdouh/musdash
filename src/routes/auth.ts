@@ -4,9 +4,11 @@ import {
   createUser,
   destroySession,
   hasAdminUser,
+  resolveSession,
   SESSION_COOKIE,
   sessionCookieOptions,
   verifyCredentials,
+  verifyCsrf,
 } from "../auth.ts"
 import { logger } from "../log.ts"
 import { renderPage } from "../views/render.ts"
@@ -17,6 +19,12 @@ const credentials = t.Object({
 })
 
 export const authRoutes = new Elysia()
+  .derive(({ cookie }) => {
+    const raw = cookie[SESSION_COOKIE]?.value
+    return {
+      session: resolveSession(typeof raw === "string" ? raw : undefined),
+    }
+  })
   .get("/setup", ({ redirect }) => {
     // Once an account exists this page must be unreachable: a second call would
     // be account takeover.
@@ -82,14 +90,29 @@ export const authRoutes = new Elysia()
     { body: credentials },
   )
 
-  .post("/logout", ({ cookie, redirect }) => {
-    const id = cookie[SESSION_COOKIE]?.value
-    // Deleting the row is what makes logout real; clearing the cookie alone
-    // would leave a still-valid session id in anyone's hands.
-    if (typeof id === "string") destroySession(id)
-    cookie[SESSION_COOKIE]?.remove()
-    return redirect("/login", 303)
-  })
+  .post(
+    "/logout",
+    ({ body, cookie, session, redirect, status }) => {
+      // Logout is state-changing but lives in authRoutes, outside appRoutes'
+      // global CSRF gate, so the check has to be explicit here. Without it any
+      // origin can log the user out with a hidden auto-submitting form.
+      //
+      // Conditional on there being a session: a POST with none (already
+      // logged out, expired cookie, double submit) has nothing to protect and
+      // should land quietly on /login rather than 403.
+      if (session && !verifyCsrf(session, body.csrf)) {
+        logger.warn({ path: "/logout" }, "CSRF check failed")
+        return status(403, "invalid CSRF token")
+      }
+      const id = cookie[SESSION_COOKIE]?.value
+      // Deleting the row is what makes logout real; clearing the cookie alone
+      // would leave a still-valid session id in anyone's hands.
+      if (typeof id === "string") destroySession(id)
+      cookie[SESSION_COOKIE]?.remove()
+      return redirect("/login", 303)
+    },
+    { body: t.Object({ csrf: t.String() }) },
+  )
 
 function html(body: string): Response {
   return new Response(body, {

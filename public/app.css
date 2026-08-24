@@ -9,11 +9,13 @@
   --accent: #2563eb;
   --accent-text: #ffffff;
   --danger: #dc2626;
+  --danger-fill: #dc2626;
   --ok: #16a34a;
   --warn: #d97706;
   --pending: #8b93a1;
   --deploying: #2563eb;
   --radius: 8px;
+  --sidebar-w: 236px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -26,6 +28,9 @@
     --muted: #98a0ad;
     --accent: #3b82f6;
     --danger: #ef4444;
+    /* Filled buttons need a deeper red than the text colour: white on
+       #ef4444 is only 3.76:1, below WCAG AA. This is 4.93:1. */
+    --danger-fill: #d92626;
     --ok: #22c55e;
     --warn: #f59e0b;
     --pending: #6b7280;
@@ -65,19 +70,202 @@ main.wide {
   margin: 60px auto;
 }
 
-.topbar {
+/* ---------------------------------------------------------------- shell */
+
+/*
+ * The sidebar is a grid column, not `position: fixed`, so `main` never needs
+ * a magic left margin that has to be kept in sync with the sidebar width.
+ *
+ * The content column is `minmax(0, 1fr)` rather than `1fr`: a grid track's
+ * default `min-width: auto` lets the log <pre> push the column wider than the
+ * viewport, which would scroll the whole page sideways.
+ */
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+/*
+ * Inside the shell, main is a grid item that already owns the whole content
+ * column, so the centering the bare `main` rule applies for the chromeless
+ * login/setup pages would only shrink it and push it off-centre. Reset both
+ * here rather than editing `main`, which those pages still depend on.
+ */
+.shell > main {
+  max-width: none;
+  margin: 0;
+  padding: 28px 32px 64px;
+}
+
+.sidebar {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 20px;
+  flex-direction: column;
   background: var(--surface);
+  border-right: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--border);
 }
-.topbar nav {
+
+/* Head and foot stay pinned; only the tree scrolls. */
+.sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 8px;
+}
+
+.sidebar-foot {
   display: flex;
   align-items: center;
-  gap: 14px;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
 }
+.nav-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-top,
+.nav-project,
+.nav-env {
+  display: block;
+  padding: 6px 10px;
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-top {
+  font-weight: 550;
+  margin-bottom: 8px;
+}
+.nav-project {
+  font-weight: 550;
+  font-size: 14px;
+}
+.nav-env {
+  color: var(--muted);
+  font-size: 13px;
+}
+.nav-top:hover,
+.nav-project:hover,
+.nav-env:hover {
+  background: var(--bg);
+}
+.nav-top.active,
+.nav-project.active,
+.nav-env.active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.nav-tree > li {
+  margin-bottom: 6px;
+}
+.nav-envs {
+  /* Indent under the project, with a rail so the nesting reads at a glance. */
+  margin: 2px 0 0 10px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+  gap: 1px;
+}
+.nav-empty {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.iconbtn {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.iconbtn:hover {
+  border-color: transparent;
+  background: var(--bg);
+  border-radius: 6px;
+}
+
+/* The mobile bar and the drawer scrim exist only below the breakpoint. */
+.mobilebar,
+.nav-scrim,
+.sidebar-close {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    /*
+     * The bar sizes to its content and main takes the rest. Without explicit
+     * rows, min-height: 100vh plus grid's default `align-content: stretch`
+     * splits the viewport evenly between the two in-flow rows, and the bar
+     * renders ~360px tall instead of ~45px. The sidebar and scrim are
+     * position: fixed here, so they are not grid items and not counted.
+     */
+    grid-template-rows: auto 1fr;
+  }
+  /* Narrow screens cannot spare 32px a side. */
+  .shell > main {
+    padding: 20px 16px 48px;
+  }
+  .mobilebar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-close {
+    display: block;
+  }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: min(var(--sidebar-w), 82vw);
+    z-index: 20;
+    transform: translateX(-100%);
+    transition: transform 0.18s ease;
+  }
+  .sidebar.open {
+    transform: translateX(0);
+  }
+  .nav-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    background: rgb(0 0 0 / 0.45);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition: none;
+  }
+}
+
 .brand {
   font-weight: 650;
   text-decoration: none;
@@ -218,6 +406,30 @@ button,
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
+  /* Inline-flex so an <svg class="icon"> sits on the label's optical centre
+     instead of its baseline, and so `gap` spaces the two. A button label is a
+     name, not prose — nowrap keeps "Add domain" on one line when the icon
+     pushes it against a flex sibling. */
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+/*
+ * Sized in em, so the font-size already set by .small and .iconbtn drives the
+ * icon too and no per-variant rule is needed. stroke: currentColor is what
+ * makes an icon follow its button's colour through <use>.
+ */
+.icon {
+  width: 1em;
+  height: 1em;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 button:hover {
   border-color: var(--muted);
@@ -244,8 +456,24 @@ button.danger,
 .danger {
   color: var(--danger);
 }
+/*
+ * Filled, not outlined. The confirm dialog swaps this class against .primary,
+ * and an outline would render the destructive choice weaker than the harmless
+ * one — the most dangerous button in the app reading as the least important.
+ */
 button.danger {
-  border-color: var(--danger);
+  background: var(--danger-fill);
+  border-color: var(--danger-fill);
+  color: var(--accent-text);
+}
+button.danger:hover {
+  filter: brightness(1.08);
+}
+/* .link strips the border and padding for a text-style button; a filled
+   danger button needs its box back or Remove becomes a cramped red pill. */
+button.link.danger {
+  padding: 7px 13px;
+  border: 1px solid var(--danger-fill);
 }
 
 input,
@@ -411,6 +639,16 @@ dialog {
 }
 dialog::backdrop {
   background: rgb(0 0 0 / 0.45);
+}
+
+dialog.confirm {
+  width: min(420px, 92vw);
+}
+dialog.confirm h2 {
+  font-size: 17px;
+}
+dialog.confirm p {
+  margin: 0;
 }
 
 .danger-zone {

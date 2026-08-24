@@ -33,6 +33,9 @@ interface EngineErrorBody {
   message?: string
 }
 
+/** What a failing request was about, so a 404 can be reported accurately. */
+type ErrorSubject = { kind: "image"; ref: string }
+
 export class DockerHttpClient implements DockerClient {
   constructor(private readonly socketPath: string = config.dockerSocket) {}
 
@@ -68,7 +71,11 @@ export class DockerHttpClient implements DockerClient {
     await res.arrayBuffer() // drain, so the socket is released
   }
 
-  private async toError(res: Response, path: string): Promise<DockerError> {
+  private async toError(
+    res: Response,
+    path: string,
+    subject?: ErrorSubject,
+  ): Promise<DockerError> {
     let detail = ""
     try {
       const body = (await res.json()) as EngineErrorBody
@@ -77,6 +84,16 @@ export class DockerHttpClient implements DockerClient {
       detail = await res.text().catch(() => "")
     }
     if (res.status === 404) {
+      // A 404 on an image path is not a missing container, and saying so
+      // produced "container /images/create not found" in the user's deploy log.
+      // Decide by path, and name the reference the user actually typed. This
+      // message is shown to them, so it carries no socket path or API version.
+      if (subject?.kind === "image") {
+        return new DockerError(
+          `image ${subject.ref} not found in any configured registry`,
+          404,
+        )
+      }
       return new ContainerNotFoundError(path)
     }
     return new DockerError(
@@ -128,7 +145,12 @@ export class DockerHttpClient implements DockerClient {
       `/images/create?fromImage=${encodeURIComponent(name)}&tag=${encodeURIComponent(tag)}`,
       { method: "POST" },
     )
-    if (!res.ok) throw await this.toError(res, "/images/create")
+    if (!res.ok) {
+      throw await this.toError(res, "/images/create", {
+        kind: "image",
+        ref,
+      })
+    }
     if (!res.body) throw new DockerError("pull returned no body")
 
     const reader = res.body.getReader()
@@ -168,28 +190,99 @@ export class DockerHttpClient implements DockerClient {
       { method: "DELETE" },
     )
     if (!res.ok && res.status !== 404) {
-      throw await this.toError(res, "/images/delete")
+      throw await this.toError(res, "/images/delete", { kind: "image", ref })
     }
     await res.arrayBuffer().catch(() => undefined)
   }
 
+  /**
+   * Two passes, because the Engine cannot express "prune everything except
+   * these".
+   *
+   * `POST /images/prune` only accepts `dangling`, `until`, `label` and
+   * `label!`; a `reference` filter is rejected outright with
+   * `invalid filter 'reference'`, and `label!` is useless here because mosdash
+   * does not build (and therefore cannot label) the images it deploys. A blanket
+   * `dangling:false` prune would happily delete a rollback target, which is
+   * referenced only by a row in the database and is invisible to Docker.
+   *
+   * So: pass one prunes DANGLING images only — an untagged image can never be a
+   * rollback target, since a target is named by a tag. Pass two enumerates
+   * tagged images and removes them one at a time, skipping anything protected,
+   * young, or in use.
+   */
   async pruneImages(
     olderThanHours: number,
-  ): Promise<{ reclaimedBytes: number }> {
+    keep: string[],
+  ): Promise<{ reclaimedBytes: number; protectedCount: number }> {
     // Filter values are string arrays in the Engine API; the {value: bool} map
     // form is rejected as "invalid filter".
-    // "until" prunes by age; dangling=false widens it to unreferenced images.
     const filters = encodeURIComponent(
       JSON.stringify({
         until: [`${olderThanHours}h`],
-        dangling: ["false"],
+        dangling: ["true"],
       }),
     )
-    const res = await this.json<{ SpaceReclaimed?: number }>(
+    const pruned = await this.json<{ SpaceReclaimed?: number }>(
       `/images/prune?filters=${filters}`,
       { method: "POST" },
     )
-    return { reclaimedBytes: res.SpaceReclaimed ?? 0 }
+    let reclaimedBytes = pruned.SpaceReclaimed ?? 0
+
+    const keepSet = new Set(keep)
+    const images = await this.json<ImageListItem[]>("/images/json")
+    const containers = await this.json<ContainerListItem[]>(
+      "/containers/json?all=true",
+    )
+    // A container reports its image as a resolved ID and, separately, as
+    // whatever reference it was created from. Collect both: matching on only
+    // one would let a live container's image be removed out from under it.
+    const inUse = new Set<string>()
+    for (const c of containers) {
+      if (c.ImageID) inUse.add(c.ImageID)
+      if (c.Image) inUse.add(c.Image)
+    }
+
+    const cutoffSec = Math.floor(Date.now() / 1000) - olderThanHours * 3600
+    let protectedCount = 0
+
+    for (const img of images) {
+      const tags = img.RepoTags ?? []
+      if (tags.length === 0) continue // dangling; pass one already handled it
+
+      // One image ID can carry several tags, and removing by a single tag only
+      // UNTAGS it. So an image is protected if ANY of its tags is protected,
+      // and it must be removed by every tag before its bytes come back.
+      if (tags.some((t) => keepSet.has(t))) {
+        protectedCount++
+        continue
+      }
+      if (img.Created > cutoffSec) continue
+      if (inUse.has(img.Id) || tags.some((t) => inUse.has(t))) continue
+
+      // Sequential on purpose: job concurrency is exactly 1, and parallel
+      // removals are the memory spike that invariant exists to prevent.
+      let removedAll = true
+      for (const tag of tags) {
+        try {
+          await this.removeImage(tag, false)
+        } catch (err) {
+          // 409 means something still references it. Not an error — skip on.
+          if ((err as DockerError).status !== 409) {
+            logger.warn(
+              { image: tag, err: (err as Error).message },
+              "could not remove image",
+            )
+          }
+          removedAll = false
+        }
+      }
+      // Count the image's size once, not once per tag, or the reported figure
+      // overstates what was actually freed.
+      if (removedAll) reclaimedBytes += img.Size ?? 0
+    }
+
+    return { reclaimedBytes, protectedCount }
   }
 
   // ------------------------------------------------------------- containers
@@ -201,6 +294,24 @@ export class DockerHttpClient implements DockerClient {
     }
 
     const primary = spec.networks[0]
+
+    // Publishing a port needs BOTH halves. PortBindings alone is silently
+    // ignored unless the port is also declared in ExposedPorts, and the
+    // container then comes up with nothing listening on the host.
+    const exposedPorts: Record<string, Record<string, never>> = {}
+    const portBindings: Record<string, { HostIp: string; HostPort: string }[]> =
+      {}
+    for (const p of spec.ports ?? []) {
+      const key = `${p.containerPort}/${p.protocol}`
+      exposedPorts[key] = {}
+      // An array, because one container port can be published on several host
+      // addresses.
+      const bindings = portBindings[key] ?? []
+      bindings.push({ HostIp: p.hostIp, HostPort: String(p.hostPort) })
+      portBindings[key] = bindings
+    }
+    const hasPorts = spec.ports !== undefined && spec.ports.length > 0
+
     const body = {
       Image: spec.image,
       // TTY must stay off: with a TTY the Engine stops framing the log stream
@@ -208,7 +319,10 @@ export class DockerHttpClient implements DockerClient {
       Tty: false,
       Env: Object.entries(spec.env).map(([k, v]) => `${k}=${v}`),
       Labels: spec.labels,
+      ...(spec.command ? { Cmd: spec.command } : {}),
+      ...(hasPorts ? { ExposedPorts: exposedPorts } : {}),
       HostConfig: {
+        ...(hasPorts ? { PortBindings: portBindings } : {}),
         Memory: spec.memoryLimitBytes,
         // Matching the memory limit disables swap, so a leaking app cannot
         // escape its cap by swapping.
@@ -238,10 +352,33 @@ export class DockerHttpClient implements DockerClient {
         : {}),
     }
 
-    const created = await this.json<{ Id: string; Warnings?: string[] }>(
+    const res = await this.request(
       `/containers/create?name=${encodeURIComponent(spec.name)}`,
       this.postJson(body),
     )
+
+    // 409 means the name is already taken. For a singleton container that is
+    // created once and thereafter adopted, that is the normal outcome of a
+    // concurrent or repeated bootstrap, not a failure: resolve the existing
+    // container and let the caller carry on with it. Deploy container names
+    // embed a deployment id, so this path is unreachable for them.
+    if (res.status === 409) {
+      // Build the error before consuming the body: toError reads it, and a
+      // drained response would strip the Engine's explanation from the message
+      // if discovery then comes back empty.
+      const conflict = await this.toError(res, "/containers/create")
+      const existing = await this.findContainersByName(spec.name)
+      const first = existing[0]
+      if (!first) throw conflict
+      logger.info(
+        { container: spec.name, id: first.id },
+        "container already exists; using it",
+      )
+      return first.id
+    }
+    if (!res.ok) throw await this.toError(res, "/containers/create")
+
+    const created = (await res.json()) as { Id: string; Warnings?: string[] }
     if (created.Warnings?.length) {
       logger.warn(
         { container: spec.name, warnings: created.Warnings },
@@ -326,14 +463,22 @@ export class DockerHttpClient implements DockerClient {
     const list = await this.json<ContainerListItem[]>(
       `/containers/json?all=true&filters=${filters}`,
     )
-    return list.map((c) => ({
-      id: c.Id,
-      name: (c.Names[0] ?? "").replace(/^\//, ""),
-      image: c.Image,
-      running: c.State === "running",
-      labels: c.Labels ?? {},
-      createdAt: c.Created,
-    }))
+    return list.map(toManagedContainer)
+  }
+
+  async findContainersByName(name: string): Promise<ManagedContainer[]> {
+    const filters = encodeURIComponent(JSON.stringify({ name: [name] }))
+    const list = await this.json<ContainerListItem[]>(
+      `/containers/json?all=true&filters=${filters}`,
+    )
+    // The Engine's name filter is a SUBSTRING match, verified against a real
+    // daemon: filtering on "caddy" also returns "/mosdash-caddy". Adopting or
+    // deleting on that basis would act on the wrong container, so the match is
+    // narrowed to an exact name here. A container can carry several names, so
+    // every one is checked.
+    return list
+      .filter((c) => (c.Names ?? []).some((n) => n.replace(/^\//, "") === name))
+      .map(toManagedContainer)
   }
 
   // ------------------------------------------------------------------- logs
@@ -446,8 +591,31 @@ interface ContainerListItem {
   Id: string
   Names: string[]
   Image: string
+  /** The resolved image ID; `Image` may be a tag or an ID depending on how the
+   *  container was created, so both are needed to decide "is this in use". */
+  ImageID?: string
   State: string
   Labels?: Record<string, string>
+  Created: number
+}
+
+function toManagedContainer(c: ContainerListItem): ManagedContainer {
+  return {
+    id: c.Id,
+    name: (c.Names[0] ?? "").replace(/^\//, ""),
+    image: c.Image,
+    running: c.State === "running",
+    labels: c.Labels ?? {},
+    createdAt: c.Created,
+  }
+}
+
+interface ImageListItem {
+  Id: string
+  /** Absent or empty for a dangling image; several entries for a multi-tagged one. */
+  RepoTags?: string[]
+  Size?: number
+  /** Unix seconds. */
   Created: number
 }
 

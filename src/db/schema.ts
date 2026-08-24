@@ -127,7 +127,8 @@ export const domains = sqliteTable("domains", {
 })
 
 export type JobStatus = "pending" | "leased" | "done" | "failed"
-export type JobType = "deploy" | "stop" | "remove" | "prune_images"
+export type JobType =
+  "deploy" | "stop" | "remove" | "prune_images" | "ensure_caddy"
 
 export const jobs = sqliteTable(
   "jobs",
