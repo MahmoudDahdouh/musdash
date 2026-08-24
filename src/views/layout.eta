@@ -84,7 +84,7 @@
           <a
             class="nav-top <%= it.activeProjectId ? '' : 'active' %>"
             href="/"
-            <%= it.activeProjectId ? '' : 'aria-current="page"' %>
+            <%~ it.activeProjectId ? '' : 'aria-current="page"' %>
           >
             Projects
           </a>
@@ -98,7 +98,7 @@
               <a
                 class="nav-project <%= it.activeProjectId === p.id ? 'active' : '' %>"
                 href="/p/<%= p.id %>"
-                <%= it.activeProjectId === p.id ? 'aria-current="true"' : '' %>
+                <%~ it.activeProjectId === p.id ? 'aria-current="true"' : '' %>
               >
                 <%= p.name %>
               </a>
@@ -109,7 +109,7 @@
                   <a
                     class="nav-env <%= it.activeEnvironmentId === e.id ? 'active' : '' %>"
                     href="/p/<%= p.id %>#env-<%= e.id %>"
-                    <%= it.activeEnvironmentId === e.id ? 'aria-current="true"' : '' %>
+                    <%~ it.activeEnvironmentId === e.id ? 'aria-current="true"' : '' %>
                   >
                     <%= e.name %>
                   </a>
@@ -124,6 +124,13 @@
         </nav>
 
         <div class="sidebar-foot">
+          <a
+            class="nav-top <%= it.activeSettings ? 'active' : '' %>"
+            href="/settings"
+            <%~ it.activeSettings ? 'aria-current="page"' : '' %>
+          >
+            Settings
+          </a>
           <span class="muted nav-email" title="<%= it.user.email %>">
             <%= it.user.email %>
           </span>

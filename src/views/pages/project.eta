@@ -12,13 +12,22 @@
 <section class="env" id="env-<%= env.environment.id %>">
   <div class="env-head">
     <h2><%= env.environment.name %></h2>
-    <button
-      class="primary small"
-      onclick="document.getElementById('new-res-<%= env.environment.id %>').showModal()"
-    >
-      <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
-      Add resource
-    </button>
+    <div class="row gap">
+      <button
+        class="small"
+        onclick="document.getElementById('new-git-<%= env.environment.id %>').showModal()"
+      >
+        <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+        From repository
+      </button>
+      <button
+        class="primary small"
+        onclick="document.getElementById('new-res-<%= env.environment.id %>').showModal()"
+      >
+        <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+        Add resource
+      </button>
+    </div>
   </div>
 
   <% if (env.resources.length === 0) { %>
@@ -75,6 +84,193 @@
       Memory limit (MB)
       <input name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.defaultMemoryMb %>" required />
     </label>
+    <div class="row end">
+      <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
+      <button type="submit" class="primary">Create</button>
+    </div>
+  </form>
+</dialog>
+
+<!--
+  Repository resource. The installation → repository → branch pickers are
+  rendered from data the route already fetched; the Alpine component only
+  filters what is already in the DOM and copies a default branch into the text
+  input. It fetches nothing.
+-->
+<dialog id="new-git-<%= env.environment.id %>" class="wide-dialog">
+  <form
+    method="post"
+    action="/e/<%= env.environment.id %>/resources/git"
+    class="stack"
+    x-data="repoPicker()"
+  >
+    <h2>Deploy from a repository into <%= env.environment.name %></h2>
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+
+    <label>
+      Name
+      <input name="name" required pattern="[a-z0-9-]{1,32}" placeholder="api" />
+      <small class="muted">Lowercase letters, digits and dashes. Becomes a DNS label.</small>
+    </label>
+
+    <!--
+      The two fields the server actually reads are hidden and written by the
+      component. Everything visible below is a control over them, which is what
+      lets the local-path escape hatch clear the installation and put a free
+      path into the same `repo` field.
+    -->
+    <input type="hidden" name="installationId" :value="installationId" />
+    <input type="hidden" name="repo" :value="repo" />
+
+    <% if (!it.gitPicker.connected) { %>
+    <div class="flash flash-error">
+      No GitHub App is connected, so there are no repositories to choose from.
+      Connect one under <a href="/settings">Settings</a>, install it on the
+      account that owns the repository, then come back here. You can still build
+      from a local directory using the option at the bottom of this form.
+    </div>
+    <% } else { %>
+
+    <label>
+      GitHub account
+      <select x-model="installationId" @change="onInstallationChange()">
+        <option value="">Choose an account…</option>
+        <% it.gitPicker.installations.forEach(function (i) { %>
+        <option value="<%= i.installationId %>"><%= i.accountLogin %></option>
+        <% }) %>
+      </select>
+    </label>
+
+    <% it.gitPicker.installations.forEach(function (i) { %>
+    <% if (i.error) { %>
+    <div
+      class="flash flash-error"
+      data-installation="<%= i.installationId %>"
+      x-show="installationId === $el.dataset.installation"
+      x-cloak
+    >
+      <%= i.error %> That usually means the App was uninstalled or its access was
+      revoked on GitHub. Re-install it, then press Sync installations under
+      Settings.
+    </div>
+    <% } %>
+    <% }) %>
+
+    <label x-show="installationId !== ''" x-cloak>
+      Filter repositories
+      <input
+        type="search"
+        x-model="filter"
+        placeholder="Type to narrow the list"
+        autocomplete="off"
+      />
+    </label>
+
+    <div class="field" x-show="installationId !== ''" x-cloak>
+      <span class="field-label">Repository</span>
+      <ul class="plain repo-list" role="listbox">
+        <% it.gitPicker.installations.forEach(function (i) { %>
+        <% i.repos.forEach(function (r) { %>
+        <!--
+          Every attacker-influenced value travels as a data attribute, which Eta
+          autoescapes, and is read back through $el. Interpolating a branch name
+          into a JS string literal inside an Alpine expression would not be
+          safe: HTML escaping does not escape an apostrophe for JavaScript, and
+          a repository owner chooses their own branch names.
+        -->
+        <li
+          data-installation="<%= i.installationId %>"
+          data-full-name="<%= r.fullName.toLowerCase() %>"
+          x-show="matchesEl($el)"
+        >
+          <label class="repo-option">
+            <input
+              type="radio"
+              x-model="repo"
+              value="<%= r.fullName %>"
+              data-default-branch="<%= r.defaultBranch %>"
+              @change="pick($el.dataset.defaultBranch)"
+            />
+            <span class="mono"><%= r.fullName %></span>
+            <% if (r.private) { %><span class="pill pill-stopped">private</span><% } %>
+          </label>
+        </li>
+        <% }) %>
+        <% }) %>
+      </ul>
+      <small class="muted" x-show="visibleCount() === 0" x-cloak>
+        No repository here matches that filter. If one is missing entirely, the
+        App does not have access to it — grant it on GitHub and press Sync
+        installations under Settings.
+      </small>
+      <% var repoTotal = it.gitPicker.installations.reduce(function (n, i) { return n + i.repos.length }, 0) %>
+      <% if (repoTotal >= 200) { %>
+      <small class="muted">
+        All <%= repoTotal %> repositories these installations grant are listed
+        here, which is why this page took a moment to load. If that becomes
+        annoying, narrow the App's access on GitHub to the repositories you
+        actually deploy.
+      </small>
+      <% } %>
+    </div>
+    <% } %>
+
+    <label>
+      Branch
+      <input name="branch" x-model="branch" required placeholder="main" />
+      <small class="muted">Filled in from the repository's default branch when you pick one.</small>
+    </label>
+
+    <label>
+      Build pack
+      <select name="pack">
+        <option value="railpack">Detect automatically (Railpack)</option>
+        <option value="dockerfile">Dockerfile</option>
+      </select>
+    </label>
+
+    <label>
+      Dockerfile path <small class="muted">optional</small>
+      <input name="dockerfilePath" placeholder="Dockerfile" />
+    </label>
+
+    <label>
+      Build context <small class="muted">optional</small>
+      <input name="buildContext" placeholder="." />
+      <small class="muted">A subdirectory to build from, for a monorepo.</small>
+    </label>
+
+    <label>
+      Container port <small class="muted">optional</small>
+      <input name="containerPort" type="number" min="1" max="65535" placeholder="3000" />
+      <small class="muted">The port the app listens on. Required to expose it over HTTPS.</small>
+    </label>
+
+    <label>
+      Health path <small class="muted">optional</small>
+      <input name="healthPath" placeholder="/health" />
+    </label>
+
+    <label>
+      Memory limit (MB)
+      <input name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.defaultMemoryMb %>" required />
+    </label>
+
+    <details class="local-source">
+      <summary>Build from a local directory instead</summary>
+      <p class="muted">
+        <small>
+          For testing on the server itself. Typing a path here clears the GitHub
+          account above and mosdash builds that directory on this host rather
+          than fetching from GitHub. Give an absolute path.
+        </small>
+      </p>
+      <label>
+        Local path
+        <input placeholder="/srv/sources/my-app" @input="useLocal($event.target.value)" />
+      </label>
+    </details>
+
     <div class="row end">
       <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
       <button type="submit" class="primary">Create</button>

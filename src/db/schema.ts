@@ -121,9 +121,12 @@ export const deployments = sqliteTable(
       .references(() => resources.id, { onDelete: "cascade" }),
     status: text("status").notNull().$type<DeploymentStatus>(),
     image: text("image").notNull(),
+    // deployments.trigger is plain TEXT with no CHECK constraint
+    // (0001_init.sql:56 is a comment), so widening this union needs no
+    // migration — same as jobs.type below.
     trigger: text("trigger")
       .notNull()
-      .$type<"manual" | "rollback" | "reconcile">(),
+      .$type<"manual" | "rollback" | "reconcile" | "webhook">(),
     error: text("error"),
     startedAt: text("started_at"),
     finishedAt: text("finished_at"),

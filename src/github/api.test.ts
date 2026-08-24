@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ghPaginate, GitHubError } from "./api.ts"
+import { ghPaginate, GitHubError, sanitizePath } from "./api.ts"
 import { isValidGitRef, isValidRepoRef } from "./repos.ts"
 
 /**
@@ -140,5 +140,67 @@ describe("reference validation", () => {
     ]) {
       expect(isValidGitRef(bad)).toBe(false)
     }
+  })
+})
+
+/**
+ * An error message from a failed request reaches the deploy log, so a path
+ * segment that IS a credential must not survive into it. The manifest
+ * registration code is the case that motivated this: it exchanges in one call
+ * for the App's client_secret, private key and webhook secret, and replaying an
+ * expired one lands on the 404 branch that interpolates the path.
+ */
+describe("sanitizePath", () => {
+  test("masks the manifest registration code", () => {
+    const code = "a1b2c3d4e5f6a1b2c3d4e5f6"
+    const shaped = sanitizePath(`/app-manifests/${code}/conversions`)
+
+    expect(shaped).not.toContain(code)
+    expect(shaped).toBe("/app-manifests/*/conversions")
+  })
+
+  test("keeps the route shape while masking every variable segment", () => {
+    expect(sanitizePath("/app/installations/12345678/access_tokens")).toBe(
+      "/app/installations/*/access_tokens",
+    )
+    expect(sanitizePath("/repos/octocat/hello-world/commits/main")).toBe(
+      "/repos/*/*/commits/*",
+    )
+    expect(sanitizePath("/repos/octocat/hello-world/tarball/deadbeef")).toBe(
+      "/repos/*/*/tarball/*",
+    )
+  })
+
+  test("leaves a path that is entirely route keywords intact", () => {
+    expect(sanitizePath("/app/installations")).toBe("/app/installations")
+    expect(sanitizePath("/installation/repositories")).toBe(
+      "/installation/repositories",
+    )
+  })
+
+  test("drops the query string of an absolute pagination URL", () => {
+    expect(
+      sanitizePath(
+        "https://api.github.com/installation/repositories?per_page=100&page=2",
+      ),
+    ).toBe("/installation/repositories")
+  })
+
+  test("drops the query string of a relative path too", () => {
+    // A separate branch from the absolute-URL case above: that one gets its
+    // query dropped by URL.pathname, this one by an explicit truncation. Pinned
+    // separately so a refactor that collapses the two cannot quietly lose it.
+    expect(sanitizePath("/installation/repositories?per_page=100")).toBe(
+      "/installation/repositories",
+    )
+    expect(sanitizePath("/repos/octocat/demo/commits/main#frag")).toBe(
+      "/repos/*/*/commits/*",
+    )
+  })
+
+  test("fails closed on an unknown endpoint rather than printing its data", () => {
+    // The allow-list direction is the point: an endpoint nobody taught this
+    // about has its segments masked instead of logged.
+    expect(sanitizePath("/some/new/endpoint/secret-value")).toBe("/*/*/*/*")
   })
 })

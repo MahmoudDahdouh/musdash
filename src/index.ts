@@ -10,6 +10,7 @@ import {
 } from "./reconciler.ts"
 import { appRoutes } from "./routes/app.ts"
 import { authRoutes } from "./routes/auth.ts"
+import { githubWebhookRoutes } from "./routes/github.ts"
 import { sseRoutes } from "./routes/sse.ts"
 import { startScheduler } from "./scheduler.ts"
 import { startWorker } from "./queue/worker.ts"
@@ -43,6 +44,9 @@ const app = new Elysia()
   .get("/health", () => "ok")
   .use(authRoutes)
   .use(sseRoutes)
+  // Its own instance, before appRoutes: appRoutes' guard would 303 a delivery
+  // to /login, which GitHub records as success and never retries.
+  .use(githubWebhookRoutes)
   .use(appRoutes)
   .listen({ port: config.port, hostname: bindHostname(hasAdminUser()) })
 

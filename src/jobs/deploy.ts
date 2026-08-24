@@ -5,6 +5,7 @@ import { LABEL_RESOURCE, LABEL_ROLE, managedLabels } from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
 import {
   createDeployment,
+  deleteDeployment,
   getDecryptedEnvVars,
   getDeployment,
   getResourceContext,
@@ -30,11 +31,15 @@ export interface DeployPayload {
   /**
    * Deploy the image named above verbatim, without building it.
    *
-   * Set for a rollback and for a reconcile redeploy, both of which name an
-   * image that already exists locally. Without it a git resource would rebuild
-   * from source on rollback — which defeats the button entirely, since the
-   * point is to return to the artifact that was running — and the reconciler
-   * would rebuild from source every time Docker hiccuped.
+   * Set for exactly the triggers in REUSES_IMAGE, which name an image that
+   * already exists locally. Without it a git resource would rebuild from source
+   * on rollback — defeating the button entirely, since the point is to return
+   * to the artifact that was running — and the reconciler would rebuild from
+   * source every time Docker hiccuped.
+   *
+   * The inverse matters just as much: a trigger that has no image yet must NOT
+   * set this, or the deploy tries to pull the placeholder tag the row was
+   * created with. See REUSES_IMAGE.
    */
   useExistingImage?: boolean
 }
@@ -459,21 +464,119 @@ async function healthGate(
   }
 }
 
+export type DeployTrigger = "manual" | "rollback" | "reconcile" | "webhook"
+
+/**
+ * Triggers that deploy an image which already exists locally.
+ *
+ * Enumerated rather than derived from `trigger !== "manual"`. That inference
+ * was correct while there were three triggers and became silently wrong the
+ * moment a fourth was added: a webhook deploy would be handed
+ * useExistingImage:true and then try to `docker pull` an image literally named
+ * "(building)" — the placeholder the deployment row carries until a build
+ * resolves the real tag.
+ *
+ * Adding a trigger now means choosing a side, instead of inheriting an answer
+ * from a comparison that never mentioned the concept.
+ */
+const REUSES_IMAGE: ReadonlySet<DeployTrigger> = new Set([
+  "rollback",
+  "reconcile",
+])
+
 /** Queues a deploy and returns the deployment id. Handlers call this, never runDeploy. */
 export function enqueueDeploy(
   resourceId: string,
   image: string,
-  trigger: "manual" | "rollback" | "reconcile" = "manual",
+  trigger: DeployTrigger = "manual",
 ): string {
   const deployment = createDeployment({ resourceId, image, trigger })
   enqueue("deploy", {
     resourceId,
     deploymentId: deployment.id,
     image,
-    // A rollback and a reconcile both name an image that already exists; only
-    // a manual deploy of a git resource should build.
-    useExistingImage: trigger !== "manual",
+    useExistingImage: REUSES_IMAGE.has(trigger),
   } satisfies DeployPayload)
+  publishStatus({ resourceId, state: "queued" })
+  return deployment.id
+}
+
+/**
+ * How long one resource's pushes collapse into a single deploy.
+ *
+ * Pushes arrive in bursts — five commits in one `git push`, a merge, a CI bot —
+ * and job concurrency is exactly 1, so a job per delivery parks real work behind
+ * a queue of redundant builds of nearly the same tree.
+ *
+ * The tradeoff is sharper than the reconciler's (reconciler.ts:156-169) and cuts
+ * the other way, so it is worth stating plainly. For a sidecar the bucket only
+ * DELAYS a re-queue, because the reconciler tries again every 30 seconds
+ * forever. A webhook has no retry loop: a second, genuinely different push
+ * landing in a bucket that already holds a finished row is DROPPED, not delayed,
+ * and that commit does not deploy until someone pushes again or clicks Deploy.
+ *
+ * 60 seconds — the BuildKit precedent, not the proxy's five minutes — bounds
+ * that blind window to roughly the length of one build while still collapsing
+ * the burst this exists for. Anything longer starts swallowing real commits.
+ */
+const PUSH_BUCKET_MS = 60 * 1000
+
+function pushJobId(resourceId: string): string {
+  return `deploy-push-${resourceId}-${Math.floor(Date.now() / PUSH_BUCKET_MS)}`
+}
+
+/**
+ * Whether an enqueue error is the primary-key conflict that means "this bucket
+ * already holds a row" rather than a genuine failure like a locked database or
+ * a full disk. Same shape as reconciler.ts:180-186; the message fallback covers
+ * drivers that do not set `code`.
+ */
+function isConflict(err: unknown): boolean {
+  const code = (err as { code?: unknown }).code
+  return (
+    (typeof code === "string" && code.startsWith("SQLITE_CONSTRAINT")) ||
+    /constraint failed/i.test((err as Error).message)
+  )
+}
+
+/**
+ * Queues a push-triggered deploy, collapsing a burst per resource.
+ *
+ * Returns the deployment id, or null when this bucket already holds a job — the
+ * primary-key conflict IS the answer there, exactly as it is for the sidecar
+ * bootstraps. `enqueue` has no OR IGNORE and will throw, so the catch is
+ * required rather than defensive.
+ *
+ * The deployment row is created first because the job payload needs its id, and
+ * removed again on a conflict: a row left behind would show as a permanently
+ * "queued" deploy that no job will ever pick up.
+ */
+export function enqueueDeployCoalesced(
+  resourceId: string,
+  image: string,
+): string | null {
+  const deployment = createDeployment({
+    resourceId,
+    image,
+    trigger: "webhook",
+  })
+  try {
+    enqueue(
+      "deploy",
+      {
+        resourceId,
+        deploymentId: deployment.id,
+        image,
+        // A push always builds. Never REUSES_IMAGE — see that set's comment.
+        useExistingImage: false,
+      } satisfies DeployPayload,
+      { id: pushJobId(resourceId) },
+    )
+  } catch (err) {
+    deleteDeployment(deployment.id)
+    if (!isConflict(err)) throw err
+    return null
+  }
   publishStatus({ resourceId, state: "queued" })
   return deployment.id
 }

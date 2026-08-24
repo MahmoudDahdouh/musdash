@@ -14,6 +14,7 @@ import loginSrc from "./pages/login.eta" with { type: "text" }
 import projectSrc from "./pages/project.eta" with { type: "text" }
 import projectsSrc from "./pages/projects.eta" with { type: "text" }
 import resourceSrc from "./pages/resource.eta" with { type: "text" }
+import settingsSrc from "./pages/settings.eta" with { type: "text" }
 import setupSrc from "./pages/setup.eta" with { type: "text" }
 import appCss from "../../public/app.css" with { type: "text" }
 import appJs from "../../public/app.js" with { type: "text" }
@@ -28,6 +29,7 @@ const PAGES = {
   project: projectSrc,
   resource: resourceSrc,
   deployment: deploymentSrc,
+  settings: settingsSrc,
 } as const
 
 export type PageName = keyof typeof PAGES
@@ -67,6 +69,8 @@ export interface LayoutData {
   nav?: NavProjectView[]
   activeProjectId?: string
   activeEnvironmentId?: string
+  /** Highlights the sidebar's Settings link. */
+  activeSettings?: boolean
 }
 
 export function renderPage(
@@ -86,6 +90,7 @@ export function renderPage(
     // then never accidentally match a missing value.
     activeProjectId: layout.activeProjectId ?? "",
     activeEnvironmentId: layout.activeEnvironmentId ?? "",
+    activeSettings: layout.activeSettings ?? false,
     body,
   })
 }

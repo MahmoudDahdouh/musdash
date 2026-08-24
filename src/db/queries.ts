@@ -187,6 +187,121 @@ export function getResource(id: string): Resource | undefined {
   return orm.select().from(resources).where(eq(resources.id, id)).get()
 }
 
+/**
+ * The resources a push to (repo, branch) should redeploy.
+ *
+ * Filtered in SQL rather than in TypeScript: this runs on GitHub's clock, which
+ * gives the whole delivery 10 seconds, and loading every resource to filter
+ * four fields in a loop is the shape that stops being fine at exactly the
+ * moment someone has enough resources to care. Uses idx_resources_git_repo,
+ * which migration 0002 created and which has had no reader until now.
+ *
+ * Casing: the repository name is compared LOWER-CASED on both sides. GitHub
+ * preserves the owner's chosen casing in repository.full_name, and a user
+ * typing "MyOrg/MyApp" into the create form must still match a push reported as
+ * "myorg/myapp". The branch is compared EXACTLY, because git refs are
+ * case-sensitive — `Main` is genuinely a different branch from `main`.
+ *
+ * The cost is that lower(git_repo) is not sargable, so the index serves the
+ * branch predicate rather than acting as an equality seek on the repo. At tens
+ * of resources that is irrelevant, and a silent no-op on a case mismatch is far
+ * more expensive than a scan of a small table.
+ */
+export function resourcesForPush(repo: string, branch: string): Resource[] {
+  return orm
+    .select()
+    .from(resources)
+    .where(
+      and(
+        eq(resources.kind, "git"),
+        sql`lower(${resources.gitRepo}) = ${repo.toLowerCase()}`,
+        eq(resources.gitBranch, branch),
+        eq(resources.autoDeploy, 1),
+        NOT_DELIBERATELY_STOPPED,
+      ),
+    )
+    .all()
+}
+
+/**
+ * "Not deliberately stopped" — which is NOT the same as desiredState='running'.
+ *
+ * desiredState has exactly three writers, and between them they overload
+ * 'stopped' with two different meanings:
+ *   - createResource / createGitResource write 'stopped' at creation
+ *   - runDeploy writes 'running' only after a deploy SUCCEEDS (deploy.ts:230-231)
+ *   - runStop writes 'stopped' when the user presses Stop (jobs/index.ts:42)
+ *
+ * So a brand-new resource and a resource the user switched off are
+ * indistinguishable by desiredState alone. Filtering on 'running' meant the
+ * headline feature silently did nothing on the most common path there is:
+ * create a resource from the picker, push, and nothing happens — while the UI
+ * shows auto-deploy ticked and the webhook logs "resources: 0".
+ *
+ * currentDeploymentId is the signal that separates them. It is NULL at creation
+ * and is written only alongside desiredState='running' by a successful deploy,
+ * so "NULL" means precisely "has never deployed successfully" and can never
+ * mean "was stopped". A deliberately stopped resource has a non-NULL
+ * currentDeploymentId from its earlier success and is therefore still excluded
+ * — pressing Stop must keep a resource stopped no matter who pushes.
+ *
+ * Written as a named constant rather than inline because the distinction is
+ * the point and an inline `or(...)` reads like a widened filter.
+ */
+const NOT_DELIBERATELY_STOPPED = sql`(${resources.desiredState} = 'running' OR ${resources.currentDeploymentId} IS NULL)`
+
+export function setAutoDeploy(resourceId: string, enabled: boolean): void {
+  updateResource(resourceId, { autoDeploy: enabled ? 1 : 0 })
+}
+
+/**
+ * NULLs gitInstallationId on every resource pointing at a given installation.
+ *
+ * There is no foreign key from resources.git_installation_id to
+ * github_installations (0002_github.sql:37 declares it as a bare TEXT column),
+ * so deleting an installation otherwise leaves a stale numeric id behind. That
+ * does not fail here — it fails as a 404 from GitHub at the next deploy, long
+ * after the uninstall that caused it. Returns the number of rows affected.
+ *
+ * The id is GitHub's integer as a decimal string, matching what the column
+ * holds; see the create handler for why that representation was chosen.
+ */
+export function clearGitLinkage(installationId: string): number {
+  // Counted before the update rather than read from a change count: Drizzle's
+  // bun-sqlite driver returns void from .run(), and reaching for the raw
+  // Database here to get `.changes` would put a second way of writing this
+  // table alongside the ORM for the sake of one integer. Same connection, same
+  // synchronous block, so nothing can write between the two statements.
+  const affected = countResourcesForInstallation(installationId)
+  orm
+    .update(resources)
+    .set({ gitInstallationId: null })
+    .where(eq(resources.gitInstallationId, installationId))
+    .run()
+  return affected
+}
+
+function countResourcesForInstallation(installationId: string): number {
+  return (
+    orm
+      .select({ n: sql<number>`count(*)` })
+      .from(resources)
+      .where(eq(resources.gitInstallationId, installationId))
+      .get()?.n ?? 0
+  )
+}
+
+/** Resources whose gitInstallationId is set, for the disconnect warning. */
+export function countLinkedGitResources(): number {
+  return (
+    orm
+      .select({ n: sql<number>`count(*)` })
+      .from(resources)
+      .where(sql`${resources.gitInstallationId} IS NOT NULL`)
+      .get()?.n ?? 0
+  )
+}
+
 export function listResources(environmentId: string): Resource[] {
   return orm
     .select()
@@ -367,6 +482,18 @@ export function updateDeployment(
   patch: Partial<Omit<Deployment, "id" | "resourceId" | "createdAt">>,
 ): void {
   orm.update(deployments).set(patch).where(eq(deployments.id, id)).run()
+}
+
+/**
+ * Removes a deployment row outright.
+ *
+ * Only for a row whose job was never queued — a coalesced push whose bucket
+ * already held one. A row with no job behind it shows as a deploy stuck at
+ * "queued" forever, which is worse than no row at all. Never call this on a
+ * deployment that ran: history is the point of the table.
+ */
+export function deleteDeployment(id: string): void {
+  orm.delete(deployments).where(eq(deployments.id, id)).run()
 }
 
 export function markDeploymentFailed(id: string, error: string): void {

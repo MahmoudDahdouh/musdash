@@ -13,6 +13,7 @@
 
 # local verification scratch — never committed
 /tmp-verify
+/.verify-data
 
 # logs
 **/*.log

@@ -50,12 +50,78 @@ function headers(auth: Auth): Record<string, string> {
 }
 
 /**
+ * Route keywords that are part of GitHub's URL shape rather than data.
+ *
+ * An allow-list, not a deny-list, and that direction is the whole point. A
+ * deny-list has to be extended every time an endpoint carrying a secret is
+ * added, and the cost of forgetting is a credential in a log file. An
+ * allow-list fails closed: a new endpoint's variable segments are masked
+ * because nobody taught this set about them yet.
+ */
+const PATH_KEYWORDS = new Set([
+  "app",
+  "app-manifests",
+  "access_tokens",
+  "commits",
+  "conversions",
+  "installation",
+  "installations",
+  "repos",
+  "repositories",
+  "tarball",
+])
+
+/**
+ * Reduces a request path to its route shape, masking every variable segment.
+ *
+ * `/app-manifests/<code>/conversions` becomes `/app-manifests/*​/conversions`.
+ *
+ * This exists because a path segment can BE a credential. The manifest
+ * registration code is the sharpest case — it exchanges in one call for the
+ * App's client_secret, private key and webhook secret, and the most likely way
+ * to fail that exchange is replaying an expired code, which lands on the 404
+ * branch below. GITHUB_SECRET_RE (log.ts:38-39) does not match a manifest code,
+ * so the redaction backstop would not have caught it either.
+ *
+ * Structural rather than a special case for that one endpoint: a repository
+ * name, a git ref and an installation id are not secrets today, but "the path
+ * is safe to print" is an assumption that was already wrong once. Masking every
+ * non-keyword segment costs a little debuggability and removes the whole class.
+ * The status code and the route shape are what actually identify the failure.
+ */
+export function sanitizePath(path: string): string {
+  // Pagination hands back an absolute URL. Keep only the path, never the query
+  // string — a `since` or a token parameter has no business in a log line.
+  let pathname = path
+  if (/^https?:\/\//.test(path)) {
+    try {
+      pathname = new URL(path).pathname
+    } catch {
+      return "(unparseable url)"
+    }
+  } else {
+    const queryAt = pathname.search(/[?#]/)
+    if (queryAt !== -1) pathname = pathname.slice(0, queryAt)
+  }
+
+  return pathname
+    .split("/")
+    .map((segment) =>
+      segment === "" || PATH_KEYWORDS.has(segment) ? segment : "*",
+    )
+    .join("/")
+}
+
+/**
  * Turns a failed response into a message a user can act on.
  *
  * Never includes the response body: a 401 body can echo fragments of the
- * credential that failed, and this string reaches the deploy log.
+ * credential that failed, and this string reaches the deploy log. The same
+ * reasoning applies to the PATH, which is why it goes through sanitizePath —
+ * a variable segment can itself be a credential.
  */
 async function describe(res: Response, path: string): Promise<GitHubError> {
+  const shape = sanitizePath(path)
   // Drain the body so the connection can be reused, but do not read it into the
   // message.
   await res.text().catch(() => "")
@@ -79,12 +145,12 @@ async function describe(res: Response, path: string): Promise<GitHubError> {
   }
   if (res.status === 404) {
     return new GitHubError(
-      `GitHub returned 404 for ${path} — the installation may no longer grant access to it`,
+      `GitHub returned 404 for ${shape} — the installation may no longer grant access to it`,
       404,
     )
   }
   return new GitHubError(
-    `GitHub returned ${res.status} for ${path}`,
+    `GitHub returned ${res.status} for ${shape}`,
     res.status,
   )
 }

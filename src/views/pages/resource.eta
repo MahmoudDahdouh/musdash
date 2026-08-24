@@ -95,12 +95,28 @@
     <% } else { %>
     <table class="deployments">
       <thead>
-        <tr><th>Image</th><th>Trigger</th><th>Duration</th><th>Status</th></tr>
+        <tr>
+          <th>Image</th>
+          <th>Commit</th>
+          <th>Message</th>
+          <th>Author</th>
+          <th>Trigger</th>
+          <th>Duration</th>
+          <th>Status</th>
+        </tr>
       </thead>
       <tbody>
         <% it.deployments.forEach(function (d) { %>
         <tr>
           <td class="mono"><a href="/d/<%= d.id %>"><%= d.image %></a></td>
+          <!--
+            An image deploy and a rollback carry no commit metadata at all, so
+            these three render an em dash rather than an empty cell — a blank
+            column reads as a bug, and "null" reads as a worse one.
+          -->
+          <td class="mono"><%= d.commitSha ? d.commitSha.slice(0, 7) : '—' %></td>
+          <td class="commit-message" title="<%= d.commitMessage || '' %>"><%= d.commitMessage ? d.commitMessage.split('\n')[0] : '—' %></td>
+          <td><%= d.commitAuthor || '—' %></td>
           <td><%= d.trigger %></td>
           <td><%= d.duration %></td>
           <td><span class="pill pill-<%= d.pill %>"><%= d.status %></span></td>
@@ -205,11 +221,69 @@
 <% } %>
 
 <% if (it.tab === 'settings') { %>
+<% if (it.resource.kind === 'git') { %>
+<div class="card stack">
+  <h3>Source</h3>
+  <dl class="kv">
+    <dt>Repository</dt>
+    <dd class="mono"><%= it.resource.gitRepo || '—' %></dd>
+    <dt>Branch</dt>
+    <dd class="mono"><%= it.resource.gitBranch || '—' %></dd>
+    <dt>Build pack</dt>
+    <dd><%= it.resource.buildPack === 'dockerfile' ? 'Dockerfile' : 'Detected automatically (Railpack)' %></dd>
+  </dl>
+
+  <!--
+    An unchecked checkbox submits nothing at all, which is exactly how "off" is
+    expressed here — the handler reads an absent `enabled` as off. Submitting on
+    change rather than behind a Save button keeps the control honest: what is
+    drawn is what is stored, because the page reloads from the database.
+  -->
+  <form
+    method="post"
+    action="/r/<%= it.resource.id %>/auto-deploy"
+    class="stack"
+  >
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <label class="checkline">
+      <input type="checkbox" name="enabled" value="on" <%= it.resource.autoDeploy ? 'checked' : '' %> />
+      Deploy automatically when someone pushes to
+      <span class="mono"><%= it.resource.gitBranch || 'the tracked branch' %></span>
+    </label>
+    <small class="muted">
+      Requires the GitHub App's webhook to reach this instance. A push to any
+      other branch is ignored.
+    </small>
+    <div class="row end">
+      <button class="primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Save
+      </button>
+    </div>
+  </form>
+</div>
+<% } %>
+
 <div class="card stack">
   <h3>Settings</h3>
   <form method="post" action="/r/<%= it.resource.id %>/settings" class="stack">
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <% if (it.resource.kind === 'git') { %>
+    <!--
+      A git resource builds its own image, so there is nothing to type here and
+      the handler ignores the field for this kind. It stays present but hidden
+      because the body schema requires it; making it a visible `required` input
+      would block the form outright before the first build has produced a tag.
+    -->
+    <input type="hidden" name="image" value="" />
+    <p class="muted">
+      The image is produced by each build from
+      <span class="mono"><%= it.resource.gitRepo || 'the source' %></span>, so
+      there is nothing to set here.
+    </p>
+    <% } else { %>
     <label>Docker image<input name="image" value="<%= it.image %>" required /></label>
+    <% } %>
     <label>
       Container port
       <input name="containerPort" type="number" min="1" max="65535" value="<%= it.resource.containerPort || '' %>" />

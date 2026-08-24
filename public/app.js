@@ -80,6 +80,91 @@ document.addEventListener("alpine:init", () => {
     },
   }))
 
+  /**
+   * The git-resource dialog's repository picker.
+   *
+   * Every repository this instance can see is already in the DOM, rendered by
+   * the route from one API call per installation. This component holds the
+   * selection and filters what is rendered — it fetches nothing and mirrors no
+   * server state, because SQLite and GitHub already know all of it.
+   *
+   * `installationId` and `repo` are bound to hidden inputs rather than being
+   * form controls themselves, which is what lets the local-directory escape
+   * hatch clear the installation and put a free-text path into the same `repo`
+   * field the picker writes.
+   */
+  Alpine.data("repoPicker", () => ({
+    installationId: "",
+    repo: "",
+    branch: "main",
+    filter: "",
+
+    /** Whether one rendered repository row survives the current filter. */
+    matches(installationId, fullNameLower) {
+      if (installationId !== this.installationId) return false
+      const needle = this.filter.trim().toLowerCase()
+      return needle === "" || fullNameLower.includes(needle)
+    },
+
+    /**
+     * The same test, reading the row's own data attributes.
+     *
+     * The template calls this rather than passing a repository name into an
+     * Alpine expression: HTML escaping does not escape an apostrophe for a
+     * JavaScript string literal, and repository and branch names are chosen by
+     * whoever owns the repository.
+     */
+    matchesEl(el) {
+      return this.matches(
+        el.dataset.installation || "",
+        el.dataset.fullName || "",
+      )
+    },
+
+    /**
+     * How many rows survive the filter.
+     *
+     * Read off the server-rendered data attributes rather than from a copy of
+     * the repository list held in this component — there is no second source of
+     * truth here. Applying matches() rather than inspecting computed styles
+     * keeps this independent of when Alpine happens to have flushed x-show.
+     */
+    visibleCount() {
+      const list = this.$el.querySelector(".repo-list")
+      if (!list) return 0
+      let n = 0
+      for (const li of list.children) {
+        const installationId = li.dataset.installation || ""
+        const fullName = li.dataset.fullName || ""
+        if (this.matches(installationId, fullName)) n += 1
+      }
+      return n
+    },
+
+    /** A repository was chosen: adopt its default branch. */
+    pick(defaultBranch) {
+      if (defaultBranch) this.branch = defaultBranch
+    },
+
+    /** Switching accounts invalidates a repository chosen under the old one. */
+    onInstallationChange() {
+      this.repo = ""
+      this.filter = ""
+    },
+
+    /**
+     * The local-directory escape hatch. A path is not a GitHub repository, so
+     * the installation is cleared: the server treats an absent installationId
+     * as "this is a local source" and skips repository-reference validation.
+     */
+    useLocal(path) {
+      const value = path.trim()
+      if (value === "") return
+      this.installationId = ""
+      this.repo = value
+    },
+  }))
+
   Alpine.data("deployPill", (deploymentId, initial) => ({
     status: initial,
     pill: initial,

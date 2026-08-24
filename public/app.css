@@ -655,3 +655,110 @@ dialog.confirm p {
   border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
   margin-top: 20px;
 }
+
+/* An <a class="btn"> is a link that reads as a button; the base rule above
+   styles the box but leaves the underline an anchor brings with it. */
+a.btn {
+  text-decoration: none;
+}
+
+.row.wrap {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+/* Label/value pairs. Grid rather than the browser's default dl indent, so the
+   values line up in a column at any label length. */
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+  font-size: 14px;
+}
+.kv dt {
+  color: var(--muted);
+}
+.kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A group that behaves like a <label> but wraps controls a label cannot own —
+   a listbox is not a labelable element. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 14px;
+}
+.field-label {
+  font-size: 14px;
+}
+
+/* The repository list is scrolled rather than paged: every repository the
+   installation grants is already in the DOM, and the filter narrows it without
+   a request. Bounded height so several hundred rows cannot push the dialog's
+   buttons off screen. */
+.repo-list {
+  max-height: 240px;
+  overflow-y: auto;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.repo-option {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.repo-option:hover {
+  background: var(--surface);
+}
+.repo-option input[type="radio"] {
+  width: auto;
+  flex: none;
+  margin: 0;
+}
+
+/* A checkbox is a row, not the stacked column every other label uses. */
+.checkline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.checkline input[type="checkbox"] {
+  width: auto;
+  flex: none;
+  margin: 0;
+}
+
+/* The first line of a commit message, clipped rather than wrapped so one long
+   subject cannot make every other row in the table twice as tall. */
+.commit-message {
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-source summary {
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--muted);
+}
+.local-source > * + * {
+  margin-top: 8px;
+}
+
+/* The git dialog carries a repository list and eight fields, which is more than
+   the 460px every other dialog needs. Still capped in vh so it scrolls rather
+   than overflowing on a laptop. */
+dialog.wide-dialog {
+  width: min(560px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+}

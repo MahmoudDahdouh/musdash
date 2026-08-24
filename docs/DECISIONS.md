@@ -969,3 +969,214 @@ Source comes from a local directory. There is no GitHub App, no tarball fetch, n
 webhook, and no repository picker — the create form takes a path as free text and
 is not reachable from the UI's normal flow. Commit metadata columns exist and are
 never populated. All of that is checkpoint 4.
+
+---
+
+## Checkpoint 4b + 5 — GitHub, wired end to end (2026-08-25)
+
+The client from checkpoint 4a becomes reachable: an App registers through the
+manifest flow, installations sync, the create form gains a picker, and GitHub's
+webhook reaches an endpoint that verifies before it parses. `resources.kind ===
+"git"` stops meaning "a path someone typed" and starts meaning a repository.
+
+### D11 — GitHub auth and webhook verification are hand-rolled
+
+§26 of PHASES.md says "Use `@octokit/app`. Do not hand-roll this," and again
+"Use `@octokit/webhooks`." Both are declined, and this entry is the record
+`src/github/jwt.ts:11` has been forward-referencing since checkpoint 4a.
+
+`@octokit/auth-app` measured **~10MB idle RSS**. The budget is 100MB and the
+binary currently idles at 78.9MB, so one convenience dependency spends half the
+remaining headroom. What it buys is a `createSign` call behind a cache, and what
+`@octokit/webhooks` buys is a `createHmac` call and a constant-time compare.
+Both are already in `node:crypto`, which costs nothing because the runtime ships
+it. The RAM budget is the product's reason to exist; a dependency that eats 10%
+of it to save 60 lines is the trade the budget exists to refuse.
+
+The cost is real and worth naming: GitHub's auth and signature schemes are now
+ours to keep correct. That is acceptable because both are small, both are
+specified in writing, and **signature verification is unit-tested against a
+tamper case** — one of the four things CLAUDE.md sanctions tests for. The JWT is
+not independently tested; it is exercised by every API call that works.
+
+### The webhook is a separate Elysia instance, and that is load-bearing
+
+`appRoutes` guards every request with a session check that **303s to `/login`**.
+GitHub follows redirects, gets a 200, and records the delivery as **successful**.
+Auto-deploy would look configured from both ends — a green deliveries page, a
+resource with a repo attached — and never fire. Nothing logs, nothing retries,
+nothing fails.
+
+So `/webhooks/github` lives on its own `new Elysia()` mounted before
+`appRoutes`. Elysia 1.4 scopes hooks `local` by default, and this codebase
+declares no `as: "global"`, no `as: "scoped"`, and no `.as(...)` anywhere —
+verified by grep, and then verified again by mounting a probe route beside a
+guarded instance and confirming it was not intercepted. **Adding a global-scoped
+hook anywhere breaks this route first and silently**, which is the reason the
+scoping choice is written down rather than left to the reader.
+
+HMAC replaces the session as the authenticator, which is also why the CSRF gate
+does not apply: there is no cookie and no browser.
+
+### Verify before parse, on the bytes GitHub actually sent
+
+`parse: "none"` and `await request.text()`. Re-serializing a parsed object is
+not byte-identical to what was signed — `{"a": 1}` and `{"a":1}` have different
+digests and GitHub does not send canonical JSON. The test asserts exactly that
+case rather than trusting it.
+
+`request.clone()` is not available as an escape hatch here: Elysia has consumed
+the stream by the time a hook runs, and cloning throws `ERR_BODY_ALREADY_USED`.
+That bug is already recorded above for CSRF; the same fact shapes this route.
+
+An unverified body never reaches `JSON.parse`.
+
+### `REUSES_IMAGE` — an enumeration, not an inference
+
+`enqueueDeploy` derived `useExistingImage` from `trigger !== "manual"`. That was
+correct for three triggers and wrong the instant a fourth existed: a webhook
+deploy would have been told to reuse an image, and step 3 would have tried to
+`docker pull` an image literally named `(building)`. Every push-deploy fails,
+with a registry error pointing at Docker rather than at the enqueue.
+
+It is now a set of the triggers that reuse — `rollback` and `reconcile` — and
+the two comments asserting the old inference are gone. This is the same lesson
+as the checkpoint 3 rollback bug one section up: **a guard derived from "what is
+this not" breaks when the set grows; a guard that names what it means does not.**
+
+### Coalescing pushes, and why the blind window is worse here
+
+A burst of pushes at job concurrency 1 would queue a deploy each. The bucketed
+job id from the reconciler collapses them, with a **60s** bucket.
+
+But the tradeoff is sharper than it is for the sidecars. A bucketed sidecar
+bootstrap that collides is only _delayed_ — the reconciler runs every 30s and
+tries again forever. **A webhook has no retry loop.** A second, genuinely
+different push inside the same bucket is dropped, not deferred, and the only
+thing that redeploys it is the next push or a human. 60s is chosen to be shorter
+than a realistic gap between distinct pushes while still absorbing a
+`git push` of several commits, which arrives as one event anyway.
+
+The deployment row is deleted when a coalesce loses, so a dropped push does not
+leave a row displayed as "queued" with no job behind it.
+
+### Three installation ids, and only one goes in the resource
+
+`github_installations.id` is a ULID. `github_installations.installation_id` is
+GitHub's integer. `resources.git_installation_id` is **GitHub's integer stored
+as a decimal string** — `tarball.ts` does `Number(...)` on it and throws if it is
+not finite. `NewInstallation.appRowId` is the _App's_ ULID, not the
+installation's.
+
+Writing the wrong one produces a 404 from GitHub at deploy time, hours after the
+mistake and nowhere near it. The create route validates that the field is
+digits-only and matches a known installation before it is stored.
+
+### Disconnect nulls the linkage and keeps the repo
+
+There is no foreign key from `resources.git_installation_id` to the
+installations table, so deleting an App would otherwise leave resources pointing
+at an installation that no longer exists. Disconnect clears the linkage and
+**keeps `git_repo` and `git_branch`** — the repository is still the one the user
+chose; only the credential is gone. The confirmation names how many resources
+are affected before it happens.
+
+`clearTokenCache()` runs on registration, re-registration, and disconnect.
+Without it, tokens minted by a dead App stay in memory for up to an hour.
+
+### The manifest nonce lives in `settings`, and is consumed by deletion
+
+Not a module-level `Map`: one process or not, a restart mid-flow would strand
+the user with a callback that can never validate. It is deleted before the code
+is exchanged, so a replayed callback URL fails on the second attempt. A wrong
+`state` leaves the stored nonce intact — a guessed value must not burn the real
+user's pending flow.
+
+Without the nonce, a crafted callback link sent to an admin registers an App the
+attacker controls, which hands them the webhook secret and the ability to
+trigger deploys.
+
+### The redaction backstop does not cover these secrets
+
+`GITHUB_SECRET_RE` matches `gh[pousr]_` tokens, codeload URLs, and PEM headers.
+It does **not** match `client_secret` or `webhook_secret`, and the manifest
+conversion returns all three in one response body. There is no safety net on
+that object; the discipline is that it is never handed to a logger, in any form,
+including as an error `cause`.
+
+### The error path leaked the credential the body reasoning was protecting
+
+`describe()` in `api.ts` had always refused to read a response body into its
+message, and said why: a 401 body can echo fragments of the credential that
+failed. It then interpolated the request **path** into two of its four messages.
+
+For every endpoint built to that point the path was inert. The manifest exchange
+is `/app-manifests/<code>/conversions`, and that code is the one credential that
+buys `client_secret`, `pem` and `webhook_secret` in a single response. So the
+most likely failure — a replayed or expired code, which lands on the 404 branch
+— wrote the live credential to the log. `GITHUB_SECRET_RE` does not match a
+manifest code, so the backstop never fired.
+
+Found in validation, not in testing, and the shape is worth keeping: **a
+sanitizer scoped to one field is a claim about every other field**, and the
+comment asserting the body was dangerous is what made the path look safe.
+
+`sanitizePath()` now reduces a path to its route skeleton before it reaches a
+message, against an **allow-list** of route keywords: `/app-manifests/*/
+conversions`, `/repos/*/*/commits/*`. A deny-list would need extending every time
+an endpoint carrying a secret is added, and forgetting costs a credential; an
+allow-list fails closed, so an endpoint nobody taught it about is masked
+entirely.
+
+### A push can now create a container that has never run
+
+`resourcesForPush` filtered on `desired_state = 'running'`, which reads as "not
+deliberately stopped" and also silently means "has deployed successfully at least
+once". A resource created from the picker starts `stopped` and only becomes
+`running` inside a successful deploy, so **auto-deploy did nothing until someone
+clicked Deploy by hand** — while the toggle rendered checked. The UI asserted a
+feature that was not running.
+
+The distinguishing signal already existed: `current_deployment_id` is NULL at
+creation and is written only alongside `desired_state = 'running'`, so NULL means
+exactly "never deployed successfully" and can never mean "was stopped". The
+predicate is now named — `desired_state = 'running' OR current_deployment_id IS
+NULL` — because inline it reads as a filter someone widened, and the two meanings
+it separates are the entire point.
+
+The behavior change is deliberate and worth stating: a git resource now deploys
+on its **first** push after creation, with no manual deploy first. A push can
+therefore create a container for a resource that has never run, which was
+previously impossible. A deliberately stopped resource still does not
+auto-deploy.
+
+### Known and deferred: the repo picker refetches on every project page
+
+`GET /p/:projectId` awaits one authenticated GitHub call per installation,
+paginating to completion, with no cache. It runs on every project page load —
+including for projects holding no git resources at all — and with GitHub slow or
+unreachable the page stalls behind a 15s timeout per installation before
+rendering anything.
+
+Server-rendering the picker was chosen deliberately (a fetch endpoint would be
+the parallel client-side store the invariants refuse), and that choice stands.
+Doing it unconditionally and uncached on the hot path is a separate question,
+and the answer is a cache with an explicit invalidation point rather than a
+different rendering strategy. Deferred rather than fixed here: caching is a
+design change, the slice is already large, and the cost is latency on one page
+rather than a wrong result.
+
+The `repoTotal >= 200` notice in `project.eta` tells the user when the _size_ is
+the problem. Nothing yet tells them when the _latency_ is.
+
+### Still unverified, and not claimed
+
+Two paths in this checkpoint are **inbound HTTP from GitHub**, and this is an
+RFC1918 box — the same constraint recorded for Slice D above, now actually
+binding. **The manifest callback redirect and the webhook POST have not been
+exercised against real GitHub.** What has been verified is everything up to the
+network edge: signature verification against locally-computed HMACs including
+tamper cases, the webhook route answering 401 rather than redirecting to
+`/login`, the dispatch and its skip conditions, nonce lifecycle, and the trigger
+plumbing. Phase 2 DoD items 1, 2, 3, 5, 6 and 7 remain unproven until this runs
+on a public host.
