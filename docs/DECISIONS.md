@@ -761,3 +761,105 @@ produced, but the build pipeline that will call it — Railpack, the Dockerfile
 frontend, build-arg redaction, build-directory cleanup — is the next checkpoint.
 Railpack is not installed on this box, and installing it is a step of that
 checkpoint rather than an assumption of this one.
+
+## Checkpoint 2 — a directory becomes an image (2026-08-24)
+
+Both build strategies now work end to end against a real BuildKit, from a
+directory already on disk. Deliberately no GitHub: the build is the substance of
+Phase 2's Definition of Done and the push is only the trigger, so proving it
+against local fixtures removes it as a variable from every later checkpoint.
+Five of the ten §26 criteria are met here, months before a webhook exists.
+
+### D9 — two strategies, one redaction point, external binaries throughout
+
+`railpack build DIRECTORY --name TAG` and `buildctl build --frontend
+dockerfile.v0` are invoked with `Bun.spawn` (shell out, never reimplement).
+Both are pinned and both are installed by `scripts/install.sh` rather than at
+first use, so a missing one is a clear install-time failure instead of an ENOENT
+inside somebody's first deploy. **`buildctl` is copied out of the BuildKit image
+mosdash already runs** — the client and daemon versions then match by
+construction and there is no second download to keep in step.
+
+The two strategies differ in one way that matters: **Railpack loads the finished
+image into Docker itself, `buildctl` does not.** With a standalone BuildKit
+container there is no shared image store, so the Dockerfile path writes
+`type=docker,...,dest=` to a tarball and streams it back through
+`DockerClient.loadImage`. The tarball goes to a file rather than piping the
+subprocess straight into the daemon: piping works, but it couples two failures
+into one unreadable state, since a load failing midway leaves the build
+subprocess running and loses its error. The file lives in the build directory
+that is deleted either way.
+
+**Redaction is applied at one point, in `buildImage`, not in each strategy.** A
+per-strategy redactor is one forgotten call away from leaking, and build args are
+secrets as often as not. It reuses `redactValues` from the deploy pipeline rather
+than growing a second redactor. Both pipes are also read concurrently: BuildKit
+writes progress to stderr and results to stdout, and consuming them in sequence
+deadlocks at the pipe buffer.
+
+The layer cache lives in `data/build-cache/<resource>`, deliberately NOT inside a
+build directory — those are deleted when their build ends and would take the
+cache every time. Scoped per resource: one global key lets one app evict
+another's layers, and a per-deployment key misses on every build.
+
+### Build directories are deleted twice, on purpose
+
+They are the second-largest disk leak after images and the leak is silent — a box
+fills weeks later with nothing in the UI to explain it. So the build removes its
+own directory in a `finally`, and `sweepBuildDirs` runs daily as the backstop for
+a SIGKILL or an OOM that never ran one. Age-based rather than cross-referenced
+against the deployments table: a build directory has no value once its build is
+over, so "old" is the only question worth asking and it needs no database read.
+
+### A verification that verified the transport, not the code
+
+Checkpoint 1 recorded `loadImage` as proven because a prototype streamed a
+tarball into `/images/load` and got a 200 with `Loaded image:` in the body. The
+first real Dockerfile build then failed with "the tar was not in docker format"
+against a tarball `docker load` accepted without complaint.
+
+The transport was fine; the parser was wrong. `/images/load` reports through a
+`stream` field, while `/images/create` uses `status` — and `parseProgress`, built
+for the pull path, knows only the latter and returned an empty string for every
+line. The prototype had printed the raw body and checked the HTTP status, so it
+exercised the socket and never the code that reads it. **A prototype that proves
+a transport has not proven the function built on it**, and the checkpoint-1 entry
+claimed more than it had earned. `/images/load` is now parsed on its own terms.
+
+### The canary that proved nothing, twice
+
+DoD 9 asks that build-time secrets stay out of build logs, so the Dockerfile
+fixture deliberately `RUN echo`s a build arg — the secret has to actually reach
+the log for redaction to mean anything. Two runs reported zero leaks while also
+reporting zero redactions, which is the signature of a test that never ran the
+thing it claims to check: BuildKit was serving the layer from cache, so the RUN
+never executed. `--no-cache` is now reachable through `BuildContext.noCache`,
+which exists for verification rather than as a user-facing option.
+
+The second false pass was the harness's own: it searched for `[REDACTED]` while
+`redactValues` emits `[redacted]`. Redaction had been working the whole time and
+the check was blind. Both directions are now confirmed by observing the actual
+log lines.
+
+### Verified against a real daemon (2026-08-24, WSL2, BuildKit v0.27.0, railpack 0.37.0)
+
+- **DoD 3** — zero-config Node **and** Python built by Railpack, and both images
+  serve HTTP 200 with the expected body. Not merely built: run and curled.
+- **DoD 4** — a Dockerfile repo built through buildctl, loaded via `loadImage`,
+  runs and serves 200.
+- **DoD 7** — Python cold **28849ms**, warm **2060ms**: a 14x speedup.
+- **DoD 8** — the build directory is gone after success, gone after a build that
+  exits non-zero, and an orphan aged past 24h is reclaimed by the sweep.
+- **DoD 9** — the canary reached the log twice (the RUN line and its stdout) and
+  was redacted in both: `RUN echo "build-time canary was [redacted]"`. Zero
+  leaks across 55 lines.
+- RSS during a build: 42.4MB → **44.8MB peak** → 46.1MB after, across 53 log
+  lines. No retained streams; the shell-out premise holds.
+- `gate:rss`: **78.2MB**, unchanged.
+
+### Still unverified, and not claimed
+
+No resource can be built from a repository yet — there is no `git` resource kind,
+no schema for one, and nothing wired into `runDeploy`. That is checkpoint 3, and
+it is where the risk of a built image being mistaken for a registry image, and
+silently never rebuilt, actually lives.

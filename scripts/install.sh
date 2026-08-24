@@ -13,6 +13,10 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/mosdash}"
 DATA_DIR="${DATA_DIR:-$INSTALL_DIR/data}"
 NETWORK="${MOSDASH_NETWORK:-mosdash}"
 PORT="${MOSDASH_PORT:-8000}"
+# Pinned, and kept in step with src/build/bootstrap.ts: buildctl is copied out
+# of this exact image, so a mismatch here is a client/daemon version skew.
+BUILDKIT_IMAGE="${BUILDKIT_IMAGE:-moby/buildkit:v0.27.0}"
+RAILPACK_VERSION="${RAILPACK_VERSION:-v0.37.0}"
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -27,6 +31,37 @@ else
   log "Docker already present: $(docker --version)"
 fi
 systemctl enable --now docker >/dev/null 2>&1 || true
+
+# ------------------------------------------------------------ build tools
+# Both are external binaries mosdash shells out to (DECISIONS: shell out, never
+# reimplement). Installed here rather than at first build so a missing one is a
+# clear install-time failure instead of a cryptic ENOENT inside a deploy.
+#
+# buildctl is copied out of the BuildKit image mosdash already runs, which keeps
+# the client and daemon versions matched by construction and needs no second
+# download.
+if ! command -v buildctl >/dev/null 2>&1; then
+  log "Installing buildctl from $BUILDKIT_IMAGE"
+  docker pull "$BUILDKIT_IMAGE" >/dev/null
+  cid=$(docker create "$BUILDKIT_IMAGE")
+  docker cp "$cid:/usr/bin/buildctl" /usr/local/bin/buildctl >/dev/null
+  docker rm "$cid" >/dev/null
+  chmod 755 /usr/local/bin/buildctl
+else
+  log "buildctl already present: $(buildctl --version)"
+fi
+
+if ! command -v railpack >/dev/null 2>&1; then
+  log "Installing railpack $RAILPACK_VERSION"
+  rp_tmp=$(mktemp -d)
+  curl -fsSL -o "$rp_tmp/rp.tar.gz" \
+    "https://github.com/railwayapp/railpack/releases/download/${RAILPACK_VERSION}/railpack-${RAILPACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+  tar -xzf "$rp_tmp/rp.tar.gz" -C "$rp_tmp"
+  install -m 755 "$rp_tmp/railpack" /usr/local/bin/railpack
+  rm -rf "$rp_tmp"
+else
+  log "railpack already present: $(railpack --version)"
+fi
 
 # ------------------------------------------------------------ user + dirs
 if ! id "$MOSDASH_USER" >/dev/null 2>&1; then

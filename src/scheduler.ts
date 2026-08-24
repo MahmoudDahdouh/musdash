@@ -1,4 +1,5 @@
 import { purgeExpiredSessions } from "./auth.ts"
+import { sweepBuildDirs } from "./build/workdir.ts"
 import { logger } from "./log.ts"
 import { enqueue, pruneFinishedJobs } from "./queue/index.ts"
 
@@ -17,8 +18,11 @@ function runDaily(): void {
 
   const jobs = pruneFinishedJobs(168)
   const sessions = purgeExpiredSessions()
+  // Pure filesystem work, so it runs here rather than on the queue. The backstop
+  // for a build that was SIGKILLed before its own cleanup could run.
+  const buildDirs = sweepBuildDirs(24)
   logger.info(
-    { prunedJobs: jobs, prunedSessions: sessions },
+    { prunedJobs: jobs, prunedSessions: sessions, sweptBuildDirs: buildDirs },
     "daily housekeeping",
   )
 }

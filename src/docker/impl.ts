@@ -205,9 +205,22 @@ export class DockerHttpClient implements DockerClient {
     let lastError: string | null = null
     for (const line of body.split("\n")) {
       if (!line.trim()) continue
-      const parsed = parseProgress(line)
-      if (parsed.error) lastError = parsed.error
-      if (parsed.text.includes("Loaded image")) loaded = parsed.text.trim()
+      // /images/load reports through a `stream` field, unlike /images/create
+      // which uses `status`. parseProgress knows only the latter and returns
+      // an empty string here, so this endpoint is parsed on its own terms.
+      let parsed: { stream?: unknown; error?: unknown }
+      try {
+        parsed = JSON.parse(line) as { stream?: unknown; error?: unknown }
+      } catch {
+        continue
+      }
+      if (typeof parsed.error === "string") lastError = parsed.error
+      if (
+        typeof parsed.stream === "string" &&
+        parsed.stream.includes("Loaded image")
+      ) {
+        loaded = parsed.stream.trim()
+      }
     }
 
     if (lastError) throw new DockerError(`image load failed: ${lastError}`)

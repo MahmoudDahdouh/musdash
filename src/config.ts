@@ -37,6 +37,11 @@ const schema = z.object({
   // so it must never be reachable off the box.
   MOSDASH_BUILDKIT_ADDR: z.string().default("tcp://127.0.0.1:1234"),
   MOSDASH_BUILD_CACHE_GB: z.coerce.number().int().positive().default(10),
+  // Both are external binaries invoked via Bun.spawn (shell out, never
+  // reimplement). Configurable rather than assumed on PATH so a packaged
+  // install can place them wherever it likes.
+  MOSDASH_RAILPACK_BIN: z.string().default("railpack"),
+  MOSDASH_BUILDCTL_BIN: z.string().default("buildctl"),
   MOSDASH_NETWORK: z.string().default("mosdash"),
   MOSDASH_DEFAULT_MEMORY_MB: z.coerce.number().int().positive().default(512),
   MOSDASH_HEALTH_TIMEOUT_SEC: z.coerce.number().int().positive().default(60),
@@ -69,6 +74,9 @@ export const config = Object.freeze({
   // Build contexts are extracted here and deleted when the build finishes,
   // success or failure — they are the second-largest disk leak after images.
   buildsDir: resolve(dataDir, "builds"),
+  // Deliberately NOT inside buildsDir: a build directory is deleted when its
+  // build ends, which would take the layer cache with it every time.
+  buildCacheDir: resolve(dataDir, "build-cache"),
 
   dockerSocket: env.MOSDASH_DOCKER_SOCKET,
   network: env.MOSDASH_NETWORK,
@@ -80,6 +88,8 @@ export const config = Object.freeze({
 
   buildkitAddr: env.MOSDASH_BUILDKIT_ADDR,
   buildCacheGb: env.MOSDASH_BUILD_CACHE_GB,
+  railpackBin: env.MOSDASH_RAILPACK_BIN,
+  buildctlBin: env.MOSDASH_BUILDCTL_BIN,
 
   defaultMemoryMb: env.MOSDASH_DEFAULT_MEMORY_MB,
   healthTimeoutSec: env.MOSDASH_HEALTH_TIMEOUT_SEC,
