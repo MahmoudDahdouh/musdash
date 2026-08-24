@@ -1,4 +1,5 @@
 import { CADDY_CONTAINER } from "./caddy/bootstrap.ts"
+import { caddy } from "./caddy/client.ts"
 import { LABEL_MANAGED, LABEL_RESOURCE, LABEL_ROLE } from "./docker/client.ts"
 import { docker } from "./docker/impl.ts"
 import {
@@ -150,20 +151,58 @@ function caddyJobId(): string {
 export function queueCaddyBootstrap(): void {
   try {
     enqueue("ensure_caddy", {}, { id: caddyJobId(), maxAttempts: 1 })
-  } catch {
-    // The bucket already holds a row: pending, leased, or done. Nothing to do.
+  } catch (err) {
+    // A primary-key conflict IS the answer here: the bucket already holds a row
+    // — pending, leased, done, or failed — so there is nothing to queue.
+    // Anything else (the database is locked, the disk is full) is a real
+    // failure and must not vanish. Swallowing it hides the proxy never being
+    // queued at all, which reaches the operator as "no site loads, and nothing
+    // in the log".
+    const code = (err as { code?: unknown }).code
+    const message = (err as Error).message
+    const isConflict =
+      (typeof code === "string" && code.startsWith("SQLITE_CONSTRAINT")) ||
+      /constraint failed/i.test(message)
+    if (!isConflict) {
+      logger.error({ err: message }, "could not queue the Caddy bootstrap")
+    }
   }
 }
 
+/**
+ * Re-queues the proxy bootstrap when the proxy is not answering.
+ *
+ * Gating on the Docker running flag alone was the readiness false positive one
+ * layer up: Caddy exits and restarts when it cannot bind, and a wedged Caddy
+ * keeps its container running, so "running" reads true in states where nothing
+ * is served — and the bootstrap, the only thing that can repair it, was never
+ * re-queued.
+ *
+ * The second gate is deliberately ping() rather than the full serving probe.
+ * This runs every 30 seconds forever, so it must be cheap and must not flap;
+ * ping() is bounded at 5s, it catches the restart-loop and wedged-process
+ * cases, and re-enqueueing is idempotent thanks to the bucketed id. The
+ * bootstrap does the thorough diagnosis once it is queued.
+ */
 async function ensureCaddyQueued(): Promise<void> {
   const found = await docker.findContainersByName(CADDY_CONTAINER).catch(() => {
     // Docker being unreachable is already reported by the caller above.
     return null
   })
-  if (!found || found.some((c) => c.running)) return
+  if (!found) return
 
-  logger.info("reconcile: Caddy is not running, queueing bootstrap")
-  queueCaddyBootstrap()
+  if (!found.some((c) => c.running)) {
+    logger.info("reconcile: Caddy is not running, queueing bootstrap")
+    queueCaddyBootstrap()
+    return
+  }
+
+  if (!(await caddy.ping())) {
+    logger.warn(
+      "reconcile: Caddy is running but its admin API does not answer, queueing bootstrap",
+    )
+    queueCaddyBootstrap()
+  }
 }
 
 export function startReconciler(): void {

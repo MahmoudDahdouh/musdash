@@ -522,3 +522,128 @@ failure before the switch removes the new container, a failure of the switch
 itself keeps the healthy container and says traffic is unchanged. The resource row
 is not repointed at a kept-but-unrouted container, so the reconciler still sees
 the old container matching the row and does not redeploy.
+
+## Slice C — the readiness poll was asking the wrong question (2026-08-24)
+
+Three defects, one root cause: `waitForAdmin` asked "does _anything_ answer on
+127.0.0.1:2019?" and treated the answer as proof that the container mosdash had
+just started was serving. It is proof of neither, and it asked without a clock.
+
+**Amendment to the readiness poll.** That host port is reachable by any process
+on the box, so a stale Caddy or a host-installed caddy service answers 200 while
+the container is dead; and Caddy's admin API comes up independently of its HTTP
+servers, so a Caddy whose `srv0` failed to bind `:80` answers 200 throughout.
+mosdash logged "started Caddy" in both. The poll now asks in order:
+`inspectContainer` says the container mosdash started is running — the only one
+of the three that is evidence about _that_ container, the others being evidence
+about whatever holds the port; the admin API answers; and, after
+`ensureBaseConfig()` has guaranteed `srv0` exists, a real connection to `:80` is
+accepted. Placing the bind check _after_ the config install is deliberate: before
+it, an empty config on a fresh `--resume` volume is legitimate and
+indistinguishable from a failed bind, so the check would have no single correct
+answer. A container mosdash created that has already restarted fails immediately
+rather than being polled — Caddy exits when it cannot bind, `unless-stopped`
+turns that into a loop, and the poll would otherwise catch it during an up-phase.
+The adopted path deliberately skips that check: an operator's proxy that has been
+up for months across a reboot legitimately has restarts.
+
+**Every admin-API call is now bounded at 5 seconds.** `ping()` used a bare
+`fetch`, and `waitForAdmin` checked its 30-second deadline only _after_ that
+fetch resolved — so a half-open connection blocked forever. Concurrency is
+exactly 1 and the worker awaits its handler with no timeout, so this parked every
+user deploy behind it indefinitely; the 15-minute lease is no rescue, because
+`recoverExpiredLeases()` runs only at `startWorker()`. **This was the "stuck job"
+observed on 2026-08-24.** Measured against a socket that accepts and never
+replies: `ping()` returned `false` in 5002ms instead of never. The bound is on
+`request()` rather than `ping()` alone because `upsertRoute` sits on the deploy
+critical path and has the identical hang shape. A general worker-level timeout
+was rejected: `Promise.race` does not cancel the losing handler, so it would
+leave one running while the loop claimed the next job, silently breaking the
+concurrency-1 invariant. Making `recoverExpiredLeases()` periodic is the correct
+general fix and is deferred to its own slice.
+
+**A running container is not a reachable one — `publishedPortCount`.** The
+sharpest finding of the verification run, and one not anticipated when the slice
+was planned. When a published host port is already held, the Engine starts the
+container anyway and simply leaves the mapping unprogrammed:
+`HostConfig.PortBindings` is correct while `NetworkSettings.Ports` is `{}`. Caddy
+is then alive and healthy _inside_ the container while nothing on the host can
+reach it. Gate 1 passes, gate 2 can never succeed, and the adopted-path error
+blamed a missing `CADDY_ADMIN` after burning the full 30 seconds — the wrong fix
+entirely. `ContainerState` gained `publishedPortCount`, counting only mappings
+the Engine actually programmed (an unbindable port is present as a key with a
+`null` value, not absent), and the poll fails on running-with-zero-published-ports
+with a message naming the ports to check. Verified: 30186ms and a misdiagnosis
+became 21ms and the right one.
+
+**`ensureBaseConfig` now checks for `srv0` specifically, not for any `apps` key.**
+Every `upsertRoute` POSTs to `/config/apps/http/servers/srv0/routes/`, so a config
+resumed from an autosave carrying an http app under a different server name left
+mosdash unable to add a single route while `ensureBaseConfig` reported nothing to
+do. The consequence is recorded plainly: `POST /load` replaces the entire
+configuration, so a hand-edited config lacking `srv0` is now overwritten where
+before it was preserved. That is the correct trade — preserved-but-broken made
+mosdash unusable — but it is not silent: a warning names the replacement first.
+
+**The reconciler's re-enqueue gate moved from "running" to "answering".** Gating
+on the Docker running flag was the same mistake one layer up: a Caddy in a
+bind-failure restart loop, or one wedged with a dead admin API, reads as running,
+so the bootstrap — the only thing that can repair it — was never re-queued and
+the hardened poll would never run again. The gate is `caddy.ping()`, deliberately
+not the full serving probe: it runs every 30 seconds forever, it must not flap,
+and the bootstrap does the thorough diagnosis once queued. One case remains
+undetected by design — running, admin answering, `srv0` not bound — because
+catching it means a `:80` probe every tick; the bootstrap repairs it whenever it
+next runs.
+
+**`queueCaddyBootstrap` no longer swallows every error.** A primary-key conflict
+_is_ the answer ("this bucket already holds a row"), but a locked database or a
+full disk is a real failure that must not vanish — it presents to the operator as
+"no site loads and nothing in the log". Matched on `SQLITE_CONSTRAINT` with a
+message fallback.
+
+**`maxAttempts` stays at 1.** Reconsidered and kept. A bootstrap retrying with
+backoff occupies the single worker that user deploys are queued behind; the
+recovery path is the reconciler's 5-minute bucket, which the gate change above is
+what makes actually fire. Observed cost: after a failure, self-heal waits for the
+next bucket boundary — up to 5 minutes with the proxy down. That is the accepted
+D7 trade, now measured rather than assumed.
+
+**Still not surfaced in the UI.** A failed bootstrap remains a `logger.warn` at
+the job boundary: the `ensure_caddy` payload carries no `deploymentId`, so there
+is no row to attach a failure to. The error messages were made specific instead —
+each names the gate that failed and the command to run (`ss -ltnp`,
+`docker logs mosdash-caddy`), which is what an operator on a self-hosted box
+actually reads. A system-status surface is its own slice.
+
+### Verified against a real daemon (2026-08-24, WSL2 Ubuntu 24.04, Engine 29.7.2)
+
+- Happy path unregressed: proxy rebuilt from nothing in **1363ms**, 0 restarts,
+  `srv0` with `[":80",":443"]`, admin 200, `:80` 200, certificates preserved.
+- `ping()` against a blackhole socket: **false in 5002ms**, not never.
+- A foreign 200-answering listener on `:2019`: bootstrap **failed** instead of
+  reporting success.
+- `:80` and `:2019` conflicts, created path: **622ms and 21ms**, each naming the
+  conflict rather than timing out.
+- `srv0` deleted with `apps` left in place: the tightened check **repaired** it and
+  `:80` went from refused to 200. The old truthiness check would have returned.
+- **Route switch and HTTPS proven without public DNS**, via Caddy's `internal`
+  issuer and `curl --resolve`: `web-production.lvh.test` served nginx, and against
+  Caddy's extracted local root, `--cacert` gave **`verify=0`** — a fully verified
+  chain.
+- **Zero-downtime redeploy (§16 step 9): 400/400 requests returned 200** across a
+  swap from `nginx:alpine` to `nginx:1.27-alpine`, upstream moving
+  `172.18.0.4` → `172.18.0.2`. Zero failures.
+- Idle RSS under `bun run` (not the smaller compiled binary): **69.1MB**.
+
+**Still unverified, and not claimed.** Let's Encrypt issuance (§16 step 8) and a
+full server reboot (§16 step 12). This box is private RFC1918 only, so ACME cannot
+reach it — an internal issuer stands in for everything about the HTTPS path
+_except_ issuance itself, and issuance is not what this slice touched. There is
+also no systemd unit here, so the reboot criterion has nothing to exercise.
+
+**One caution recorded from the test run.** Forcing a host-port conflict left the
+Engine with a container whose bindings were configured but unprogrammed, and a
+`docker restart` did not repair it — only a daemon restart did. That is Engine
+behaviour, not mosdash's, but it is the state `publishedPortCount` now detects
+and reports rather than misdiagnosing.

@@ -63,6 +63,16 @@ export interface ContainerState {
   /** Container IP on the mosdash network. mosdash runs on the host and cannot
    *  use Docker's embedded DNS, so the health gate dials this (DECISIONS D2). */
   ipAddress: string | null
+  /**
+   * How many host port mappings the Engine has actually programmed.
+   *
+   * Distinct from what the container was CREATED with: when a published port is
+   * already held on the host, the Engine can start the container anyway and
+   * simply leave the mapping unprogrammed. The container then reads as running
+   * while being unreachable from the host — see the Caddy bootstrap, where that
+   * gap otherwise gets misdiagnosed as an admin-API problem.
+   */
+  publishedPortCount: number
 }
 
 export interface ManagedContainer {

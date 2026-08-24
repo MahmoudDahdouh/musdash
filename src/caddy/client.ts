@@ -15,6 +15,21 @@ import { logger } from "../log.ts"
 
 const SERVER = "srv0"
 
+/**
+ * Every admin-API call is bounded.
+ *
+ * Job concurrency is exactly 1 and the worker awaits its handler with no
+ * timeout of its own, so a single fetch that never settles — a half-open
+ * connection to a port something else is holding, or a Caddy wedged mid-reload
+ * — parks the one worker every user deploy is queued behind, indefinitely. The
+ * 15-minute lease is no rescue either: recoverExpiredLeases() runs only at
+ * startWorker().
+ *
+ * The bound is on request() rather than on ping() alone because upsertRoute
+ * sits on the deploy critical path and has the identical hang shape.
+ */
+const REQUEST_TIMEOUT_MS = 5_000
+
 export class CaddyError extends Error {
   override readonly name = "CaddyError"
 }
@@ -25,6 +40,24 @@ export interface RouteSpec {
   hosts: string[]
   /** Container IP or name, plus port. */
   upstream: string
+}
+
+/**
+ * Whether a fetched Caddy config already carries the named HTTP server.
+ *
+ * Narrows step by step from `unknown` rather than casting: the body is whatever
+ * the admin API returned, and a config resumed from an autosave can be shaped
+ * almost any way.
+ */
+function hasServer(cfg: unknown, name: string): boolean {
+  if (cfg === null || typeof cfg !== "object") return false
+  const apps = (cfg as { apps?: unknown }).apps
+  if (apps === null || typeof apps !== "object") return false
+  const http = (apps as { http?: unknown }).http
+  if (http === null || typeof http !== "object") return false
+  const servers = (http as { servers?: unknown }).servers
+  if (servers === null || typeof servers !== "object") return false
+  return name in (servers as Record<string, unknown>)
 }
 
 function routeBody(spec: RouteSpec): unknown {
@@ -49,7 +82,12 @@ export class CaddyClient {
     init: RequestInit = {},
   ): Promise<Response> {
     try {
-      return await fetch(`${this.admin}${path}`, init)
+      return await fetch(`${this.admin}${path}`, {
+        ...init,
+        // Callers may pass their own signal; nothing does today, and the
+        // fallback keeps the door open without a second parameter.
+        signal: init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      })
     } catch (cause) {
       throw new CaddyError(
         `cannot reach the Caddy admin API at ${this.admin}: ${(cause as Error).message}`,
@@ -82,14 +120,57 @@ export class CaddyClient {
   }
 
   /**
+   * The names of the configured HTTP servers, or null if the admin API did not
+   * answer.
+   *
+   * Three states the old code conflated into one boolean: null means
+   * unreachable; an empty array means the admin API answered but no HTTP app
+   * exists yet — the legitimate state of a fresh `--resume` start on an empty
+   * volume, which ensureBaseConfig() then fills in; a non-empty array means
+   * servers are configured. A 404 is a real answer from a live admin API, so it
+   * maps to the empty array, not to null.
+   */
+  async listeningServers(): Promise<string[] | null> {
+    try {
+      const res = await this.request(`/config/apps/http/servers/`)
+      if (!res.ok) {
+        await res.arrayBuffer().catch(() => undefined)
+        return res.status === 404 ? [] : null
+      }
+      const body: unknown = await res.json()
+      if (body === null || typeof body !== "object") return []
+      return Object.keys(body as Record<string, unknown>)
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * Installs the base config: one HTTP server on 80/443 with an empty route
    * list, plus the ACME email. Automatic HTTPS activates on any route that has
    * a host matcher.
    */
   async ensureBaseConfig(): Promise<void> {
     const res = await this.request("/config/")
-    const existing = res.ok ? await res.json().catch(() => null) : null
-    if (existing && (existing as { apps?: unknown }).apps) return
+    const existing: unknown = res.ok ? await res.json().catch(() => null) : null
+
+    // Deliberately NOT "any apps key exists". Every upsertRoute POSTs to
+    // /config/apps/http/servers/srv0/routes/, so a config resumed from an
+    // autosave that carries an http app under a different server name leaves
+    // mosdash unable to add a single route while this reported nothing to do.
+    // The only condition that makes the rest of this client work is that srv0
+    // itself is present, so that is what is checked.
+    if (hasServer(existing, SERVER)) return
+
+    // /load replaces the WHOLE config, so a hand-edited one without srv0 is
+    // about to be overwritten. That is the right trade — preserved-but-broken
+    // left mosdash unusable — but it must not be silent.
+    if (existing !== null) {
+      logger.warn(
+        { server: SERVER },
+        "the existing Caddy configuration has no srv0 server; replacing it — mosdash routes require srv0",
+      )
+    }
 
     const issuer = config.acmeStaging
       ? {

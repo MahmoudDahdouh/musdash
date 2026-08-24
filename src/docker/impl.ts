@@ -451,6 +451,11 @@ export class DockerHttpClient implements DockerClient {
       startedAt: raw.State.StartedAt ?? null,
       restartCount: raw.RestartCount ?? 0,
       ipAddress: ip,
+      // Count only mappings the Engine actually programmed: a port it could not
+      // bind is present as a key with a null value, not absent.
+      publishedPortCount: Object.values(
+        raw.NetworkSettings?.Ports ?? {},
+      ).filter((bindings) => bindings !== null && bindings.length > 0).length,
     }
   }
 
@@ -584,7 +589,11 @@ interface InspectResponse {
     StartedAt?: string
     Health?: { Status: string }
   }
-  NetworkSettings?: { Networks: Record<string, { IPAddress: string }> }
+  NetworkSettings?: {
+    Networks: Record<string, { IPAddress: string }>
+    /** null for a declared-but-unprogrammed mapping, hence the nullable value. */
+    Ports?: Record<string, { HostPort: string }[] | null>
+  }
 }
 
 interface ContainerListItem {
