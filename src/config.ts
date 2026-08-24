@@ -29,6 +29,12 @@ const schema = z.object({
   MOSDASH_WILDCARD_DOMAIN: z.string().min(1).optional(),
   MOSDASH_ACME_EMAIL: z.string().email().optional(),
 
+  // Where this dashboard is reachable from the public internet. Optional for the
+  // same reason the wildcard domain is — a fresh install must boot and reach the
+  // setup page — but GitHub App registration cannot work without it, so its
+  // absence is a clear error at manifest-build time rather than at startup.
+  MOSDASH_PUBLIC_URL: z.string().url().optional(),
+
   MOSDASH_ACME_STAGING: bool.default(true), // D4
   MOSDASH_CADDY_ADMIN: z.string().url().default("http://127.0.0.1:2019"), // D2
 
@@ -84,6 +90,8 @@ export const config = Object.freeze({
   wildcardDomain: env.MOSDASH_WILDCARD_DOMAIN,
   acmeEmail: env.MOSDASH_ACME_EMAIL,
   acmeStaging: env.MOSDASH_ACME_STAGING,
+  // Trailing slash stripped so callers can join paths without doubling it.
+  publicUrl: env.MOSDASH_PUBLIC_URL?.replace(/\/$/, ""),
   caddyAdmin: env.MOSDASH_CADDY_ADMIN.replace(/\/$/, ""),
 
   buildkitAddr: env.MOSDASH_BUILDKIT_ADDR,

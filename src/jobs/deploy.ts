@@ -19,7 +19,7 @@ import {
   publishStatus,
 } from "../events.ts"
 import { nowIso, shortId } from "../ids.ts"
-import { logger, redactValues } from "../log.ts"
+import { logger, redactGithub, redactValues } from "../log.ts"
 import { enqueue } from "../queue/index.ts"
 import { startLogStream, stopLogStream } from "../logs/stream.ts"
 
@@ -66,15 +66,23 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
   if (!ctx) throw new Error(`resource ${resourceId} no longer exists`)
   const { resource, environment, project } = ctx
 
-  const emit = (text: string) => {
-    publishDeployLog(deploymentId, text)
-  }
-
   // Secrets are decrypted here and must never reach a log line — not on the
   // happy path, not in an error message, not in the deploy stream.
   const env = getDecryptedEnvVars(resourceId)
   const secrets = Object.values(env)
-  const safe = (text: string) => redactValues(text, secrets)
+  // Two layers, because they catch different things: redactValues matches the
+  // env values known for this resource, while redactGithub pattern-matches
+  // credentials minted at runtime — an installation token belongs to no known
+  // set and would otherwise print verbatim.
+  const safe = (text: string) => redactGithub(redactValues(text, secrets))
+
+  // Redaction lives in emit itself, which is the single point every deploy log
+  // line passes through — build output, status lines and error messages alike.
+  // Applying it only at individual call sites is one forgotten call away from
+  // publishing a secret, and this stream is shown in the browser.
+  const emit = (text: string) => {
+    publishDeployLog(deploymentId, safe(text))
+  }
 
   const oldContainerId = resource.containerId
   let newContainerId: string | null = null
@@ -116,10 +124,25 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     // ordering below is the product's core guarantee, and a second copy of it
     // for git resources would be a second place for it to rot.
     if (resource.kind === "git" && !payload.useExistingImage) {
-      image = await buildFromSource(resource, deploymentId, emit, env)
+      const built = await buildFromSource(resource, deploymentId, emit, env)
+      image = built.image
       // The deployment row is created before the tag exists, so it holds the
       // placeholder the enqueue used until now.
-      updateDeployment(deploymentId, { image })
+      //
+      // Commit metadata is written here rather than at enqueue time for two
+      // reasons: resolving it in the HTTP handler would put a GitHub call in a
+      // request path, and it would record the commit that was current when the
+      // button was pressed rather than the one this build actually used.
+      updateDeployment(deploymentId, {
+        image,
+        ...(built.commit
+          ? {
+              commitSha: built.commit.sha,
+              commitMessage: built.commit.message,
+              commitAuthor: built.commit.author,
+            }
+          : {}),
+      })
     } else {
       await resolveImage(image, emit, safe)
     }

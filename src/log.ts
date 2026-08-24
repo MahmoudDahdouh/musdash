@@ -24,6 +24,24 @@ export function redactEnv(env: Record<string, string>): Record<string, string> {
   return out
 }
 
+/**
+ * GitHub credentials, which redactValues() structurally cannot catch.
+ *
+ * redactValues works by substring match against a known set — the decrypted env
+ * vars of the resource being deployed. An installation token is minted at
+ * runtime and belongs to no such set, so it would print verbatim. Same for the
+ * signed archive URL, which is itself a bearer credential.
+ *
+ * This is a backstop, not the defence. The defence is never constructing a log
+ * line that contains one; see src/github/api.ts.
+ */
+const GITHUB_SECRET_RE =
+  /gh[pousr]_[A-Za-z0-9]{20,}|https:\/\/codeload\.github\.com\/\S+|-----BEGIN[^-]*PRIVATE KEY-----/g
+
+export function redactGithub(text: string): string {
+  return text.replace(GITHUB_SECRET_RE, REDACTED)
+}
+
 /** Redacts any occurrence of a secret value inside free text (log lines). */
 export function redactValues(text: string, secrets: Iterable<string>): string {
   let out = text

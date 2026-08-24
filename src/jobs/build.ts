@@ -20,29 +20,58 @@ import { shortId } from "../ids.ts"
  */
 
 /**
+ * Which repository, at which ref, and on whose behalf.
+ *
+ * `installationId` is null for a public repository and for the local-directory
+ * seam; only a private repository needs a GitHub installation token.
+ */
+export interface SourceRequest {
+  repo: string
+  ref: string
+  installationId: string | null
+}
+
+/**
+ * The commit a fetch actually landed on.
+ *
+ * Returned rather than looked up separately so the recorded commit is
+ * definitionally the one that was built. Null where there is no commit at all —
+ * a local directory has none.
+ */
+export interface FetchedSource {
+  sha: string
+  message: string | null
+  author: string | null
+}
+
+/**
  * Where the source comes from.
  *
- * Checkpoint 3 fetches from a local path so the build pipeline and the deploy
- * branch can be proven without GitHub existing. Checkpoint 4 replaces this with
- * the authenticated tarball fetch; nothing else in this file changes, which is
- * the point of the seam.
+ * Checkpoint 3 fetched from a local path so the build pipeline and the deploy
+ * branch could be proven without GitHub existing. Checkpoint 4 replaced the
+ * implementation with the authenticated tarball fetch and widened this
+ * signature by one input and one output — the local path stays reachable
+ * through the new fetcher, which is what keeps checkpoint 3's verification
+ * runnable.
  */
 export type SourceFetcher = (
-  repo: string,
-  ref: string,
+  source: SourceRequest,
   destDir: string,
-) => Promise<void>
+) => Promise<FetchedSource | null>
 
 /**
  * Copies from a local directory. `repo` is a filesystem path here.
  *
  * Not reachable from the UI — there is no way to create a git resource pointing
  * at a local path — so this is a verification seam, not a user-facing feature.
+ * Returns no commit: a directory is not a repository.
  */
-export const localSourceFetcher: SourceFetcher = (repo, _ref, dest) => {
-  if (!existsSync(repo)) throw new Error(`local source ${repo} does not exist`)
-  cpSync(repo, dest, { recursive: true })
-  return Promise.resolve()
+export const localSourceFetcher: SourceFetcher = (source, dest) => {
+  if (!existsSync(source.repo)) {
+    throw new Error(`local source ${source.repo} does not exist`)
+  }
+  cpSync(source.repo, dest, { recursive: true })
+  return Promise.resolve(null)
 }
 
 let fetchSource: SourceFetcher = localSourceFetcher
@@ -59,12 +88,17 @@ export function setSourceFetcher(fetcher: SourceFetcher): void {
  * a rollback has something to point AT. A single moving tag would make rollback
  * meaningless: both deployments would name the same image.
  */
+export interface BuiltSource {
+  image: string
+  commit: FetchedSource | null
+}
+
 export async function buildFromSource(
   resource: Resource,
   deploymentId: string,
   emit: (line: string) => void,
   buildArgs: Record<string, string>,
-): Promise<string> {
+): Promise<BuiltSource> {
   const source = gitSource(resource)
   if (!source) {
     throw new Error(
@@ -77,7 +111,15 @@ export async function buildFromSource(
 
   try {
     emit(`Fetching ${source.repo} (${source.branch})`)
-    await fetchSource(source.repo, source.branch, dir)
+    const commit = await fetchSource(
+      {
+        repo: source.repo,
+        ref: source.branch,
+        installationId: resource.gitInstallationId,
+      },
+      dir,
+    )
+    if (commit) emit(`At commit ${commit.sha.slice(0, 7)}`)
 
     const contextDir = source.buildContext
       ? `${dir}/${source.buildContext}`
@@ -104,7 +146,7 @@ export async function buildFromSource(
       buildArgs,
       onLog: emit,
     })
-    return tag
+    return { image: tag, commit }
   } finally {
     // Both paths. Build directories are the second-largest disk leak after
     // images, and a failed build leaves the largest ones.

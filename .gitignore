@@ -11,6 +11,9 @@
 # testing
 /coverage
 
+# local verification scratch — never committed
+/tmp-verify
+
 # logs
 **/*.log
 npm-debug.log*

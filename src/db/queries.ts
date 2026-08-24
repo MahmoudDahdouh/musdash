@@ -8,12 +8,16 @@ import {
   environments,
   envVars,
   projects,
+  githubApps,
+  githubInstallations,
   resources,
   settings,
   type Deployment,
   type DeploymentStatus,
   type Domain,
   type Environment,
+  type GithubApp,
+  type GithubInstallation,
   type Project,
   type Resource,
 } from "./schema.ts"
@@ -491,6 +495,132 @@ export function setSetting(key: string, value: string): void {
     .run()
 }
 
+/**
+ * Removes a setting outright.
+ *
+ * Distinct from setSetting(key, "") on purpose: the manifest state nonce is
+ * consumed by deletion, and a sentinel empty string would still be a row that a
+ * replayed callback could read and compare against.
+ */
+export function deleteSetting(key: string): void {
+  orm.delete(settings).where(eq(settings.key, key)).run()
+}
+
+// ------------------------------------------------------------- github app
+
+/**
+ * The one registered GitHub App, or undefined when GitHub is not connected.
+ *
+ * There is at most one row: a second App would silently orphan every existing
+ * installation, whose app_id points at the first. insertGithubApp enforces it.
+ */
+export function getGithubApp(): GithubApp | undefined {
+  return orm.select().from(githubApps).get()
+}
+
+export interface NewGithubApp {
+  appId: number
+  slug: string
+  clientId: string
+  clientSecret: string
+  privateKey: string
+  webhookSecret: string
+}
+
+/**
+ * Stores a freshly registered App, encrypting all three secrets.
+ *
+ * Encryption lives here rather than at the call site, exactly as setEnvVars
+ * does: the number of places that touch a plaintext secret stays countable, and
+ * a caller cannot forget.
+ */
+export function insertGithubApp(input: NewGithubApp): GithubApp {
+  if (getGithubApp()) {
+    throw new Error(
+      "a GitHub App is already registered; disconnect it before registering another",
+    )
+  }
+  const row: GithubApp = {
+    id: ulid(),
+    appId: input.appId,
+    slug: input.slug,
+    clientId: input.clientId,
+    clientSecretEnc: encrypt(input.clientSecret),
+    privateKeyEnc: encrypt(input.privateKey),
+    webhookSecretEnc: encrypt(input.webhookSecret),
+    createdAt: nowIso(),
+  }
+  orm.insert(githubApps).values(row).run()
+  return row
+}
+
+/** The App's RSA private key, decrypted. Never log the return value. */
+export function getAppPrivateKey(): string | null {
+  const app = getGithubApp()
+  return app ? decrypt(app.privateKeyEnc) : null
+}
+
+/** The webhook signing secret, decrypted. Checkpoint 5 verifies against it. */
+export function getWebhookSecret(): string | null {
+  const app = getGithubApp()
+  return app ? decrypt(app.webhookSecretEnc) : null
+}
+
+/** Removes the App and, by cascade, every installation of it. */
+export function deleteGithubApp(id: string): void {
+  orm.delete(githubApps).where(eq(githubApps.id, id)).run()
+}
+
+// --------------------------------------------------- github installations
+
+export interface NewInstallation {
+  appRowId: string
+  installationId: number
+  accountLogin: string
+}
+
+/**
+ * Records an installation, or refreshes the login of one already known.
+ *
+ * Keyed on GitHub's installation_id, which is UNIQUE: the same installation
+ * re-reported by a sync or a webhook must update rather than collide.
+ */
+export function upsertInstallation(input: NewInstallation): void {
+  orm
+    .insert(githubInstallations)
+    .values({
+      id: ulid(),
+      appId: input.appRowId,
+      installationId: input.installationId,
+      accountLogin: input.accountLogin,
+      createdAt: nowIso(),
+    })
+    .onConflictDoUpdate({
+      target: githubInstallations.installationId,
+      set: { accountLogin: input.accountLogin },
+    })
+    .run()
+}
+
+export function listGithubInstallations(): GithubInstallation[] {
+  return orm.select().from(githubInstallations).all()
+}
+
+export function getInstallation(id: string): GithubInstallation | undefined {
+  return orm
+    .select()
+    .from(githubInstallations)
+    .where(eq(githubInstallations.id, id))
+    .get()
+}
+
+export function deleteInstallation(installationId: number): void {
+  orm
+    .delete(githubInstallations)
+    .where(eq(githubInstallations.installationId, installationId))
+    .run()
+}
+
 // -------------------------------------------------------------- aggregates
 
 export interface ResourceSummary {
@@ -593,6 +723,8 @@ export type {
   DeploymentStatus,
   Domain,
   Environment,
+  GithubApp,
+  GithubInstallation,
   Project,
   Resource,
 }

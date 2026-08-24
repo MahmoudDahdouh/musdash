@@ -113,6 +113,9 @@ MOSDASH_CADDY_ADMIN=http://127.0.0.1:2019
 # Point a wildcard A record (*.example.com) at this host to get automatic
 # HTTPS subdomains for every resource.
 #MOSDASH_WILDCARD_DOMAIN=mos.example.com
+# Needed only to connect GitHub: the App's redirect and webhook URLs must be
+# publicly reachable HTTPS, so this cannot be localhost or a private address.
+#MOSDASH_PUBLIC_URL=https://mos.example.com
 #MOSDASH_ACME_EMAIL=you@example.com
 
 # Staging is the safe default. Production issuance is rate limited to 50

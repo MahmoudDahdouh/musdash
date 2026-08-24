@@ -194,6 +194,65 @@ export const jobs = sqliteTable(
   (t) => [index("idx_jobs_claim").on(t.status, t.runAfter)],
 )
 
+/**
+ * The one GitHub App this instance registered, via the manifest flow.
+ *
+ * `appId` is GitHub's numeric App id. Do not confuse it with
+ * githubInstallations.appId, which is a foreign key to THIS table's ULID `id` —
+ * the two columns share a name in the SQL and mean entirely different things.
+ *
+ * The three `*Enc` columns are AES-256-GCM at rest under the same key as env var
+ * values. mode:"buffer" is required — the default ("json") stores text and
+ * breaks the STRICT BLOB column.
+ */
+export const githubApps = sqliteTable("github_apps", {
+  id: text("id").primaryKey(),
+  appId: integer("app_id").notNull(),
+  slug: text("slug").notNull(),
+  clientId: text("client_id").notNull(),
+  clientSecretEnc: blob("client_secret_enc", { mode: "buffer" })
+    .notNull()
+    .$type<Buffer>(),
+  privateKeyEnc: blob("private_key_enc", { mode: "buffer" })
+    .notNull()
+    .$type<Buffer>(),
+  webhookSecretEnc: blob("webhook_secret_enc", { mode: "buffer" })
+    .notNull()
+    .$type<Buffer>(),
+  createdAt: text("created_at").notNull(),
+})
+
+/**
+ * Where the App is installed. `installationId` is GitHub's number for the
+ * installation and is what mints an access token; `appId` here is the FK to
+ * githubApps.id, NOT a GitHub App id.
+ */
+export const githubInstallations = sqliteTable("github_installations", {
+  id: text("id").primaryKey(),
+  appId: text("app_id")
+    .notNull()
+    .references(() => githubApps.id, { onDelete: "cascade" }),
+  installationId: integer("installation_id").notNull().unique(),
+  accountLogin: text("account_login").notNull(),
+  createdAt: text("created_at").notNull(),
+})
+
+/**
+ * Credentials for a private image registry. Defined because migration 0002
+ * creates the table; nothing reads it yet — private registries are their own
+ * slice.
+ */
+export const registryCredentials = sqliteTable("registry_credentials", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  registryUrl: text("registry_url").notNull(),
+  username: text("username").notNull(),
+  passwordEnc: blob("password_enc", { mode: "buffer" })
+    .notNull()
+    .$type<Buffer>(),
+  createdAt: text("created_at").notNull(),
+})
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -234,3 +293,6 @@ export type EnvVar = typeof envVars.$inferSelect
 export type Domain = typeof domains.$inferSelect
 export type Job = typeof jobs.$inferSelect
 export type Session = typeof sessions.$inferSelect
+export type GithubApp = typeof githubApps.$inferSelect
+export type GithubInstallation = typeof githubInstallations.$inferSelect
+export type RegistryCredential = typeof registryCredentials.$inferSelect

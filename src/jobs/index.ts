@@ -16,6 +16,7 @@ import { dropBuffer } from "../logs/buffer.ts"
 import { removeLogFiles } from "../logs/file.ts"
 import { stopLogStream } from "../logs/stream.ts"
 import { type DeployPayload, runDeploy } from "./deploy.ts"
+import { installSourceFetcher } from "../github/tarball.ts"
 
 export interface StopPayload {
   resourceId: string
@@ -101,6 +102,11 @@ async function runPrune(payload: PrunePayload): Promise<void> {
   )
   logger.info({ reclaimedBytes, protectedCount, hours }, "pruned images")
 }
+
+// Repository source arrives over the GitHub API from here on. Wired at the
+// job layer because that is where the fetcher's only consumer lives, and
+// explicitly rather than as an import side effect.
+installSourceFetcher()
 
 export type JobHandler = (payload: Record<string, unknown>) => Promise<void>
 
