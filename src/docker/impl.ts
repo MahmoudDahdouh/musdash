@@ -9,6 +9,7 @@ import {
   type DockerClient,
   type HealthState,
   LABEL_MANAGED,
+  LABEL_ROLE,
   type LogLine,
   type LogOpts,
   type ManagedContainer,
@@ -176,6 +177,48 @@ export class DockerHttpClient implements DockerClient {
     if (lastError) throw new DockerError(`pull failed: ${lastError}`)
   }
 
+  /**
+   * Streams a docker-format tar into the Engine's image store.
+   *
+   * The body is passed straight through as a stream — never buffered — because
+   * an image tar is routinely hundreds of megabytes and holding one resident
+   * would breach the RAM budget on its own.
+   *
+   * Like /images/create, this reports failure INSIDE a 200 response rather than
+   * as a status code, so the NDJSON body has to be read to completion and
+   * inspected. Returning on `res.ok` alone would report a failed load as a
+   * success and leave the caller deploying an image that does not exist.
+   */
+  async loadImage(tar: ReadableStream<Uint8Array>): Promise<void> {
+    const res = await this.request("/images/load?quiet=0", {
+      method: "POST",
+      headers: { "content-type": "application/x-tar" },
+      body: tar,
+      // Required by fetch whenever a stream is the body: without it the request
+      // is rejected before it reaches the socket.
+      duplex: "half",
+    } as RequestInit)
+    if (!res.ok) throw await this.toError(res, "/images/load")
+
+    const body = await res.text()
+    let loaded: string | null = null
+    let lastError: string | null = null
+    for (const line of body.split("\n")) {
+      if (!line.trim()) continue
+      const parsed = parseProgress(line)
+      if (parsed.error) lastError = parsed.error
+      if (parsed.text.includes("Loaded image")) loaded = parsed.text.trim()
+    }
+
+    if (lastError) throw new DockerError(`image load failed: ${lastError}`)
+    if (!loaded) {
+      throw new DockerError(
+        "image load reported no loaded image; the tar was not in docker format",
+      )
+    }
+    logger.debug({ loaded }, "loaded image from tar")
+  }
+
   async imageExists(ref: string): Promise<boolean> {
     assertValidImageRef(ref)
     const res = await this.request(`/images/${encodeURIComponent(ref)}/json`)
@@ -293,6 +336,18 @@ export class DockerHttpClient implements DockerClient {
       throw new DockerError("memoryLimitBytes must be positive")
     }
 
+    // A privileged container is root on the host. The only legitimate caller is
+    // mosdash's own build sidecar, which is identified by the role label that
+    // sidecarLabels() sets and that no resource-derived spec ever carries. This
+    // is enforced here rather than trusted to callers: the check is one line,
+    // and the failure it prevents is a user obtaining root on the box.
+    if (spec.privileged === true && spec.labels[LABEL_ROLE] === undefined) {
+      throw new DockerError(
+        "refusing to create a privileged container without a mosdash.role label: " +
+          "privileged mode is reserved for mosdash's own infrastructure",
+      )
+    }
+
     const primary = spec.networks[0]
 
     // Publishing a port needs BOTH halves. PortBindings alone is silently
@@ -328,6 +383,7 @@ export class DockerHttpClient implements DockerClient {
         // escape its cap by swapping.
         MemorySwap: spec.memoryLimitBytes,
         ...(spec.cpuShares ? { CpuShares: spec.cpuShares } : {}),
+        ...(spec.privileged === true ? { Privileged: true } : {}),
         RestartPolicy: { Name: spec.restartPolicy },
         Binds: spec.volumes.map((v) => `${v.name}:${v.mountPath}`),
         LogConfig: {

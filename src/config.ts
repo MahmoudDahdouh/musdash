@@ -31,6 +31,12 @@ const schema = z.object({
 
   MOSDASH_ACME_STAGING: bool.default(true), // D4
   MOSDASH_CADDY_ADMIN: z.string().url().default("http://127.0.0.1:2019"), // D2
+
+  // The build daemon's address, loopback for the same reason the Caddy admin
+  // API is: BuildKit runs arbitrary build steps and its API is unauthenticated,
+  // so it must never be reachable off the box.
+  MOSDASH_BUILDKIT_ADDR: z.string().default("tcp://127.0.0.1:1234"),
+  MOSDASH_BUILD_CACHE_GB: z.coerce.number().int().positive().default(10),
   MOSDASH_NETWORK: z.string().default("mosdash"),
   MOSDASH_DEFAULT_MEMORY_MB: z.coerce.number().int().positive().default(512),
   MOSDASH_HEALTH_TIMEOUT_SEC: z.coerce.number().int().positive().default(60),
@@ -60,6 +66,9 @@ export const config = Object.freeze({
   dbPath: resolve(dataDir, "mosdash.db"),
   secretKeyPath: resolve(dataDir, "secret.key"),
   logDir: resolve(dataDir, "logs"),
+  // Build contexts are extracted here and deleted when the build finishes,
+  // success or failure — they are the second-largest disk leak after images.
+  buildsDir: resolve(dataDir, "builds"),
 
   dockerSocket: env.MOSDASH_DOCKER_SOCKET,
   network: env.MOSDASH_NETWORK,
@@ -68,6 +77,9 @@ export const config = Object.freeze({
   acmeEmail: env.MOSDASH_ACME_EMAIL,
   acmeStaging: env.MOSDASH_ACME_STAGING,
   caddyAdmin: env.MOSDASH_CADDY_ADMIN.replace(/\/$/, ""),
+
+  buildkitAddr: env.MOSDASH_BUILDKIT_ADDR,
+  buildCacheGb: env.MOSDASH_BUILD_CACHE_GB,
 
   defaultMemoryMb: env.MOSDASH_DEFAULT_MEMORY_MB,
   healthTimeoutSec: env.MOSDASH_HEALTH_TIMEOUT_SEC,

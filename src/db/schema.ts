@@ -127,8 +127,15 @@ export const domains = sqliteTable("domains", {
 })
 
 export type JobStatus = "pending" | "leased" | "done" | "failed"
+// jobs.type is a plain TEXT column with no CHECK constraint, so widening this
+// union needs no migration.
 export type JobType =
-  "deploy" | "stop" | "remove" | "prune_images" | "ensure_caddy"
+  | "deploy"
+  | "stop"
+  | "remove"
+  | "prune_images"
+  | "ensure_caddy"
+  | "ensure_buildkit"
 
 export const jobs = sqliteTable(
   "jobs",

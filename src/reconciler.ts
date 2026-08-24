@@ -1,3 +1,4 @@
+import { BUILDKIT_CONTAINER } from "./build/bootstrap.ts"
 import { CADDY_CONTAINER } from "./caddy/bootstrap.ts"
 import { caddy } from "./caddy/client.ts"
 import { LABEL_MANAGED, LABEL_RESOURCE, LABEL_ROLE } from "./docker/client.ts"
@@ -22,6 +23,10 @@ import { enqueue } from "./queue/index.ts"
 
 const INTERVAL_MS = 30_000
 let timer: Timer | null = null
+
+/** Whether the current BuildKit outage has already been logged. Reset when it
+ *  comes back, so a later outage is reported again. */
+let buildkitReported = false
 
 export async function reconcileOnce(): Promise<void> {
   const containers = await docker
@@ -87,6 +92,7 @@ export async function reconcileOnce(): Promise<void> {
   }
 
   await ensureCaddyQueued()
+  await ensureBuildkitQueued()
 
   // 5. refresh live state and broadcast changes
   for (const resource of running) {
@@ -141,6 +147,38 @@ function caddyJobId(): string {
 }
 
 /**
+ * A shorter bucket than the proxy's, deliberately.
+ *
+ * The bucket exists to stop a burst of ticks queueing a job each, but it also
+ * sets the blind window: once a bucket holds a finished row, the id collides
+ * with it and nothing can be re-queued until the bucket rolls over. Five
+ * minutes is right for a proxy that almost never dies and whose bootstrap is
+ * expensive. A build daemon is different — it is removed routinely (a prune, an
+ * upgrade, an operator clearing disk), and while it is down nothing that is
+ * already serving is affected. Waiting five minutes to notice is the wrong
+ * trade; one minute collapses a tick burst just as well and bounds the blind
+ * window to two reconcile passes.
+ */
+const BUILDKIT_JOB_BUCKET_MS = 60 * 1000
+
+function buildkitJobId(): string {
+  return `ensure-buildkit-${Math.floor(Date.now() / BUILDKIT_JOB_BUCKET_MS)}`
+}
+
+/**
+ * Whether an enqueue error is the primary-key conflict that means "this bucket
+ * already holds a row" rather than a genuine failure like a locked database or
+ * a full disk. The message fallback covers drivers that do not set `code`.
+ */
+function isConflict(err: unknown): boolean {
+  const code = (err as { code?: unknown }).code
+  return (
+    (typeof code === "string" && code.startsWith("SQLITE_CONSTRAINT")) ||
+    /constraint failed/i.test((err as Error).message)
+  )
+}
+
+/**
  * Queues the proxy bootstrap, tolerating a row this bucket already has.
  *
  * Called at boot and whenever the reconciler finds no running proxy. Both share
@@ -158,13 +196,11 @@ export function queueCaddyBootstrap(): void {
     // failure and must not vanish. Swallowing it hides the proxy never being
     // queued at all, which reaches the operator as "no site loads, and nothing
     // in the log".
-    const code = (err as { code?: unknown }).code
-    const message = (err as Error).message
-    const isConflict =
-      (typeof code === "string" && code.startsWith("SQLITE_CONSTRAINT")) ||
-      /constraint failed/i.test(message)
-    if (!isConflict) {
-      logger.error({ err: message }, "could not queue the Caddy bootstrap")
+    if (!isConflict(err)) {
+      logger.error(
+        { err: (err as Error).message },
+        "could not queue the Caddy bootstrap",
+      )
     }
   }
 }
@@ -203,6 +239,74 @@ async function ensureCaddyQueued(): Promise<void> {
     )
     queueCaddyBootstrap()
   }
+}
+
+/**
+ * Queues the build-daemon bootstrap, tolerating a row this bucket already has.
+ *
+ * Its own bucket key, deliberately not shared with the proxy's: the two heal
+ * independently, and a single key would mean a proxy failure suppressing the
+ * build daemon's recovery for five minutes.
+ */
+export function queueBuildkitBootstrap(): void {
+  try {
+    enqueue("ensure_buildkit", {}, { id: buildkitJobId(), maxAttempts: 1 })
+  } catch (err) {
+    // A primary-key conflict IS the answer: the bucket already holds a row.
+    // Anything else is a real failure and must not vanish.
+    if (!isConflict(err)) {
+      logger.error(
+        { err: (err as Error).message },
+        "could not queue the BuildKit bootstrap",
+      )
+    }
+  }
+}
+
+/**
+ * Queues both sidecar bootstraps at boot.
+ *
+ * One call rather than two at the call site: `src/index.ts` wires modules
+ * together and is capped at 60 lines, and which sidecars mosdash runs for itself
+ * is this module's business, not the entry point's.
+ */
+export function queueSidecarBootstraps(): void {
+  queueCaddyBootstrap()
+  queueBuildkitBootstrap()
+}
+
+/**
+ * Re-queues the build daemon when it is not reachable.
+ *
+ * Gated on an actual connection rather than the Docker running flag, for the
+ * reason the proxy's gate is: a daemon in a bind-failure restart loop, or one
+ * wedged with a dead listener, reads as running — so the bootstrap, the only
+ * thing that can repair it, would never be re-queued.
+ *
+ * Unlike the proxy, a build daemon being down breaks nothing that is already
+ * serving. It is logged at info, not warn, and is not an outage.
+ */
+async function ensureBuildkitQueued(): Promise<void> {
+  const found = await docker
+    .findContainersByName(BUILDKIT_CONTAINER)
+    .catch(() => null)
+  if (!found) return
+
+  if (found.some((c) => c.running)) {
+    buildkitReported = false
+    return
+  }
+
+  // Logged once per outage, not once per tick. The bucketed job id means a
+  // bootstrap that already ran in this five-minute window cannot be re-queued
+  // until the bucket rolls over, so an unguarded log line here repeats every 30
+  // seconds while nothing is actually happening — noise that buries the one
+  // line an operator needs.
+  if (!buildkitReported) {
+    logger.info("reconcile: BuildKit is not running, queueing bootstrap")
+    buildkitReported = true
+  }
+  queueBuildkitBootstrap()
 }
 
 export function startReconciler(): void {

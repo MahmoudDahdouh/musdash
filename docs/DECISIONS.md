@@ -647,3 +647,117 @@ Engine with a container whose bindings were configured but unprogrammed, and a
 `docker restart` did not repair it — only a daemon restart did. That is Engine
 behaviour, not mosdash's, but it is the state `publishedPortCount` now detects
 and reports rather than misdiagnosing.
+
+## Slice D — the build daemon, and two ways a sidecar lies about being ready (2026-08-24)
+
+Phase 2 begins with BuildKit rather than with GitHub. §26 narrates the other
+order — connect an App, pick a repo, push — but two things in Phase 2 cannot be
+verified on a private RFC1918 box, and both are _inbound HTTP_: GitHub's redirect
+back from the manifest flow, and its webhook POST. Building GitHub first would
+put both at the bottom of the stack, so every later failure would have two
+candidate causes. Inverted, the build pipeline is proven against a real daemon
+before anything unverifiable is touched, and DoD 3, 4, 7, 8 and 9 are all
+reachable without GitHub existing at all.
+
+### D8 — BuildKit is a managed sidecar, and `privileged` is gated at the client
+
+BuildKit runs as a container mosdash owns, exactly as Caddy does: adopted by
+name if present, created if not, re-queued by the reconciler when it goes. The
+bootstrap is a deliberate structural clone of `src/caddy/bootstrap.ts`, because
+the failure modes are identical and that module is the product of a slice spent
+learning them.
+
+**`ContainerSpec` gained `privileged`, and `createContainer` refuses it on any
+spec without a `mosdash.role` label.** A privileged container is root on the
+host, so the flag is a privilege boundary rather than a tuning knob, and the
+check is enforced in the client instead of trusted to callers — it is one line,
+and what it prevents is a user reaching root on the box. Verified three ways: a
+resource-labelled spec asking for privileged is refused, the same spec without
+it is accepted (the guard is not over-broad), and a `sidecarLabels("builder")`
+spec with it is allowed. There is deliberately no UI for it.
+
+**`DockerClient` gained `loadImage(tar: ReadableStream)`.** A standalone BuildKit
+container does not share the Engine's image store, so a build's output comes back
+as a tarball that has to be handed to the daemon. The parameter is a stream and
+never a Buffer: an image tar is routinely hundreds of megabytes and buffering one
+would breach the RAM budget outright. This was the risk flagged as the largest in
+Phase 2, so it was prototyped before any other code in the slice — and it works.
+Measured end to end: a 3.6MB tarball cost **4.1MB of RSS**, proportional to the
+buffer rather than to the image, and the loaded image ran. No spool-to-disk
+fallback was needed. Like `/images/create`, `/images/load` reports failure inside
+a 200 response, so the body is read to completion and inspected rather than
+trusting the status.
+
+### Two false-ready bugs, both found by testing rather than by reading
+
+**The image's entrypoint is already `buildkitd`.** Passing
+`["buildkitd", "--addr", ...]` as the command produced `buildkitd buildkitd
+--addr ...`, where the stray argument is silently ignored and the daemon falls
+back to its default unix socket. The container starts, logs a healthy worker,
+reports 0 restarts — and is unreachable over TCP. `command` therefore carries
+**flags only**, and the comment says so, because nothing about the running
+container reveals the mistake.
+
+**A TCP connect proves nothing when a port is published.** The first readiness
+probe opened a socket and returned true if it connected. Docker's userland proxy
+binds the host side of a published port and accepts connections whether or not
+anything is listening inside the container, so that probe passed against the
+broken daemon above — the exact false success the Caddy slice was spent
+eliminating, reproduced one module later. `fetch` cannot stand in either: Bun's
+client is HTTP/1.1, BuildKit's gRPC server requires HTTP/2, and a fetch-based
+probe returns false against a _healthy_ daemon. Verified both directions before
+committing to the fix.
+
+The probe now writes the HTTP/2 client connection preface and waits for any
+inbound byte. A gRPC server must answer it with a SETTINGS frame; a port
+forwarder with nothing behind it cannot. Measured: `data=false` against the
+broken daemon, `data=true` against a working one. Shelling out to
+`docker exec ... buildctl` was rejected despite being simpler — it bypasses the
+`DockerClient` interface and assumes a local socket, which the SSH implementation
+in a later phase would break.
+
+### The bucketed job id sets a blind window, and 5 minutes is wrong for a builder
+
+The reconciler re-queues with a time-bucketed id so a burst of ticks collapses to
+one job. The cost is that once a bucket holds a _finished_ row, the id collides
+with it and nothing can be re-queued until the bucket rolls over. For the proxy
+that is the accepted D7 trade. For a build daemon it is the wrong one: BuildKit
+is removed routinely — a prune, an upgrade, an operator clearing disk — and while
+it is down nothing already serving is affected. Observed directly: after the
+container was removed, four consecutive reconciles logged "queueing bootstrap"
+and queued nothing, because the bucket already held a completed row.
+
+BuildKit's bucket is therefore **one minute**, which collapses a tick burst just
+as well and bounds the blind window to two reconcile passes. The outage log line
+is also latched to once per outage rather than once per tick — an unguarded line
+repeats every 30 seconds while nothing happens, burying the one line an operator
+needs. Measured after the fix: **self-heal in 15 seconds** from `docker rm -f`,
+0 restarts, one log line.
+
+Its gate is the running flag alone, not the full readiness probe. The probe
+opens a socket and waits, the reconciler runs every 30 seconds forever, and a
+build daemon being down is not an outage — so it is logged at info, not warn.
+
+### Verified against a real daemon (2026-08-24, WSL2 Ubuntu 24.04, Engine 29.7.2)
+
+- Bootstrap from nothing: **49.4s** including the image pull; the next tick took
+  the adopted path in **59ms**.
+- Container state: privileged, 1GB cap, `mosdash.managed=true` +
+  `mosdash.role=builder`, port published to **127.0.0.1 only**, 0 restarts.
+- `buildctl debug workers` over TCP lists a real worker.
+- Self-heal after `docker rm -f`: **15s**, 0 restarts, one log line.
+- Privilege guard: refused on a resource spec, accepted on a sidecar spec, and
+  not over-broad on a non-privileged resource spec.
+- `gate:rss`: **78.3MB** against a 78.7MB baseline — no measurable change, as
+  expected for a component that is a container.
+- **BuildKit idles at 12.2MiB, not the ~30MB estimated in PHASES §30.**
+  `scripts/measure-rss.ts` was corrected to report the measured figure; never
+  quote a sidecar number that is a guess.
+
+### Still unverified, and not claimed
+
+Nothing here proves a build. `loadImage` is proven against a tarball BuildKit
+produced, but the build pipeline that will call it — Railpack, the Dockerfile
+frontend, build-arg redaction, build-directory cleanup — is the next checkpoint.
+Railpack is not installed on this box, and installing it is a step of that
+checkpoint rather than an assumption of this one.

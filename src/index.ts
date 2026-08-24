@@ -4,7 +4,7 @@ import { bindHostname, config } from "./config.ts"
 import { migrate } from "./db/migrate.ts"
 import { logger } from "./log.ts"
 import {
-  queueCaddyBootstrap,
+  queueSidecarBootstraps,
   reconcileOnce,
   startReconciler,
 } from "./reconciler.ts"
@@ -13,17 +13,17 @@ import { authRoutes } from "./routes/auth.ts"
 import { sseRoutes } from "./routes/sse.ts"
 import { startScheduler } from "./scheduler.ts"
 import { startWorker } from "./queue/worker.ts"
-import { assets } from "./views/render.ts"
+import { assetResponse } from "./views/render.ts"
 
 migrate()
 
 // Heal before serving, so a rebooted box comes back without anyone asking.
-await reconcileOnce().catch((err: unknown) => {
-  logger.warn({ err: (err as Error).message }, "startup reconcile skipped")
+await reconcileOnce().catch((e: unknown) => {
+  logger.warn({ err: (e as Error).message }, "startup reconcile skipped")
 })
 
 startWorker()
-queueCaddyBootstrap() // Docker work: the queue owns it, serving never waits.
+queueSidecarBootstraps() // Docker work: the queue owns it, serving never waits.
 startReconciler()
 startScheduler()
 
@@ -35,16 +35,11 @@ const app = new Elysia()
     set.status = 500
     return "Something went wrong. Check the server logs."
   })
-  .get("/assets/:file", ({ params, status }) => {
-    const asset = assets[params.file as keyof typeof assets]
-    if (!asset) return status(404, "not found")
-    return new Response(asset.body, {
-      headers: {
-        "content-type": asset.type,
-        "cache-control": "public, max-age=3600",
-      },
-    })
-  })
+  .get(
+    "/assets/:file",
+    ({ params, status }) =>
+      assetResponse(params.file) ?? status(404, "not found"),
+  )
   .get("/health", () => "ok")
   .use(authRoutes)
   .use(sseRoutes)

@@ -40,6 +40,17 @@ export interface ContainerSpec {
   restartPolicy: "unless-stopped" | "no"
   /** Published ports. Absent means the container is reachable only on its network. */
   ports?: PortBinding[]
+  /**
+   * Runs the container with full host privileges.
+   *
+   * This is a privilege boundary, not a tuning knob: a privileged container can
+   * reach the host kernel, and granting it to anything derived from user input
+   * would hand a user root on the box. It exists solely for the BuildKit
+   * sidecar, which needs mount and namespace operations to assemble images, and
+   * `createContainer` REJECTS it on any spec that is not marked as mosdash's own
+   * infrastructure via `sidecarLabels`. There is deliberately no UI for it.
+   */
+  privileged?: boolean
   /** Overrides the image's CMD. */
   command?: string[]
   healthcheck?: {
@@ -104,6 +115,17 @@ export interface DockerClient {
   pullImage(ref: string, onProgress: (line: string) => void): Promise<void>
   imageExists(ref: string): Promise<boolean>
   removeImage(ref: string, force?: boolean): Promise<void>
+  /**
+   * Loads an image from a docker-format tar stream (`POST /images/load`).
+   *
+   * A standalone BuildKit container does not share the Engine's image store, so
+   * a build's output arrives as a tarball that has to be handed back to the
+   * daemon. The parameter is a stream and not a Buffer on purpose: an image tar
+   * can be hundreds of megabytes, and buffering one would breach the RAM budget
+   * outright. Verified streaming end to end — a 3.6MB tarball cost 4.1MB of RSS,
+   * proportional to the buffer rather than to the image.
+   */
+  loadImage(tar: ReadableStream<Uint8Array>): Promise<void>
 
   createContainer(spec: ContainerSpec): Promise<string>
   startContainer(id: string): Promise<void>

@@ -89,3 +89,21 @@ export function renderPage(
     body,
   })
 }
+
+/**
+ * Serves an embedded asset, or null when the name is not one.
+ *
+ * Lives here rather than in the entry point because the asset table is this
+ * module's, and src/index.ts wires modules together rather than holding route
+ * bodies. Returning null instead of a 404 keeps the HTTP shape at the caller.
+ */
+export function assetResponse(name: string): Response | null {
+  const asset = assets[name as keyof typeof assets]
+  if (!asset) return null
+  return new Response(asset.body, {
+    headers: {
+      "content-type": asset.type,
+      "cache-control": "public, max-age=3600",
+    },
+  })
+}

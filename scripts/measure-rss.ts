@@ -102,7 +102,10 @@ try {
   } else {
     console.log(`PASS  idle RSS ${rounded}MB (ceiling ${ceiling}MB).`)
     console.log(
-      "Sidecars are extra and reported separately: Caddy ~50MB, BuildKit idle ~30MB.",
+      // BuildKit's figure is measured, not the ~30MB estimated in PHASES §30:
+      // moby/buildkit v0.27.0 idles at 12MB with a warm cache volume. It grows
+      // during a build, which is transient and outside this idle number.
+      "Sidecars are extra and reported separately: Caddy ~50MB, BuildKit idle ~12MB.",
     )
   }
 } finally {

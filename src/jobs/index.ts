@@ -1,3 +1,4 @@
+import { ensureBuildkit } from "../build/bootstrap.ts"
 import { ensureCaddy } from "../caddy/bootstrap.ts"
 import { caddy, routeIdFor } from "../caddy/client.ts"
 import { LABEL_RESOURCE, LABEL_ROLE } from "../docker/client.ts"
@@ -109,4 +110,5 @@ export const handlers: Record<string, JobHandler> = {
   remove: (p) => runRemove(p as unknown as RemovePayload),
   prune_images: (p) => runPrune(p as unknown as PrunePayload),
   ensure_caddy: () => ensureCaddy(),
+  ensure_buildkit: () => ensureBuildkit(),
 }
