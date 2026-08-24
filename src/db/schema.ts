@@ -9,7 +9,7 @@ import {
 } from "drizzle-orm/sqlite-core"
 
 /**
- * Mirrors migrations/0001_init.sql. The SQL is authoritative — Drizzle is a
+ * Mirrors migrations/*.sql. The SQL is authoritative — Drizzle is a
  * query builder here, not a migration generator (PHASES.md §2 rules out
  * migration DSL beyond the basics).
  */
@@ -59,7 +59,15 @@ export const resources = sqliteTable(
       .notNull()
       .references(() => environments.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
-    kind: text("kind").notNull().$type<"image">(),
+    kind: text("kind").notNull().$type<ResourceKind>(),
+    /**
+     * What this resource is built or pulled FROM, by kind:
+     *   image -> { image: "nginx:alpine" }
+     *   git   -> { repo, branch, pack, dockerfilePath, buildContext }
+     *
+     * For a git resource this describes the REPOSITORY and never the image a
+     * build produced — see builtImage.
+     */
     sourceJson: text("source_json").notNull(),
     desiredState: text("desired_state")
       .notNull()
@@ -70,10 +78,36 @@ export const resources = sqliteTable(
     containerId: text("container_id"),
     currentDeploymentId: text("current_deployment_id"),
     previousImage: text("previous_image"),
+
+    // --- git source (kind = "git") -------------------------------------
+    gitInstallationId: text("git_installation_id"),
+    /** "owner/name". */
+    gitRepo: text("git_repo"),
+    gitBranch: text("git_branch"),
+    buildPack: text("build_pack").$type<"dockerfile" | "railpack" | null>(),
+    dockerfilePath: text("dockerfile_path"),
+    buildContext: text("build_context"),
+    autoDeploy: integer("auto_deploy").notNull().default(1),
+    registryCredentialId: text("registry_credential_id"),
+    /**
+     * The tag the last successful build produced, for a git resource.
+     *
+     * Deliberately its own column rather than being written into sourceJson:
+     * resourceImage() reads sourceJson.image, so a built tag stored there would
+     * make a git resource read as an image resource on its next deploy and stop
+     * rebuilding — silently, and only noticed when a push does not take effect.
+     */
+    builtImage: text("built_image"),
+
     createdAt: text("created_at").notNull(),
   },
-  (t) => [unique().on(t.environmentId, t.name)],
+  (t) => [
+    unique().on(t.environmentId, t.name),
+    index("idx_resources_git_repo").on(t.gitRepo, t.gitBranch),
+  ],
 )
+
+export type ResourceKind = "image" | "git"
 
 export type DeploymentStatus =
   "queued" | "running" | "succeeded" | "failed" | "cancelled"
@@ -93,6 +127,12 @@ export const deployments = sqliteTable(
     error: text("error"),
     startedAt: text("started_at"),
     finishedAt: text("finished_at"),
+
+    // Commit metadata, present only for a deploy triggered from a repository.
+    commitSha: text("commit_sha"),
+    commitMessage: text("commit_message"),
+    commitAuthor: text("commit_author"),
+
     createdAt: text("created_at").notNull(),
   },
   (t) => [index("idx_deploy_resource").on(t.resourceId, t.createdAt)],

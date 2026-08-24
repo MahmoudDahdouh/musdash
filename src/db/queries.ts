@@ -103,6 +103,76 @@ export function createResource(input: NewResource): Resource {
     containerId: null,
     currentDeploymentId: null,
     previousImage: null,
+    ...NO_GIT_SOURCE,
+    createdAt: nowIso(),
+  }
+  orm.insert(resources).values(resource).run()
+  return resource
+}
+
+/** The git columns, all empty. An image resource carries none of them. */
+const NO_GIT_SOURCE = {
+  gitInstallationId: null,
+  gitRepo: null,
+  gitBranch: null,
+  buildPack: null,
+  dockerfilePath: null,
+  buildContext: null,
+  autoDeploy: 1,
+  registryCredentialId: null,
+  builtImage: null,
+} as const
+
+export interface NewGitResource {
+  environmentId: string
+  name: string
+  repo: string
+  branch: string
+  pack: "dockerfile" | "railpack"
+  dockerfilePath?: string | null
+  buildContext?: string | null
+  installationId?: string | null
+  containerPort?: number | null
+  healthPath?: string | null
+  memoryLimitMb: number
+}
+
+/**
+ * A resource built from a repository.
+ *
+ * sourceJson holds the REPOSITORY, never an image — see resourceImage(). The
+ * git columns duplicate part of it so the webhook handler can find affected
+ * resources with an indexed query rather than parsing JSON for every row.
+ */
+export function createGitResource(input: NewGitResource): Resource {
+  const resource: Resource = {
+    id: ulid(),
+    environmentId: input.environmentId,
+    name: input.name,
+    kind: "git",
+    sourceJson: JSON.stringify({
+      repo: input.repo,
+      branch: input.branch,
+      pack: input.pack,
+      ...(input.dockerfilePath ? { dockerfilePath: input.dockerfilePath } : {}),
+      ...(input.buildContext ? { buildContext: input.buildContext } : {}),
+    }),
+    desiredState: "stopped",
+    containerPort: input.containerPort ?? null,
+    memoryLimitMb: input.memoryLimitMb,
+    healthPath: input.healthPath ?? null,
+    containerId: null,
+    currentDeploymentId: null,
+    previousImage: null,
+    gitInstallationId: input.installationId ?? null,
+    gitRepo: input.repo,
+    gitBranch: input.branch,
+    buildPack: input.pack,
+    dockerfilePath: input.dockerfilePath ?? null,
+    buildContext: input.buildContext ?? null,
+    autoDeploy: 1,
+    registryCredentialId: null,
+    builtImage: null,
     createdAt: nowIso(),
   }
   orm.insert(resources).values(resource).run()
@@ -145,7 +215,40 @@ export function deleteResource(id: string): void {
   orm.delete(resources).where(eq(resources.id, id)).run()
 }
 
+/** The repository spec of a git resource. Never holds a built image. */
+export interface GitSource {
+  repo: string
+  branch: string
+  pack: "dockerfile" | "railpack"
+  dockerfilePath?: string
+  buildContext?: string
+}
+
+export function gitSource(resource: Resource): GitSource | null {
+  if (resource.kind !== "git") return null
+  const src = JSON.parse(resource.sourceJson) as Partial<GitSource>
+  if (!src.repo || !src.branch) return null
+  return {
+    repo: src.repo,
+    branch: src.branch,
+    pack: src.pack ?? "railpack",
+    dockerfilePath: src.dockerfilePath,
+    buildContext: src.buildContext,
+  }
+}
+
+/**
+ * The image this resource should run right now.
+ *
+ * Branches on kind, and must keep doing so. An image resource carries its
+ * reference in sourceJson; a git resource has no image until a build has
+ * produced one, and its sourceJson describes the repository instead. Reading
+ * sourceJson.image for both would return "" for every git resource, which the
+ * reconciler treats as "nothing to deploy" — a resource that silently never
+ * comes back after its container is removed.
+ */
 export function resourceImage(resource: Resource): string {
+  if (resource.kind === "git") return resource.builtImage ?? ""
   const src = JSON.parse(resource.sourceJson) as { image?: string }
   return src.image ?? ""
 }
@@ -157,6 +260,12 @@ export function resourceImage(resource: Resource): string {
  * A rollback target is referenced only by this row — no container holds it, so
  * Docker sees it as unused and would happily reclaim it, silently turning the
  * rollback button into a re-pull that fails offline or against a deleted tag.
+ *
+ * This matters more for a built image than a pulled one, and the difference is
+ * absolute: a registry image that is pruned can be pulled again, while a built
+ * image exists nowhere but this daemon. Pruning one destroys the rollback
+ * target permanently. resourceImage() returns builtImage for a git resource, so
+ * the current build is covered by the same line that covers a pulled image.
  */
 export function listProtectedImages(): string[] {
   const keep = new Set<string>()
@@ -168,7 +277,20 @@ export function listProtectedImages(): string[] {
   return [...keep]
 }
 
+/**
+ * Points an IMAGE resource at a different registry reference.
+ *
+ * Rejects a git resource rather than silently succeeding: sourceJson holds the
+ * repository for those, and overwriting it with an image is exactly the failure
+ * that makes a git resource stop rebuilding.
+ */
 export function setResourceImage(id: string, image: string): void {
+  const resource = getResource(id)
+  if (resource && resource.kind !== "image") {
+    throw new Error(
+      `resource ${id} is a ${resource.kind} resource, not an image`,
+    )
+  }
   updateResource(id, { sourceJson: JSON.stringify({ image }) })
 }
 
@@ -200,6 +322,9 @@ export function createDeployment(args: {
   resourceId: string
   image: string
   trigger: Deployment["trigger"]
+  commitSha?: string | null
+  commitMessage?: string | null
+  commitAuthor?: string | null
 }): Deployment {
   const deployment: Deployment = {
     id: ulid(),
@@ -210,6 +335,9 @@ export function createDeployment(args: {
     error: null,
     startedAt: null,
     finishedAt: null,
+    commitSha: args.commitSha ?? null,
+    commitMessage: args.commitMessage ?? null,
+    commitAuthor: args.commitAuthor ?? null,
     createdAt: nowIso(),
   }
   orm.insert(deployments).values(deployment).run()

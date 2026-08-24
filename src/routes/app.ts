@@ -12,6 +12,7 @@ import {
   addDomain,
   createEnvironment,
   createProject,
+  createGitResource,
   createResource,
   deleteDomain,
   domainExists,
@@ -200,6 +201,65 @@ export const appRoutes = new Elysia()
     },
   )
 
+  /**
+   * A resource built from a repository.
+   *
+   * The repo is taken as free text here. Checkpoint 4 replaces this with a
+   * picker backed by the GitHub App, at which point the value is chosen from
+   * what the installation actually grants rather than typed.
+   */
+  .post(
+    "/e/:environmentId/resources/git",
+    ({ params, body, redirect, status }) => {
+      const environment = getEnvironment(params.environmentId)
+      if (!environment) return status(404, "environment not found")
+
+      if (!isValidResourceName(body.name)) {
+        return status(400, "resource names must match [a-z0-9-]{1,32}")
+      }
+      if (findResourceByNameInEnv(environment.id, body.name)) {
+        return status(409, "a resource with that name already exists here")
+      }
+      const repo = body.repo.trim()
+      const branch = body.branch.trim() || "main"
+      if (!repo) return status(400, "a repository is required")
+
+      const resource = createGitResource({
+        environmentId: environment.id,
+        name: body.name,
+        repo,
+        branch,
+        // Empty means "detect at build time" — the value is only read when the
+        // user has made an explicit choice.
+        pack: body.pack === "dockerfile" ? "dockerfile" : "railpack",
+        dockerfilePath: body.dockerfilePath?.trim() || null,
+        buildContext: body.buildContext?.trim() || null,
+        containerPort: body.containerPort ?? null,
+        healthPath: body.healthPath?.trim() || null,
+        memoryLimitMb: body.memoryLimitMb ?? config.defaultMemoryMb,
+      })
+
+      const auto = autoDomainFor(resource.name, environment.name)
+      if (auto && !domainExists(auto)) addDomain(resource.id, auto, true)
+
+      return redirect(`/r/${resource.id}`, 303)
+    },
+    {
+      body: t.Object({
+        name: t.String(),
+        repo: t.String(),
+        branch: t.String(),
+        pack: t.Optional(t.String()),
+        dockerfilePath: t.Optional(t.String()),
+        buildContext: t.Optional(t.String()),
+        containerPort: t.Optional(t.Numeric()),
+        healthPath: t.Optional(t.String()),
+        memoryLimitMb: t.Optional(t.Numeric()),
+        csrf: t.String(),
+      }),
+    },
+  )
+
   .get("/r/:resourceId", ({ params, query, session, status }) => {
     const ctx = getResourceContext(params.resourceId)
     if (!ctx) return status(404, "resource not found")
@@ -250,11 +310,22 @@ export const appRoutes = new Elysia()
     ({ params, redirect, status }) => {
       const ctx = getResourceContext(params.resourceId)
       if (!ctx) return status(404, "resource not found")
+
+      // A git resource has no image until it has built one, and requiring it
+      // here would make the very first deploy impossible. The job resolves the
+      // real tag when it builds; this placeholder only labels the row until
+      // then.
       const image = resourceImage(ctx.resource)
-      if (!image) return status(400, "this resource has no image set")
+      if (!image && ctx.resource.kind !== "git") {
+        return status(400, "this resource has no image set")
+      }
 
       // Enqueue and redirect immediately — never await Docker in a handler.
-      const deploymentId = enqueueDeploy(ctx.resource.id, image, "manual")
+      const deploymentId = enqueueDeploy(
+        ctx.resource.id,
+        image || "(building)",
+        "manual",
+      )
       return redirect(`/d/${deploymentId}`, 303)
     },
     { body: t.Object({ csrf: t.String() }) },
@@ -339,11 +410,17 @@ export const appRoutes = new Elysia()
     ({ params, body, redirect, status }) => {
       const ctx = getResourceContext(params.resourceId)
       if (!ctx) return status(404, "resource not found")
-      if (!isValidImageRef(body.image)) {
-        return status(400, "that does not look like a valid image reference")
-      }
 
-      setResourceImage(ctx.resource.id, body.image)
+      // The image field belongs to an image resource. A git resource builds its
+      // own, so accepting one here would overwrite the repository spec and stop
+      // it rebuilding — setResourceImage refuses, and this turns that refusal
+      // into a useful message rather than a 500.
+      if (ctx.resource.kind === "image") {
+        if (!isValidImageRef(body.image)) {
+          return status(400, "that does not look like a valid image reference")
+        }
+        setResourceImage(ctx.resource.id, body.image)
+      }
       updateResource(ctx.resource.id, {
         containerPort: body.containerPort ?? null,
         healthPath: body.healthPath?.trim() || null,

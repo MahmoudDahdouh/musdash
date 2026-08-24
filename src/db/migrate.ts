@@ -7,6 +7,7 @@ import type { Database } from "bun:sqlite"
 // the shipped binary, because that directory does not exist inside it. This is
 // trap 6, and it is invisible until someone runs the release artifact.
 import init0001 from "../../migrations/0001_init.sql" with { type: "text" }
+import github0002 from "../../migrations/0002_github.sql" with { type: "text" }
 import { db as defaultDb } from "./index.ts"
 import { logger } from "../log.ts"
 
@@ -15,7 +16,10 @@ interface Migration {
   sql: string
 }
 
-const MIGRATIONS: Migration[] = [{ name: "0001_init", sql: init0001 }]
+const MIGRATIONS: Migration[] = [
+  { name: "0001_init", sql: init0001 },
+  { name: "0002_github", sql: github0002 },
+]
 
 export function migrate(database: Database = defaultDb): string[] {
   database.exec(`

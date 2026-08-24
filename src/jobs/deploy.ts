@@ -1,4 +1,5 @@
 import { autoDomainFor, caddy, routeIdFor } from "../caddy/client.ts"
+import { buildFromSource } from "./build.ts"
 import { config } from "../config.ts"
 import { LABEL_RESOURCE, LABEL_ROLE, managedLabels } from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
@@ -26,6 +27,16 @@ export interface DeployPayload {
   resourceId: string
   deploymentId: string
   image: string
+  /**
+   * Deploy the image named above verbatim, without building it.
+   *
+   * Set for a rollback and for a reconcile redeploy, both of which name an
+   * image that already exists locally. Without it a git resource would rebuild
+   * from source on rollback — which defeats the button entirely, since the
+   * point is to return to the artifact that was running — and the reconciler
+   * would rebuild from source every time Docker hiccuped.
+   */
+  useExistingImage?: boolean
 }
 
 /** How long to let the old container finish in-flight requests. */
@@ -48,7 +59,9 @@ export function containerName(
  * every time, and nobody notices until production.
  */
 export async function runDeploy(payload: DeployPayload): Promise<void> {
-  const { resourceId, deploymentId, image } = payload
+  const { resourceId, deploymentId } = payload
+  // Reassigned for a git resource, whose real tag is not known until it builds.
+  let image = payload.image
   const ctx = getResourceContext(resourceId)
   if (!ctx) throw new Error(`resource ${resourceId} no longer exists`)
   const { resource, environment, project } = ctx
@@ -96,8 +109,20 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     // still exists, so without this they accumulate one per failed attempt.
     await reclaimStrays(resourceId, oldContainerId, emit)
 
-    // 3. pull, falling back to a local image if there is one
-    await resolveImage(image, emit, safe)
+    // 3. obtain the image: build it from source, or pull it.
+    //
+    // The ONLY structural change for git resources. Everything from step 4 on
+    // is identical for both kinds, which is deliberate: the zero-downtime
+    // ordering below is the product's core guarantee, and a second copy of it
+    // for git resources would be a second place for it to rot.
+    if (resource.kind === "git" && !payload.useExistingImage) {
+      image = await buildFromSource(resource, deploymentId, emit, env)
+      // The deployment row is created before the tag exists, so it holds the
+      // placeholder the enqueue used until now.
+      updateDeployment(deploymentId, { image })
+    } else {
+      await resolveImage(image, emit, safe)
+    }
 
     // 4/5. create the new container alongside the old one
     const name = containerName(resourceId, deploymentId)
@@ -176,7 +201,18 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
       containerId: newContainerId,
       currentDeploymentId: deploymentId,
       desiredState: "running",
-      sourceJson: JSON.stringify({ image }),
+      // sourceJson describes what the resource is built or pulled FROM, so it
+      // is rewritten only for an IMAGE resource. Writing a tag there for a git
+      // resource destroys the repository spec, and the resource then reads as
+      // an image resource on its next deploy and silently stops rebuilding.
+      //
+      // Keyed on resource.kind, NOT on whether this deploy built something: a
+      // rollback or a reconcile of a git resource deploys an existing tag
+      // without building, and keying on that clobbered sourceJson on exactly
+      // those paths. Found by rolling back a git resource and reading the row.
+      ...(resource.kind === "git"
+        ? { builtImage: image }
+        : { sourceJson: JSON.stringify({ image }) }),
       // Only remember a genuinely different previous image, so rollback never
       // points at the image already running.
       previousImage:
@@ -411,6 +447,9 @@ export function enqueueDeploy(
     resourceId,
     deploymentId: deployment.id,
     image,
+    // A rollback and a reconcile both name an image that already exists; only
+    // a manual deploy of a git resource should build.
+    useExistingImage: trigger !== "manual",
   } satisfies DeployPayload)
   publishStatus({ resourceId, state: "queued" })
   return deployment.id

@@ -55,7 +55,14 @@ export async function reconcileOnce(): Promise<void> {
     const container = byResource.get(resource.id)
     if (container?.running) continue
 
+    // For a git resource this is the last image that was BUILT, and the
+    // "reconcile" trigger marks the job as deploy-this-image-verbatim. A
+    // reconcile must never rebuild from source: this runs every 30 seconds, and
+    // a flaky daemon would otherwise start a fresh build each time.
     const image = resourceImage(resource)
+    // Empty for a git resource that has never built successfully. There is
+    // nothing to redeploy, and building here would race the deploy that is
+    // presumably already failing.
     if (!image) continue
     logger.info(
       { resourceId: resource.id, name: resource.name },

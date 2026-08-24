@@ -863,3 +863,109 @@ No resource can be built from a repository yet — there is no `git` resource ki
 no schema for one, and nothing wired into `runDeploy`. That is checkpoint 3, and
 it is where the risk of a built image being mistaken for a registry image, and
 silently never rebuilt, actually lives.
+
+## Checkpoint 3 — git resources deploy from source (2026-08-24)
+
+`resources.kind` gains `"git"`, migration 0002 adds the Phase 2 tables and
+columns, and `runDeploy` branches at step 3 to build instead of pull. Source
+still arrives from a local directory: the seam is `SourceFetcher`, and
+checkpoint 4 replaces the implementation without touching anything else here.
+
+### D10 — a built image lives in its own column, not in `source_json`
+
+`source_json` answers "what is this resource built or pulled FROM". For an image
+resource that is `{image}`; for a git resource it is `{repo, branch, pack, ...}`.
+The tag a build produces goes to a separate `built_image` column, and
+`resourceImage()` branches on kind to return it.
+
+The alternative — writing the built tag into `source_json` — is the trap this
+checkpoint was sequenced to expose. A git resource whose `source_json` holds an
+image reads as an image resource on its next deploy and **silently stops
+rebuilding**: no error, no failed job, just a push that never takes effect. It
+is the same shape as the D6 prune bug, and equally invisible until someone
+notices their deploys have been doing nothing.
+
+`setResourceImage()` now throws for a non-image resource rather than succeeding,
+and the settings route only accepts an image field for an image resource — a
+refusal in the one place that can still reach the column, rather than a
+convention.
+
+### Step 3 branches; steps 4 through 8c do not
+
+The build is a phase inside `runDeploy`, not a job of its own. Two jobs at
+concurrency 1 can be separated in the queue by an unrelated deploy, leaving the
+deployment row "running" across both with no single owner of the failure path,
+and `runDeploy` already owns marking a deployment failed, the SSE log topic, and
+cleanup-by-stage. Splitting it would duplicate all of that.
+
+Everything from step 4 on is byte-identical for both kinds. That is deliberate:
+the ordering from the health gate through the route switch to the old
+container's removal is the product's core guarantee, and a second copy of it for
+git resources would be a second place for it to rot.
+
+### `useExistingImage` — rollback must not rebuild
+
+A rollback names an image that already exists. Branching on `resource.kind`
+alone would make a git resource **rebuild from source** on rollback, which
+defeats the button entirely: the point is to return to the artifact that was
+running, not to re-derive one from the same source that produced the version
+being rolled back from. The reconciler has the same problem more sharply — it
+runs every 30 seconds, so a flaky daemon would trigger a fresh build per tick.
+
+`DeployPayload.useExistingImage` is set for any trigger other than `manual`, and
+step 3 builds only when it is absent.
+
+### The bug the rollback test caught
+
+The first implementation keyed the step-8c write on whether _this deploy_ had
+built something (`builtImage === null`). That is correct on the build path and
+wrong on every other one: a rollback of a git resource builds nothing, so the
+flag stayed null, the image-resource branch ran, and `source_json` was
+overwritten with `{"image":"mosdash/gitapp:23gr9g75"}` — destroying the
+repository spec on exactly the path the column was introduced to protect.
+
+Verified by reading the row after a real rollback, not by reasoning about it.
+`listProtectedImages()` showed the second symptom in the same breath: the
+running image had dropped out of the keep-set, so a prune would have deleted the
+image the resource was serving from.
+
+**Keyed on `resource.kind` now.** The lesson is narrow and worth keeping: a
+guard on "what did this operation do" is not a guard on "what kind of thing is
+this", and only the second one holds across every path into the write.
+
+### Verified against a real daemon (2026-08-24, WSL2, Engine 29.7.2)
+
+- **Forward migration on a populated Phase 1 database** — 1 resource, 13
+  deployments, 41 jobs, only `0001_init` applied. `0002_github` applied cleanly,
+  every row preserved, `auto_deploy` backfilled to 1 and the new nullable
+  columns to NULL. This test cannot be re-run once the schema has moved on.
+- **The compiled binary** applied both migrations from a fresh data dir — the
+  only thing that proves the static-import path (trap 6).
+- A git resource **built and deployed end to end**: `mosdash/gitapp:23gr9g75` in
+  3842ms, whole deploy 9188ms, container serving `node-dockerfile ok` on HTTP 200.
+- `source_json` intact after deploy, after a second build, and after a rollback.
+- **Rollback ran 0 builds** and redeployed the previous tag.
+- **Zero-downtime regression on an image resource: 400/400 requests 200, zero
+  failures**, route switched 172.18.0.2 -> 172.18.0.6. This is the gate on the
+  `runDeploy` edit and it was run, not assumed.
+- `listProtectedImages()` covers both built tags; a built image cannot be
+  re-pulled, so pruning one destroys the rollback target permanently.
+- `gate:rss` **78.9MB**, `bun test` 73 pass.
+
+### A false alarm worth recording
+
+The first zero-downtime run reported 22 failures out of 400. It was not a
+regression: `MOSDASH_WILDCARD_DOMAIN` had been restored to commented-out at the
+end of Slice C, the `domains` table is empty, and with no host there is no route
+to switch — so Caddy kept a stale upstream from a previous session and the
+resource was already unreachable before the test began. With the variable set,
+the same test is 400/400. **A verification environment that has drifted reports
+a bug in the code rather than in itself**, and the first move on a surprising
+regression is to check what changed underneath the test.
+
+### Still unverified, and not claimed
+
+Source comes from a local directory. There is no GitHub App, no tarball fetch, no
+webhook, and no repository picker — the create form takes a path as free text and
+is not reachable from the UI's normal flow. Commit metadata columns exist and are
+never populated. All of that is checkpoint 4.
