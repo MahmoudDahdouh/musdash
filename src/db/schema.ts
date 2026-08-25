@@ -1,4 +1,4 @@
-import { relations } from "drizzle-orm"
+import { relations, sql } from "drizzle-orm"
 import {
   blob,
   index,
@@ -6,6 +6,7 @@ import {
   sqliteTable,
   text,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core"
 
 /**
@@ -141,6 +142,15 @@ export const deployments = sqliteTable(
   (t) => [index("idx_deploy_resource").on(t.resourceId, t.createdAt)],
 )
 
+/**
+ * Where a variable is delivered.
+ *
+ * 'both' exists because a variable like NODE_ENV is genuinely needed at both
+ * stages, and making the user type it twice under two names is how the two
+ * copies drift apart.
+ */
+export type EnvScope = "runtime" | "build" | "both"
+
 export const envVars = sqliteTable(
   "env_vars",
   {
@@ -154,9 +164,46 @@ export const envVars = sqliteTable(
     valueEncrypted: blob("value_encrypted", { mode: "buffer" })
       .notNull()
       .$type<Buffer>(),
+    scope: text("scope").notNull().$type<EnvScope>().default("runtime"),
     createdAt: text("created_at").notNull(),
   },
   (t) => [unique().on(t.resourceId, t.key)],
+)
+
+/**
+ * A variable owned by a project or by an environment. Exactly one owner column
+ * is set — the SQL CHECK enforces it, and resolveEnvVars relies on it, since a
+ * row with both would merge twice at two different precedences.
+ *
+ * The partial unique indexes below MIRROR 0003_shared_env.sql; Drizzle is a
+ * query builder here, not a migration generator.
+ */
+export const sharedEnvVars = sqliteTable(
+  "shared_env_vars",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").references(() => projects.id, {
+      onDelete: "cascade",
+    }),
+    environmentId: text("environment_id").references(() => environments.id, {
+      onDelete: "cascade",
+    }),
+    key: text("key").notNull(),
+    // Same buffer-mode trap as envVars.valueEncrypted.
+    valueEncrypted: blob("value_encrypted", { mode: "buffer" })
+      .notNull()
+      .$type<Buffer>(),
+    scope: text("scope").notNull().$type<EnvScope>().default("runtime"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("idx_shared_env_project")
+      .on(t.projectId, t.key)
+      .where(sql`${t.projectId} IS NOT NULL`),
+    uniqueIndex("idx_shared_env_environment")
+      .on(t.environmentId, t.key)
+      .where(sql`${t.environmentId} IS NOT NULL`),
+  ],
 )
 
 export const domains = sqliteTable("domains", {
@@ -293,6 +340,7 @@ export type Environment = typeof environments.$inferSelect
 export type Resource = typeof resources.$inferSelect
 export type Deployment = typeof deployments.$inferSelect
 export type EnvVar = typeof envVars.$inferSelect
+export type SharedEnvVar = typeof sharedEnvVars.$inferSelect
 export type Domain = typeof domains.$inferSelect
 export type Job = typeof jobs.$inferSelect
 export type Session = typeof sessions.$inferSelect

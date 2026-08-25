@@ -1180,3 +1180,89 @@ tamper cases, the webhook route answering 401 rather than redirecting to
 `/login`, the dispatch and its skip conditions, nonce lifecycle, and the trigger
 plumbing. Phase 2 DoD items 1, 2, 3, 5, 6 and 7 remain unproven until this runs
 on a public host.
+
+## Shared environment variables (2026-08-25)
+
+PHASES.md §26 named three things Phase 2 never built. This is the largest:
+variables resolve project → environment → resource, expand `${VAR}`, and carry
+an explicit build/runtime scope. `docs/RUNNING.md` had documented the
+inheritance since Phase 1 — it was the only part of that file describing
+something that did not exist.
+
+### D12 — one table per ownership shape, and a scope column on both
+
+§26 says "add `shared_env_vars` with a nullable `project_id` and nullable
+`environment_id`", and that is what this does rather than generalizing
+`env_vars` with a nullable owner.
+
+Generalizing would mean making `env_vars.resource_id` nullable, which forfeits
+the `NOT NULL` foreign key and the `UNIQUE(resource_id, key)` that hold today,
+and SQLite cannot drop a table-level UNIQUE with `ALTER TABLE` — it needs the
+twelve-step table rebuild, on a table holding ciphertext, inside a migration.
+That is the highest-risk operation available here and it buys nothing: the
+resolver queries each level separately regardless, so "one table is simpler"
+does not survive contact with the queries.
+
+Nullable owner columns need care in return. `UNIQUE(project_id, key)` as a
+table constraint would not constrain anything, because SQLite treats every NULL
+as distinct and every environment-level row has a NULL `project_id`. Two
+**partial** unique indexes scope each constraint to the rows that have that
+owner, and a `CHECK` makes a row with both owners — or neither — unrepresentable
+rather than merely discouraged.
+
+The `scope` column ('runtime' | 'build' | 'both') is plain TEXT with no CHECK,
+matching `deployments.trigger` and `jobs.type`: widening the union later then
+needs no migration.
+
+**This closes a leak.** Until now `runDeploy` decrypted one map and handed the
+same one to `createContainer` and to `buildFromSource`, whose parameter was
+already named `buildArgs` — so every runtime secret was also a build arg, baked
+into image history. Existing rows migrate to `runtime`, which is a deliberate
+behaviour change: a resource that relied on a variable reaching its build must
+re-mark it.
+
+### D13 — interpolation expands once, and refuses rather than guesses
+
+`${VAR}` resolves after the three levels merge, so a resource variable can
+reference a project one. Two limits, both deliberate.
+
+**One pass, no recursion.** If `A=${B}` and `B=${C}`, `A` becomes the literal
+text `"${C}"`. Recursion would need cycle detection, and an undetected cycle
+hangs the worker — job concurrency is exactly 1, so that is a total outage, not
+a slow deploy. A self-reference throws outright: `PATH=${PATH}:/x` is the shell
+habit everyone types, and here there is no inherited environment to extend, so
+it would otherwise yield a doubled value.
+
+**An unresolvable reference fails the deploy.** Compose and shell substitute an
+empty string; that is how a container boots with `DATABASE_URL=postgres://user:@/`
+and corrupts data quietly. The error names the referencing key and the missing
+name, and never a value.
+
+The escape is `$$` → `$`, **not** backslash. `parseEnvText` runs first and
+`unescapeDouble` consumes a backslash inside a double-quoted value, so
+`\${FOO}` arrives as a bare `${FOO}` and is indistinguishable from a real
+reference — verified against the parser rather than assumed. The cost is that
+`$$` collapses unconditionally, so a value genuinely containing `$$` must be
+written `$$$$`. That is the one usability regression, and it is unavoidable
+with any escape.
+
+### D14 — redaction coverage is decoupled from what is passed to the build
+
+Splitting one map into two silently narrows redaction, and this is the subtle
+failure the split introduces. `buildImage` derived its secret list from
+`Object.values(req.buildArgs)`; once `buildArgs` is the build-only subset, a
+runtime-only secret surfacing in build output — a Dockerfile that `cat`s a
+mounted file, a token inside a lockfile URL — would newly print to a stream the
+browser renders.
+
+`BuildRequest` therefore carries `redactSecrets`: every value at every scope,
+independent of what is actually passed as a build arg. Both layers keep their
+redactor — `buildImage` because it is callable with a different `onLog`, and
+`emit` because it is the single point every deploy line passes through.
+Removing either creates a path with no redaction.
+
+Resolution also moved _inside_ `runDeploy`'s try block. Outside it, an
+interpolation error escaped before the deployment was marked running, so the
+queue retried three times and the user saw a bare queue error instead of a log
+line naming the variable. The same was already true of a `CryptoError` on a
+tampered ciphertext.

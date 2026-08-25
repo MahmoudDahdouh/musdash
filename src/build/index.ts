@@ -26,6 +26,17 @@ export interface BuildRequest {
   pack: BuildPack
   dockerfilePath?: string
   buildArgs: Record<string, string>
+  /**
+   * Every secret value known for this resource, at EVERY scope — not only the
+   * build args above.
+   *
+   * Deriving the redaction set from buildArgs was correct only while one map
+   * served both the container and the build. Now that they differ, a
+   * runtime-only secret can still surface in build output (a Dockerfile that
+   * cats a mounted file, a token inside a lockfile URL), so redaction coverage
+   * must not depend on what is actually passed as a build arg.
+   */
+  redactSecrets: readonly string[]
   /** Skips the layer cache; see BuildContext.noCache. */
   noCache?: boolean
   onLog: (line: string) => void
@@ -58,7 +69,11 @@ export async function buildImage(req: BuildRequest): Promise<void> {
   // the progress stream verbatim. Redaction is applied HERE, at the single
   // point every build line passes through, rather than in each strategy — a
   // per-strategy redactor is one forgotten call away from leaking.
-  const secrets = Object.values(req.buildArgs)
+  //
+  // From redactSecrets, not Object.values(buildArgs): buildArgs is only the
+  // build-scoped subset, and a runtime-only secret can still appear in build
+  // output.
+  const secrets = req.redactSecrets
   const onLog = (line: string) => {
     req.onLog(redactValues(line, secrets))
   }

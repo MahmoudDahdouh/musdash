@@ -1,7 +1,9 @@
 import { and, desc, eq, sql } from "drizzle-orm"
 import { decrypt, encrypt } from "../crypto.ts"
+import { interpolate } from "../env/interpolate.ts"
 import { nowIso, ulid } from "../ids.ts"
 import { orm } from "./drizzle.ts"
+import { db } from "./index.ts"
 import {
   deployments,
   domains,
@@ -12,14 +14,17 @@ import {
   githubInstallations,
   resources,
   settings,
+  sharedEnvVars,
   type Deployment,
   type DeploymentStatus,
   type Domain,
   type Environment,
+  type EnvScope,
   type GithubApp,
   type GithubInstallation,
   type Project,
   type Resource,
+  type SharedEnvVar,
 } from "./schema.ts"
 
 // --------------------------------------------------------------- projects
@@ -515,53 +520,266 @@ export function stuckDeployments(): Deployment[] {
 
 // ----------------------------------------------------------------- env vars
 
-export function setEnvVars(
-  resourceId: string,
-  vars: Record<string, string>,
-): void {
-  // Replace wholesale: the UI edits the full set in one textarea, so a diff
-  // would only add a way for the two to disagree.
-  orm.delete(envVars).where(eq(envVars.resourceId, resourceId)).run()
-  const now = nowIso()
-  for (const [key, value] of Object.entries(vars)) {
-    orm
-      .insert(envVars)
-      .values({
-        id: ulid(),
-        resourceId,
-        key,
-        valueEncrypted: encrypt(value),
-        createdAt: now,
-      })
-      .run()
-  }
+/** One variable as it arrives from a form, before encryption. */
+export interface EnvVarInput {
+  key: string
+  value: string
+  scope: EnvScope
 }
 
-export function getEnvVarKeys(resourceId: string): string[] {
-  return orm
-    .select({ key: envVars.key })
-    .from(envVars)
-    .where(eq(envVars.resourceId, resourceId))
-    .all()
-    .map((r) => r.key)
+/** Which level a resolved variable came from. */
+export type EnvOrigin = "project" | "environment" | "resource"
+
+/**
+ * One resolved key, WITHOUT its value.
+ *
+ * Deliberately no `value` field: this is what the Env tab renders, and a shape
+ * that cannot carry a secret cannot leak one.
+ */
+export interface ResolvedEnvKey {
+  key: string
+  scope: EnvScope
+  /** The level that won. */
+  origin: EnvOrigin
+  /** Lower-precedence levels this key is also defined at, in merge order. */
+  overrides: EnvOrigin[]
 }
 
 /**
- * Decrypts every env var for a resource. Callers must never log the result —
- * pass it to the container spec and nowhere else.
+ * The plaintext maps a deploy needs. Callers must never log either — pass them
+ * to the container spec and the build args and nowhere else.
  */
-export function getDecryptedEnvVars(
-  resourceId: string,
-): Record<string, string> {
-  const rows = orm
-    .select()
-    .from(envVars)
-    .where(eq(envVars.resourceId, resourceId))
-    .all()
+export interface ResolvedEnv {
+  /** Delivered to the container. */
+  runtime: Record<string, string>
+  /** Delivered to the build as build args. */
+  build: Record<string, string>
+  /**
+   * Every value at every scope, deduped — the redaction set.
+   *
+   * Includes build-only values that never appear in `runtime`, because the
+   * deploy stream carries build output: a set derived from `runtime` alone
+   * would print a build-only secret verbatim.
+   */
+  secrets: string[]
+}
 
-  const out: Record<string, string> = {}
-  for (const row of rows) out[row.key] = decrypt(row.valueEncrypted)
-  return out
+export function setEnvVars(resourceId: string, vars: EnvVarInput[]): void {
+  // Replace wholesale: the UI edits the full set in one form, so a diff would
+  // only add a way for the two to disagree.
+  //
+  // In a transaction because the delete and the inserts must not be separable:
+  // a throw between them (a CryptoError on a corrupt key, a full disk) would
+  // otherwise leave the resource with NO variables, and the next deploy would
+  // start a container with an empty environment — an app that boots broken
+  // rather than one that fails to boot.
+  const tx = db.transaction(() => {
+    orm.delete(envVars).where(eq(envVars.resourceId, resourceId)).run()
+    const now = nowIso()
+    for (const v of vars) {
+      orm
+        .insert(envVars)
+        .values({
+          id: ulid(),
+          resourceId,
+          key: v.key,
+          valueEncrypted: encrypt(v.value),
+          scope: v.scope,
+          createdAt: now,
+        })
+        .run()
+    }
+  })
+  tx()
+}
+
+/** Identifies which level a set of shared variables belongs to. */
+export type SharedEnvOwner = { projectId: string } | { environmentId: string }
+
+function ownerWhere(owner: SharedEnvOwner) {
+  return "projectId" in owner
+    ? eq(sharedEnvVars.projectId, owner.projectId)
+    : eq(sharedEnvVars.environmentId, owner.environmentId)
+}
+
+export function setSharedEnvVars(
+  owner: SharedEnvOwner,
+  vars: EnvVarInput[],
+): void {
+  // Same wholesale-replace and same transaction rationale as setEnvVars.
+  const tx = db.transaction(() => {
+    orm.delete(sharedEnvVars).where(ownerWhere(owner)).run()
+    const now = nowIso()
+    for (const v of vars) {
+      orm
+        .insert(sharedEnvVars)
+        .values({
+          id: ulid(),
+          projectId: "projectId" in owner ? owner.projectId : null,
+          environmentId: "environmentId" in owner ? owner.environmentId : null,
+          key: v.key,
+          valueEncrypted: encrypt(v.value),
+          scope: v.scope,
+          createdAt: now,
+        })
+        .run()
+    }
+  })
+  tx()
+}
+
+/** Keys and scopes for one shared level. Values never leave the database. */
+export function listSharedEnvKeys(
+  owner: SharedEnvOwner,
+): Array<{ key: string; scope: EnvScope }> {
+  return orm
+    .select({ key: sharedEnvVars.key, scope: sharedEnvVars.scope })
+    .from(sharedEnvVars)
+    .where(ownerWhere(owner))
+    .orderBy(sharedEnvVars.key)
+    .all()
+}
+
+/** The three levels in precedence order, lowest first. */
+function mergeLevels<T>(
+  levels: Array<{ origin: EnvOrigin; rows: Array<{ key: string } & T> }>,
+): Map<string, { origin: EnvOrigin; overrides: EnvOrigin[] } & T> {
+  const merged = new Map<
+    string,
+    { origin: EnvOrigin; overrides: EnvOrigin[] } & T
+  >()
+  for (const level of levels) {
+    for (const row of level.rows) {
+      const prior = merged.get(row.key)
+      // Overrides are accumulated during the merge, not recomputed afterwards:
+      // a later level displaces an earlier one, and the displaced level is
+      // exactly what the UI needs to show.
+      const overrides = prior ? [...prior.overrides, prior.origin] : []
+      merged.set(row.key, { ...row, origin: level.origin, overrides })
+    }
+  }
+  return merged
+}
+
+/**
+ * Resolves project → environment → resource for a deploy, last level winning.
+ *
+ * Scope belongs to the winning definition, not to a union across levels: a
+ * resource-level FOO marked 'runtime' overriding a project-level FOO marked
+ * 'build' is runtime-only. Anything else would let a lower level silently
+ * widen where a secret is delivered.
+ *
+ * Throws EnvInterpolationError / EnvSelfReferenceError for a bad ${VAR}.
+ */
+export function resolveEnvVars(resourceId: string): ResolvedEnv {
+  const ctx = getResourceContext(resourceId)
+  if (!ctx) throw new Error(`resource ${resourceId} no longer exists`)
+
+  const merged = mergeLevels<{ valueEncrypted: Buffer; scope: EnvScope }>([
+    {
+      origin: "project",
+      rows: orm
+        .select({
+          key: sharedEnvVars.key,
+          valueEncrypted: sharedEnvVars.valueEncrypted,
+          scope: sharedEnvVars.scope,
+        })
+        .from(sharedEnvVars)
+        .where(eq(sharedEnvVars.projectId, ctx.project.id))
+        .all(),
+    },
+    {
+      origin: "environment",
+      rows: orm
+        .select({
+          key: sharedEnvVars.key,
+          valueEncrypted: sharedEnvVars.valueEncrypted,
+          scope: sharedEnvVars.scope,
+        })
+        .from(sharedEnvVars)
+        .where(eq(sharedEnvVars.environmentId, ctx.environment.id))
+        .all(),
+    },
+    {
+      origin: "resource",
+      rows: orm
+        .select({
+          key: envVars.key,
+          valueEncrypted: envVars.valueEncrypted,
+          scope: envVars.scope,
+        })
+        .from(envVars)
+        .where(eq(envVars.resourceId, resourceId))
+        .all(),
+    },
+  ])
+
+  const flat: Record<string, string> = {}
+  for (const [key, row] of merged) flat[key] = decrypt(row.valueEncrypted)
+
+  // Interpolation runs across every key regardless of scope, so a build
+  // variable may reference a runtime one and vice versa. This is why it
+  // happens after the merge and before the split.
+  const expanded = interpolate(flat)
+
+  const runtime: Record<string, string> = {}
+  const build: Record<string, string> = {}
+  for (const [key, row] of merged) {
+    const value = expanded[key] ?? ""
+    if (row.scope !== "build") runtime[key] = value
+    if (row.scope !== "runtime") build[key] = value
+  }
+
+  return {
+    runtime,
+    build,
+    secrets: [...new Set(Object.values(expanded))],
+  }
+}
+
+/**
+ * The same merge as resolveEnvVars, for the UI — but it never decrypts, so no
+ * plaintext can reach a template.
+ */
+export function resolveEnvKeys(resourceId: string): ResolvedEnvKey[] {
+  const ctx = getResourceContext(resourceId)
+  if (!ctx) return []
+
+  const merged = mergeLevels<{ scope: EnvScope }>([
+    {
+      origin: "project",
+      rows: orm
+        .select({ key: sharedEnvVars.key, scope: sharedEnvVars.scope })
+        .from(sharedEnvVars)
+        .where(eq(sharedEnvVars.projectId, ctx.project.id))
+        .all(),
+    },
+    {
+      origin: "environment",
+      rows: orm
+        .select({ key: sharedEnvVars.key, scope: sharedEnvVars.scope })
+        .from(sharedEnvVars)
+        .where(eq(sharedEnvVars.environmentId, ctx.environment.id))
+        .all(),
+    },
+    {
+      origin: "resource",
+      rows: orm
+        .select({ key: envVars.key, scope: envVars.scope })
+        .from(envVars)
+        .where(eq(envVars.resourceId, resourceId))
+        .all(),
+    },
+  ])
+
+  return [...merged.entries()]
+    .map(([key, row]) => ({
+      key,
+      scope: row.scope,
+      origin: row.origin,
+      overrides: row.overrides,
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key))
 }
 
 // ------------------------------------------------------------------ domains
@@ -850,6 +1068,8 @@ export type {
   DeploymentStatus,
   Domain,
   Environment,
+  EnvScope,
+  SharedEnvVar,
   GithubApp,
   GithubInstallation,
   Project,

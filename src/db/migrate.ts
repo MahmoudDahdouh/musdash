@@ -8,6 +8,7 @@ import type { Database } from "bun:sqlite"
 // trap 6, and it is invisible until someone runs the release artifact.
 import init0001 from "../../migrations/0001_init.sql" with { type: "text" }
 import github0002 from "../../migrations/0002_github.sql" with { type: "text" }
+import sharedEnv0003 from "../../migrations/0003_shared_env.sql" with { type: "text" }
 import { db as defaultDb } from "./index.ts"
 import { logger } from "../log.ts"
 
@@ -19,6 +20,7 @@ interface Migration {
 const MIGRATIONS: Migration[] = [
   { name: "0001_init", sql: init0001 },
   { name: "0002_github", sql: github0002 },
+  { name: "0003_shared_env", sql: sharedEnv0003 },
 ]
 
 export function migrate(database: Database = defaultDb): string[] {

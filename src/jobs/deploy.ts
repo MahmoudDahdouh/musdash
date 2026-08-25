@@ -6,11 +6,11 @@ import { docker } from "../docker/impl.ts"
 import {
   createDeployment,
   deleteDeployment,
-  getDecryptedEnvVars,
   getDeployment,
   getResourceContext,
   listDomains,
   markDeploymentFailed,
+  resolveEnvVars,
   updateDeployment,
   updateResource,
 } from "../db/queries.ts"
@@ -71,10 +71,11 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
   if (!ctx) throw new Error(`resource ${resourceId} no longer exists`)
   const { resource, environment, project } = ctx
 
-  // Secrets are decrypted here and must never reach a log line — not on the
-  // happy path, not in an error message, not in the deploy stream.
-  const env = getDecryptedEnvVars(resourceId)
-  const secrets = Object.values(env)
+  // Filled by resolveEnvVars inside the try below, but declared here so that
+  // emit/safe exist before resolution runs — a failure DURING resolution is
+  // then still redacted. Read through a closure rather than captured by value:
+  // lines emitted before resolution simply have nothing to redact yet.
+  let secrets: string[] = []
   // Two layers, because they catch different things: redactValues matches the
   // env values known for this resource, while redactGithub pattern-matches
   // credentials minted at runtime — an installation token belongs to no known
@@ -109,6 +110,21 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     publishStatus({ resourceId, state: "deploying" })
     emit(`Deploying ${image}`)
 
+    // Secrets are decrypted here and must never reach a log line — not on the
+    // happy path, not in an error message, not in the deploy stream.
+    //
+    // Inside the try, deliberately: resolution merges project → environment →
+    // resource and expands ${VAR}, and an unresolvable reference throws. Doing
+    // this before the try would let that error escape runDeploy before the
+    // deployment is marked running, so the queue would retry it three times
+    // and the user would see a bare queue error instead of a deploy log line
+    // naming the variable.
+    const env = resolveEnvVars(resourceId)
+    // Every value at every scope, not just the runtime map: a build-only
+    // secret never reaches the container, but BuildKit echoes RUN lines into
+    // this same stream.
+    secrets = env.secrets
+
     // 2. network
     await docker.ensureNetwork(config.network)
     emit(`Network ${config.network} ready`)
@@ -129,7 +145,13 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     // ordering below is the product's core guarantee, and a second copy of it
     // for git resources would be a second place for it to rot.
     if (resource.kind === "git" && !payload.useExistingImage) {
-      const built = await buildFromSource(resource, deploymentId, emit, env)
+      const built = await buildFromSource(
+        resource,
+        deploymentId,
+        emit,
+        env.build,
+        env.secrets,
+      )
       image = built.image
       // The deployment row is created before the tag exists, so it holds the
       // placeholder the enqueue used until now.
@@ -158,7 +180,7 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     newContainerId = await docker.createContainer({
       name,
       image,
-      env,
+      env: env.runtime,
       labels: managedLabels({
         resourceId,
         deploymentId,

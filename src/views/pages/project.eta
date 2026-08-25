@@ -2,12 +2,120 @@
 
 <div class="page-head">
   <h1><%= it.project.name %></h1>
+  <% if (it.tab === 'resources') { %>
   <button class="link" onclick="document.getElementById('new-env').showModal()">
     <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
     New environment
   </button>
+  <% } %>
 </div>
 
+<nav class="tabs">
+  <% ['resources','env'].forEach(function (t) { %>
+  <a class="<%= it.tab === t ? 'active' : '' %>" href="/p/<%= it.project.id %>?tab=<%= t %>"><%= t %></a>
+  <% }) %>
+</nav>
+
+<% if (it.tab === 'env') { %>
+<% if (it.envError) { %><div class="flash flash-error"><%= it.envError %></div><% } %>
+
+<div class="card stack">
+  <h3>Project variables</h3>
+  <p class="muted">
+    Inherited by every resource in every environment of this project. An
+    environment or a resource can override any of them. Reference another
+    variable with <code>${OTHER}</code>, and write <code>$$</code> for a
+    literal <code>$</code>.
+    Currently set:
+    <span class="mono"><%= it.projectEnv.length ? it.projectEnv.map(function (v) { return v.key }).join(', ') : 'none' %></span>
+  </p>
+  <form
+    method="post"
+    action="/p/<%= it.project.id %>/env"
+    class="stack"
+    data-confirm
+    data-confirm-title="Replace this project's shared variables?"
+    data-confirm-body="Saving replaces all three boxes at once — any key not in one of them is deleted from every resource that inherits it. The change takes effect on each resource's next deploy."
+    data-confirm-label="Save variables"
+  >
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <div class="scope-boxes">
+      <label>
+        Runtime only
+        <textarea name="runtime" rows="6" spellcheck="false" placeholder="LOG_LEVEL=info"></textarea>
+      </label>
+      <label>
+        Build only
+        <textarea name="build" rows="6" spellcheck="false" placeholder="NPM_TOKEN=..."></textarea>
+      </label>
+      <label>
+        Both
+        <textarea name="both" rows="6" spellcheck="false" placeholder="NODE_ENV=production"></textarea>
+      </label>
+    </div>
+    <div class="row end">
+      <button class="primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Save
+      </button>
+    </div>
+  </form>
+</div>
+
+<%
+  /*
+   * The id below duplicates the one on the resources tab's <section>. Safe,
+   * and deliberate: the two tabs are mutually exclusive in a single render, so
+   * only one is ever in the DOM, and the environment POST redirects back to
+   * this fragment.
+   */
+%>
+<% it.environments.forEach(function (env) { %>
+<div class="card stack" id="env-<%= env.environment.id %>">
+  <h3><%= env.environment.name %> variables</h3>
+  <p class="muted">
+    Inherited by the <%= env.resources.length %> resource<%= env.resources.length === 1 ? '' : 's' %>
+    in this environment, overriding anything of the same name set at the
+    project level.
+    Currently set:
+    <span class="mono"><%= env.sharedEnv.length ? env.sharedEnv.map(function (v) { return v.key }).join(', ') : 'none' %></span>
+  </p>
+  <form
+    method="post"
+    action="/e/<%= env.environment.id %>/env"
+    class="stack"
+    data-confirm
+    data-confirm-title="Replace <%= env.environment.name %>'s variables?"
+    data-confirm-body="Saving replaces all three boxes at once. Project variables and each resource's own variables are untouched."
+    data-confirm-label="Save variables"
+  >
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <div class="scope-boxes">
+      <label>
+        Runtime only
+        <textarea name="runtime" rows="6" spellcheck="false" placeholder="DATABASE_URL=postgres://..."></textarea>
+      </label>
+      <label>
+        Build only
+        <textarea name="build" rows="6" spellcheck="false"></textarea>
+      </label>
+      <label>
+        Both
+        <textarea name="both" rows="6" spellcheck="false"></textarea>
+      </label>
+    </div>
+    <div class="row end">
+      <button class="primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Save
+      </button>
+    </div>
+  </form>
+</div>
+<% }) %>
+<% } %>
+
+<% if (it.tab === 'resources') { %>
 <% it.environments.forEach(function (env) { %>
 <section class="env" id="env-<%= env.environment.id %>">
   <div class="env-head">
@@ -293,3 +401,4 @@
     </div>
   </form>
 </dialog>
+<% } %>

@@ -762,3 +762,65 @@ dialog.wide-dialog {
   max-height: 88vh;
   overflow-y: auto;
 }
+
+/* Env var scoping and resolution (PHASES.md §26). */
+.pill-runtime {
+  background: var(--deploying);
+}
+.pill-build {
+  background: var(--warn);
+}
+.pill-both {
+  background: var(--ok);
+}
+
+/* Which level a resolved variable came from. Outlined rather than filled, so
+   the origin never competes with the delivery pill beside it. */
+.origin {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+.origin-resource {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+table.env-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+table.env-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 550;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+table.env-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* The table can outgrow a narrow viewport; it scrolls inside its own box
+   rather than making the page scroll sideways. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.scope-boxes {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.scope-boxes label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}

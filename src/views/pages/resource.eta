@@ -145,10 +145,48 @@
 
 <% if (it.tab === 'env') { %>
 <div class="card stack">
-  <h3>Environment variables</h3>
+  <h3>Resolved environment</h3>
   <p class="muted">
-    One <code>KEY=value</code> per line. Values are encrypted at rest and never
-    shown again after saving.
+    What this resource actually gets. Project and environment variables are
+    inherited; anything set here wins.
+  </p>
+  <% if (it.resolvedEnv.length === 0) { %>
+  <p class="muted">No variables at any level yet.</p>
+  <% } else { %>
+  <div class="table-scroll">
+    <table class="env-table">
+      <thead>
+        <tr><th>Key</th><th>Delivered to</th><th>From</th><th>Overrides</th></tr>
+      </thead>
+      <tbody>
+        <% it.resolvedEnv.forEach(function (v) { %>
+        <tr>
+          <td class="mono"><%= v.key %></td>
+          <td><span class="pill pill-<%= v.scope %>"><%= v.scope %></span></td>
+          <td><span class="origin origin-<%= v.origin %>"><%= v.origin %></span></td>
+          <!-- An em dash rather than an empty cell: a blank reads as a bug. -->
+          <td class="muted"><%= v.overrides.length ? v.overrides.join(', ') : '—' %></td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+  <p class="muted">
+    Project and environment variables are edited on the
+    <a href="/p/<%= it.project.id %>?tab=env">project's env tab</a>.
+  </p>
+  <% } %>
+</div>
+
+<div class="card stack">
+  <h3>Resource variables</h3>
+  <p class="muted">
+    One <code>KEY=value</code> per line, in the box for where it is needed.
+    Runtime variables reach the container; build variables reach the build and
+    are baked into the image. Reference another variable with
+    <code>${OTHER}</code>, and write <code>$$</code> for a literal
+    <code>$</code>. Values are encrypted at rest and never shown again after
+    saving.
   </p>
   <% if (it.envError) { %><div class="flash flash-error"><%= it.envError %></div><% } %>
   <form
@@ -156,12 +194,25 @@
     action="/r/<%= it.resource.id %>/env"
     class="stack"
     data-confirm
-    data-confirm-title="Replace all environment variables?"
-    data-confirm-body="Saving replaces the entire set — any key not in the box is deleted. The change takes effect on the next deploy."
+    data-confirm-title="Replace this resource's variables?"
+    data-confirm-body="Saving replaces all three boxes at once — any key not in one of them is deleted. Inherited project and environment variables are untouched. The change takes effect on the next deploy."
     data-confirm-label="Save variables"
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <textarea name="text" rows="12" spellcheck="false" placeholder="DATABASE_URL=postgres://..."><%= it.envText %></textarea>
+    <div class="scope-boxes">
+      <label>
+        Runtime only
+        <textarea name="runtime" rows="8" spellcheck="false" placeholder="DATABASE_URL=postgres://..."></textarea>
+      </label>
+      <label>
+        Build only
+        <textarea name="build" rows="8" spellcheck="false" placeholder="NPM_TOKEN=..."></textarea>
+      </label>
+      <label>
+        Both
+        <textarea name="both" rows="8" spellcheck="false" placeholder="NODE_ENV=production"></textarea>
+      </label>
+    </div>
     <div class="row end">
       <button class="primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
@@ -169,9 +220,6 @@
       </button>
     </div>
   </form>
-  <% if (it.envKeys.length > 0) { %>
-  <p class="muted">Currently set: <span class="mono"><%= it.envKeys.join(', ') %></span></p>
-  <% } %>
 </div>
 <% } %>
 

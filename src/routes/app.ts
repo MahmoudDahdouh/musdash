@@ -22,7 +22,6 @@ import {
   domainExists,
   findResourceByNameInEnv,
   getEnvironment,
-  getEnvVarKeys,
   getGithubApp,
   getProject,
   getResourceContext,
@@ -33,13 +32,17 @@ import {
   listGithubInstallations,
   listProjects,
   listResources,
+  listSharedEnvKeys,
   navTree,
+  resolveEnvKeys,
   resourceImage,
   setAutoDeploy,
   setEnvVars,
   setResourceImage,
   setSetting,
+  setSharedEnvVars,
   updateResource,
+  type EnvVarInput,
 } from "../db/queries.ts"
 import { parseEnvText } from "../env/parse.ts"
 import { buildManifest } from "../github/manifest.ts"
@@ -94,6 +97,45 @@ function escapeHtml(value: string): string {
  */
 function flashUrl(kind: "ok" | "error", text: string): string {
   return `/settings?flash=${kind}&msg=${encodeURIComponent(text)}`
+}
+
+/** The three scoped textareas every env form posts. */
+const envBody = t.Object({
+  runtime: t.Optional(t.String()),
+  build: t.Optional(t.String()),
+  both: t.Optional(t.String()),
+  csrf: t.String(),
+})
+
+/**
+ * Parses the three scoped textareas into one flat list.
+ *
+ * A key appearing in two boxes is an ERROR rather than a last-wins merge: the
+ * boxes are one logical set split by presentation, so the same key in two of
+ * them means the user believes they are two different variables. Silently
+ * keeping one is how a build gets a value nobody can account for.
+ */
+function parseScopedEnv(body: {
+  runtime?: string
+  build?: string
+  both?: string
+}): { vars: EnvVarInput[]; errors: string[] } {
+  const vars: EnvVarInput[] = []
+  const errors: string[] = []
+  const seen = new Set<string>()
+  for (const scope of ["runtime", "build", "both"] as const) {
+    const parsed = parseEnvText(body[scope] ?? "")
+    for (const e of parsed.errors) errors.push(`${scope}: ${e}`)
+    for (const [key, value] of Object.entries(parsed.vars)) {
+      if (seen.has(key)) {
+        errors.push(`"${key}" appears in more than one scope box; pick one`)
+        continue
+      }
+      seen.add(key)
+      vars.push({ key, value, scope })
+    }
+  }
+  return { vars, errors }
 }
 
 /**
@@ -166,12 +208,17 @@ export const appRoutes = new Elysia()
     },
   )
 
-  .get("/p/:projectId", async ({ params, session, status }) => {
+  .get("/p/:projectId", async ({ params, query, session, status }) => {
     const project = getProject(params.projectId)
     if (!project) return status(404, "project not found")
 
+    const tab = ["resources", "env"].includes(String(query.tab))
+      ? String(query.tab)
+      : "resources"
+
     const environments = listEnvironments(project.id).map((environment) => ({
       environment,
+      sharedEnv: listSharedEnvKeys({ environmentId: environment.id }),
       resources: listResources(environment.id).map((resource) => ({
         resource,
         image: resourceImage(resource),
@@ -186,9 +233,17 @@ export const appRoutes = new Elysia()
         {
           project,
           environments,
+          tab,
+          envError: query.envError ? String(query.envError) : null,
+          projectEnv: listSharedEnvKeys({ projectId: project.id }),
           csrf: session?.csrfToken,
           defaultMemoryMb: config.defaultMemoryMb,
-          gitPicker: await gitPicker(),
+          // Only on the resources tab: gitPicker makes one GitHub API call per
+          // installation, and the env tab renders none of it.
+          gitPicker:
+            tab === "resources"
+              ? await gitPicker()
+              : { connected: false, installations: [] },
         },
         layout(session, project.name, { activeProjectId: project.id }),
       ),
@@ -376,9 +431,9 @@ export const appRoutes = new Elysia()
           deployments,
           domains: listDomains(resource.id),
           autoDomain: autoDomainFor(resource.name, environment.name),
-          envKeys: getEnvVarKeys(resource.id),
-          // Never render decrypted values back into the page.
-          envText: "",
+          // Keys, origins and scopes — never values. resolveEnvKeys does not
+          // decrypt, so no plaintext can reach the template.
+          resolvedEnv: resolveEnvKeys(resource.id),
           envError: query.envError ? String(query.envError) : null,
           logs: tail(resource.id, 300),
           csrf: session?.csrfToken,
@@ -449,7 +504,7 @@ export const appRoutes = new Elysia()
       const ctx = getResourceContext(params.resourceId)
       if (!ctx) return status(404, "resource not found")
 
-      const parsed = parseEnvText(body.text ?? "")
+      const parsed = parseScopedEnv(body)
       if (parsed.errors.length > 0) {
         const msg = encodeURIComponent(parsed.errors.join("; "))
         return redirect(`/r/${ctx.resource.id}?tab=env&envError=${msg}`, 303)
@@ -457,7 +512,48 @@ export const appRoutes = new Elysia()
       setEnvVars(ctx.resource.id, parsed.vars)
       return redirect(`/r/${ctx.resource.id}?tab=env`, 303)
     },
-    { body: t.Object({ text: t.Optional(t.String()), csrf: t.String() }) },
+    { body: envBody },
+  )
+
+  .post(
+    "/p/:projectId/env",
+    ({ params, body, redirect, status }) => {
+      if (!getProject(params.projectId)) return status(404, "project not found")
+
+      const parsed = parseScopedEnv(body)
+      if (parsed.errors.length > 0) {
+        const msg = encodeURIComponent(parsed.errors.join("; "))
+        return redirect(`/p/${params.projectId}?tab=env&envError=${msg}`, 303)
+      }
+      setSharedEnvVars({ projectId: params.projectId }, parsed.vars)
+      return redirect(`/p/${params.projectId}?tab=env`, 303)
+    },
+    { body: envBody },
+  )
+
+  // Addressed by environment id rather than nested under the project: an
+  // environment id is globally unique, /e/ is already the environment
+  // namespace in this router, and nesting would add a consistency check with
+  // nothing to gain.
+  .post(
+    "/e/:environmentId/env",
+    ({ params, body, redirect, status }) => {
+      const environment = getEnvironment(params.environmentId)
+      if (!environment) return status(404, "environment not found")
+
+      const parsed = parseScopedEnv(body)
+      // Back to the project page, which is where these are edited — /e/:id has
+      // no page of its own. The fragment matches the per-environment card so
+      // the user lands where they were.
+      const back = `/p/${environment.projectId}?tab=env`
+      if (parsed.errors.length > 0) {
+        const msg = encodeURIComponent(parsed.errors.join("; "))
+        return redirect(`${back}&envError=${msg}#env-${environment.id}`, 303)
+      }
+      setSharedEnvVars({ environmentId: environment.id }, parsed.vars)
+      return redirect(`${back}#env-${environment.id}`, 303)
+    },
+    { body: envBody },
   )
 
   .post(

@@ -97,7 +97,10 @@ export async function buildFromSource(
   resource: Resource,
   deploymentId: string,
   emit: (line: string) => void,
+  /** Build-scoped variables only; runtime-only ones never reach the build. */
   buildArgs: Record<string, string>,
+  /** Every secret at every scope, for redaction. See BuildRequest. */
+  redactSecrets: readonly string[],
 ): Promise<BuiltSource> {
   const source = gitSource(resource)
   if (!source) {
@@ -144,6 +147,7 @@ export async function buildFromSource(
       pack,
       dockerfilePath: source.dockerfilePath,
       buildArgs,
+      redactSecrets,
       onLog: emit,
     })
     return { image: tag, commit }

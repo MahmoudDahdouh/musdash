@@ -384,12 +384,32 @@ The source is fetched as a **tarball**, not a `git clone` — it is one HTTP
 request and no `.git` directory on disk. BuildKit builds it, the image is loaded
 into the daemon, and the normal deploy pipeline takes over from there.
 
-Private repos need the GitHub App connect flow, which is not built yet.
+Private repos work through the GitHub App connect flow under **Settings**.
 
 ### Everything else
 
 - **Env vars** — `KEY=value` text, encrypted at rest. Resolution is project →
-  environment → resource, most specific winning.
+  environment → resource, most specific winning. Project and environment
+  variables are edited on the project page's **env** tab; resource variables on
+  the resource's own.
+
+  Each variable is delivered to the **runtime** (the container), the **build**
+  (as a build arg), or **both** — three separate boxes on each form. A build
+  variable is baked into the image, so put a token there only if the build
+  genuinely needs it.
+
+  A value may reference another with `${OTHER}`, resolved after all three
+  levels merge, so a resource variable can reference a project one. References
+  expand once and do not recurse; an undefined reference fails the deploy
+  rather than silently becoming empty. Write `$$` for a literal `$` — note it
+  collapses unconditionally, so a value containing `$$` must be written `$$$$`.
+
+  > **Upgrading from before this existed:** every variable defaulted to
+  > runtime-only. If a resource previously relied on one reaching its build,
+  > re-save it in the **build** or **both** box. Until then it is delivered to
+  > the container only — which also means runtime secrets are no longer baked
+  > into image history.
+
 - **Custom domains** — add one and Caddy issues a certificate on demand.
 - **Rollback** — one click, back to the previous image. It reuses the existing
   image and never rebuilds.
