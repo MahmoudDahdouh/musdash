@@ -1,4 +1,4 @@
-import { config } from "../config.ts"
+import { getPublicUrl } from "../settings.ts"
 import {
   countLinkedGitResources,
   getGithubApp,
@@ -28,7 +28,7 @@ export interface SettingsInstallation {
 
 export interface SettingsView {
   csrf: string
-  /** undefined renders the "set MUSDASH_PUBLIC_URL" warning. */
+  /** undefined renders the "no domain yet" warning. Derived from the host. */
   publicUrl: string | undefined
   app: SettingsGithubApp | null
   installations: SettingsInstallation[]
@@ -61,7 +61,7 @@ export function settingsViewModel(args: {
 
   return {
     csrf: args.csrf,
-    publicUrl: config.publicUrl,
+    publicUrl: getPublicUrl(),
     // Built field by field, NEVER spread. The row carries clientSecretEnc,
     // privateKeyEnc and webhookSecretEnc; a spread would hand three ciphertext
     // buffers to a template and render them into the page. They are encrypted,

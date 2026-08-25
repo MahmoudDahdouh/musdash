@@ -175,16 +175,7 @@ export class CaddyClient {
       )
     }
 
-    const issuer = config.acmeStaging
-      ? {
-          module: "acme",
-          ca: "https://acme-staging-v02.api.letsencrypt.org/directory",
-          ...(config.acmeEmail ? { email: config.acmeEmail } : {}),
-        }
-      : {
-          module: "acme",
-          ...(config.acmeEmail ? { email: config.acmeEmail } : {}),
-        }
+    const issuer = issuerConfig()
 
     await this.expectOk("/load", {
       method: "POST",
@@ -263,6 +254,53 @@ export class CaddyClient {
     }
     await res.arrayBuffer().catch(() => undefined)
   }
+
+  /**
+   * Brings the persisted ACME issuer back in line with the configuration.
+   *
+   * ensureBaseConfig() writes the TLS automation policy exactly once — it
+   * early-returns when srv0 already exists — and Caddy runs with `--resume`
+   * against a persisted volume, so srv0 exists on every boot after the first.
+   * Without this, a box first bootstrapped with MUSDASH_ACME_STAGING=true keeps
+   * issuing untrusted staging certificates forever, and changing the env var
+   * and restarting does nothing at all. That reads to the operator as "musdash
+   * cannot get me a certificate".
+   *
+   * PATCHes only on a real difference, so the common path costs one GET and
+   * nothing else. Flipping staging off triggers real issuance, which is rate
+   * limited to 50 per registered domain per week — deliberate, and the reason
+   * this logs the change rather than doing it quietly.
+   */
+  async ensureTlsAutomation(): Promise<void> {
+    const desired = issuerConfig()
+    const res = await this.request("/config/apps/tls/automation/policies")
+    const current: unknown = res.ok ? await res.json().catch(() => null) : null
+    if (!res.ok) await res.arrayBuffer().catch(() => undefined)
+
+    if (JSON.stringify(current) === JSON.stringify([{ issuers: [desired] }])) {
+      return
+    }
+
+    await this.expectOk("/config/apps/tls/automation/policies", {
+      method: "PATCH",
+      ...this.json([{ issuers: [desired] }]),
+    })
+    logger.info(
+      { staging: config.acmeStaging, email: config.acmeEmail !== undefined },
+      "updated the Caddy ACME issuer",
+    )
+  }
+}
+
+/** The ACME issuer both the base config and the reconcile above install. */
+function issuerConfig(): Record<string, unknown> {
+  return {
+    module: "acme",
+    ...(config.acmeStaging
+      ? { ca: "https://acme-staging-v02.api.letsencrypt.org/directory" }
+      : {}),
+    ...(config.acmeEmail ? { email: config.acmeEmail } : {}),
+  }
 }
 
 export const caddy = new CaddyClient()
@@ -280,44 +318,66 @@ export function autoDomainFor(
   return `${resourceName}-${environmentName}.${config.wildcardDomain}`.toLowerCase()
 }
 
-/** Stable id for the dashboard's own route. */
+/** Stable id for the dashboard's catch-all route. */
 export const DASHBOARD_ROUTE_ID = "musdash-dashboard"
 
+/** Stable id for the dashboard's host-matched route, when a hostname is set. */
+export const DASHBOARD_HOST_ROUTE_ID = "musdash-dashboard-host"
+
+/** A dotted hostname: label(.label)+, no leading or trailing dash. */
+export const HOSTNAME_RE =
+  /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/
+
+export function isValidHostname(host: string): boolean {
+  return host.length <= 253 && HOSTNAME_RE.test(host)
+}
+
 /**
- * Routes the dashboard through Caddy so it stays reachable after the bind
- * narrows to loopback.
+ * Routes the dashboard through Caddy, on its hostname AND on anything else.
  *
- * Without this the operator is locked out of the box: config.ts binds
- * 0.0.0.0 only while the users table is empty, so the restart after account
- * creation moves the listener to 127.0.0.1 with nothing in front of it. D3
- * claimed install.sh created this route; it never did.
+ * Two routes, always, and the order matters twice over.
  *
- * The route is deliberately a CATCH-ALL — no host matcher — so it answers on
- * the bare server IP, which is the whole point on an install with no DNS yet.
- * A host matcher cannot express "whatever address the operator typed", and
- * Let's Encrypt will not issue for an IP, so this path is HTTP only.
+ * The host-matched route is what turns automatic HTTPS on: Caddy issues a
+ * certificate for any name it sees in a host matcher, and will not issue for a
+ * bare IP. The catch-all is what keeps the operator from being locked out — it
+ * is the only way back in when DNS breaks, the registrar lapses, or issuance
+ * fails, which is exactly the state this codebase shipped into. An earlier
+ * version REPLACED the catch-all with the host route, and the result was that
+ * every request to the bare IP became a 308 toward an https:// URL that could
+ * never have a certificate. Caddy redirects :80 to :443 only for names it
+ * manages, so with the catch-all present a bare-IP request is served, not
+ * redirected.
  *
- * Ordering is what keeps that safe. Caddy evaluates routes in array order and
- * every resource route is `terminal` with a host matcher, so appending here
- * puts the catch-all LAST: a request for a deployed app's domain matches its
- * own route and stops, and only unmatched hosts fall through to the dashboard.
- * upsertRoute POSTs to the same collection, so routes added later also append
- * after this one — which would break that guarantee — so the dashboard route
- * is re-appended on every ensureCaddy() rather than created once.
+ * Ordering: Caddy evaluates routes in array order and every route musdash
+ * writes is `terminal`. Resource routes carry host matchers, so a request for a
+ * deployed app's domain matches its own route and stops. The catch-all matches
+ * everything, so it must be LAST or it swallows every resource. upsertRoute
+ * POSTs to the same collection and therefore appends, so a resource deployed
+ * later would land behind it — which is why both dashboard routes are deleted
+ * and re-appended as a unit on every ensureCaddy() rather than created once.
  */
-export async function ensureDashboardRoute(): Promise<void> {
-  // Delete-then-append rather than PATCH in place: the id may sit anywhere in
-  // the array from a previous boot, and only a fresh append puts it last.
+export async function ensureDashboardRoutes(
+  host: string | undefined,
+): Promise<void> {
+  // Delete-then-append rather than PATCH in place: the ids may sit anywhere in
+  // the array from a previous boot, and only a fresh append puts them last.
+  // deleteRoute treats 404 as success, so removing both unconditionally is safe.
+  await caddy.deleteRoute(DASHBOARD_HOST_ROUTE_ID)
   await caddy.deleteRoute(DASHBOARD_ROUTE_ID)
 
-  const hosts = config.dashboardHost ? [config.dashboardHost] : []
-  await caddy.appendRoute({
-    id: DASHBOARD_ROUTE_ID,
-    // An empty host list means catch-all; a configured dashboard host narrows
-    // it, which also turns on automatic HTTPS for that name.
-    hosts,
-    // The dashboard binds loopback on the HOST, not in a container, so Caddy
-    // dials the host alias from its ExtraHosts rather than a container name (D2).
-    upstream: `${HOST_ALIAS}:${config.port}`,
-  })
+  // Caddy dials the host through the ExtraHosts alias rather than a container
+  // name: the dashboard runs on the host, not on this network (D2). The alias
+  // resolves to the host's bridge address, which is why the dashboard binds
+  // every interface rather than loopback (D23).
+  const upstream = `${HOST_ALIAS}:${config.port}`
+
+  if (host) {
+    await caddy.appendRoute({
+      id: DASHBOARD_HOST_ROUTE_ID,
+      hosts: [host],
+      upstream,
+    })
+  }
+
+  await caddy.appendRoute({ id: DASHBOARD_ROUTE_ID, hosts: [], upstream })
 }

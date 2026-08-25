@@ -5,7 +5,7 @@ import {
   verifyCsrf,
   type SessionUser,
 } from "../auth.ts"
-import { autoDomainFor } from "../caddy/client.ts"
+import { autoDomainFor, isValidHostname } from "../caddy/client.ts"
 import { config } from "../config.ts"
 import { randomToken, safeEqual } from "../crypto.ts"
 import { isValidImageRef, isValidResourceName } from "../docker/client.ts"
@@ -62,15 +62,23 @@ import { enqueueDeploy } from "../jobs/deploy.ts"
 import { logger } from "../log.ts"
 import { tail } from "../logs/buffer.ts"
 import { enqueue } from "../queue/index.ts"
+import {
+  requestRestart,
+  restartBlockedReason,
+  restartCapability,
+} from "../restart.ts"
+import { dashboardHostView } from "../settings-view.ts"
+import {
+  getPublicUrl,
+  SETTING_GITHUB_MANIFEST_STATE,
+  setDashboardHost,
+} from "../settings.ts"
 import { renderPage } from "../views/render.ts"
 
 const html = (body: string) =>
   new Response(body, {
     headers: { "content-type": "text/html; charset=utf-8" },
   })
-
-/** The manifest-flow nonce, held in `settings` so a restart cannot strand it. */
-const GITHUB_MANIFEST_STATE = "github_manifest_state"
 
 /**
  * Escapes text for an HTML attribute.
@@ -97,6 +105,24 @@ function escapeHtml(value: string): string {
  */
 function flashUrl(kind: "ok" | "error", text: string): string {
   return `/settings?flash=${kind}&msg=${encodeURIComponent(text)}`
+}
+
+/**
+ * Turns whatever the operator pasted into a bare hostname.
+ *
+ * They will paste `https://mus.example.com/` at least as often as they type the
+ * name, and rejecting that is a worse experience than accepting it. Strips a
+ * scheme, any path, a port and a trailing dot, then lowercases. Empty means
+ * "no dashboard host".
+ */
+function normalizeHost(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^[a-z]+:\/\//i, "")
+    .replace(/\/.*$/, "")
+    .replace(/:\d+$/, "")
+    .replace(/\.$/, "")
+    .toLowerCase()
 }
 
 /** The three scoped textareas every env form posts. */
@@ -563,10 +589,7 @@ export const appRoutes = new Elysia()
       if (!ctx) return status(404, "resource not found")
 
       const host = body.host.trim().toLowerCase()
-      // Must be a dotted hostname: label(.label)+, no leading/trailing dash.
-      const hostShape =
-        /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/
-      if (host.length > 253 || !hostShape.test(host)) {
+      if (!isValidHostname(host)) {
         return status(400, "that does not look like a hostname")
       }
       if (domainExists(host))
@@ -697,17 +720,105 @@ export const appRoutes = new Elysia()
       csrf: session?.csrfToken ?? "",
       flash: flashFromQuery(query.flash, query.msg),
     })
+    const restarting = query.restarting === "1"
     // Spread into a literal rather than casting: an interface has no index
     // signature, so SettingsView is not assignable to Record<string, unknown>
     // directly, and a cast would also silence a genuine shape mismatch.
     return html(
       renderPage(
         "settings",
-        { ...view },
+        // The dashboard data is a SIBLING key, never a widening of SettingsView:
+        // that shape carries the rule about never spreading the github_apps row,
+        // and nothing on this path should be able to reach it.
+        { ...view, host: dashboardHostView(), restarting },
         layout(session, "Settings", { activeSettings: true }),
       ),
     )
   })
+
+  /**
+   * Sets, or clears, the hostname the dashboard answers on.
+   *
+   * Writes the row and enqueues; the route change itself happens on the worker.
+   * An empty value writes an empty row rather than deleting it, because an
+   * absent row falls through to MUSDASH_DASHBOARD_HOST — and an operator who
+   * clears the field means "none", including the environment's.
+   */
+  .post(
+    "/settings/dashboard-host",
+    ({ body, redirect }) => {
+      const host = normalizeHost(body.host)
+
+      if (host !== "" && !isValidHostname(host)) {
+        return redirect(
+          flashUrl(
+            "error",
+            "That does not look like a hostname. Use a name you have pointed at this server, for example mus.example.com.",
+          ),
+          303,
+        )
+      }
+      // A resource route for the same name is earlier in the array and terminal,
+      // so it would win silently and the dashboard would be unreachable at the
+      // name just set.
+      if (host !== "" && domainExists(host)) {
+        return redirect(
+          flashUrl(
+            "error",
+            `${host} is already attached to a resource. Remove it there first, or choose another name.`,
+          ),
+          303,
+        )
+      }
+
+      setDashboardHost(host)
+      enqueue("apply_dashboard_host", {})
+      return redirect(
+        flashUrl(
+          "ok",
+          host === ""
+            ? "Cleared. The dashboard answers on this server's address again."
+            : `Saved. Applying ${host} to the proxy — a certificate follows within a few seconds.`,
+        ),
+        303,
+      )
+    },
+    {
+      body: t.Object({ host: t.String({ maxLength: 300 }), csrf: t.String() }),
+    },
+  )
+
+  /**
+   * Restarts musdash.
+   *
+   * Deliberately not a job: the worker completes a job only after its handler
+   * returns, so a handler that exits the process leaves its row leased and
+   * lease recovery restarts the process again fifteen minutes later. Nothing is
+   * awaited here either — the exit is deferred past this response.
+   */
+  .post(
+    "/settings/restart",
+    ({ redirect }) => {
+      if (restartCapability() !== "systemd") {
+        return redirect(
+          flashUrl(
+            "error",
+            "Nothing is supervising this process, so it would stop rather than restart. Restart it the way you started it.",
+          ),
+          303,
+        )
+      }
+      const blocked = restartBlockedReason()
+      if (blocked) return redirect(flashUrl("error", blocked), 303)
+
+      requestRestart()
+      return redirect(
+        `${flashUrl("ok", "Restarting — this page reloads in a few seconds.")}&restarting=1`,
+        303,
+      )
+    },
+    { body: t.Object({ csrf: t.String() }) },
+  )
 
   /**
    * Step one of GitHub's App-manifest flow.
@@ -725,7 +836,7 @@ export const appRoutes = new Elysia()
       // process is an invariant, but a restart mid-flow must not strand the
       // user at a callback that can no longer be validated.
       const state = randomToken()
-      setSetting(GITHUB_MANIFEST_STATE, state)
+      setSetting(SETTING_GITHUB_MANIFEST_STATE, state)
 
       // GitHub App names are globally unique, so a bare "musdash" collides for
       // the second person who ever tries this. The route generates the
@@ -734,9 +845,9 @@ export const appRoutes = new Elysia()
 
       let manifest: string
       try {
-        manifest = JSON.stringify(buildManifest(config.publicUrl, name))
+        manifest = JSON.stringify(buildManifest(getPublicUrl(), name))
       } catch (err) {
-        // The only expected failure is an unset MUSDASH_PUBLIC_URL, whose
+        // The only expected failure is having no dashboard domain yet, whose
         // message is written to be read by a user.
         logger.warn(
           { err: (err as Error).message },
@@ -764,7 +875,7 @@ export const appRoutes = new Elysia()
    * proves the callback belongs to a flow this instance started.
    */
   .get("/settings/github/callback", async ({ query, redirect, status }) => {
-    const expected = getSetting(GITHUB_MANIFEST_STATE)
+    const expected = getSetting(SETTING_GITHUB_MANIFEST_STATE)
     if (!expected) {
       return status(400, "there is no GitHub connection in progress")
     }
@@ -774,7 +885,7 @@ export const appRoutes = new Elysia()
     }
     // Consumed BEFORE anything else can fail, so a replayed callback cannot
     // re-enter the exchange with the same nonce.
-    deleteSetting(GITHUB_MANIFEST_STATE)
+    deleteSetting(SETTING_GITHUB_MANIFEST_STATE)
 
     const code = String(query.code ?? "")
     if (!code) return status(400, "GitHub did not return a registration code")

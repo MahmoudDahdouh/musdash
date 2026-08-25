@@ -227,6 +227,7 @@ export type JobType =
   | "prune_build_cache"
   | "ensure_caddy"
   | "ensure_buildkit"
+  | "apply_dashboard_host"
 
 export const jobs = sqliteTable(
   "jobs",

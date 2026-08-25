@@ -8,6 +8,154 @@
 <div class="flash flash-<%= it.flash.kind %>"><%= it.flash.text %></div>
 <% } %>
 
+<% if (it.restarting) { %>
+<div class="card stack" x-data x-init="setTimeout(() => location.reload(), 6000)">
+  <h3>Restarting musdash</h3>
+  <p class="muted">
+    This page reloads in a few seconds. If it does not,
+    <a href="/settings">reload it yourself</a>.
+  </p>
+</div>
+<% } %>
+
+<div class="card stack">
+  <h3>Dashboard address</h3>
+
+  <% if (!it.host.host) { %>
+  <p class="muted">
+    musdash currently answers on this server's address over plain HTTP. No
+    certificate authority issues certificates for a bare IP address, so there is
+    no HTTPS to be had until you give it a name. Point a DNS A record at this
+    server, enter the name below, and Caddy obtains a certificate automatically.
+  </p>
+  <% } else { %>
+  <p class="muted">
+    Reachable at
+    <a href="https://<%= it.host.host %>/" rel="noreferrer">https://<%= it.host.host %>/</a><%
+      %><% if (it.host.source === "environment") { %>, from
+    <code>MUSDASH_DASHBOARD_HOST</code><% } %>. This server's own address keeps
+    working over plain HTTP as a fallback, so a DNS or certificate problem
+    cannot lock you out.
+  </p>
+  <% } %>
+
+  <% if (it.host.applyPending) { %>
+  <div class="flash flash-ok">
+    Saved. Applying it to the proxy — reload in a moment to see the result.
+  </div>
+  <% } %>
+
+  <% if (it.host.envHostShadowed) { %>
+  <div class="flash flash-error">
+    <code>MUSDASH_DASHBOARD_HOST</code> is also set in
+    <code>musdash.env</code>. This page wins now, so that line is ignored and
+    you can delete it.
+  </div>
+  <% } %>
+
+  <% if (it.host.check && it.host.check.dns === "mismatch") { %>
+  <div class="flash flash-error">
+    <strong><%= it.host.host %></strong> resolves to
+    <%= it.host.check.resolved.join(", ") %>, but this server answers on
+    <%= it.host.check.local.join(", ") %>. Caddy cannot obtain a certificate
+    until DNS points here. Nothing is blocked — the name is saved either way,
+    and this check cannot see an address that reaches you through NAT or a
+    proxying CDN.
+  </div>
+  <% } else if (it.host.check && it.host.check.dns === "unresolved") { %>
+  <div class="flash flash-error">
+    <strong><%= it.host.host %></strong> does not resolve yet. DNS changes can
+    take a few minutes to propagate; the name is saved and will start working on
+    its own.
+  </div>
+  <% } %>
+
+  <% if (it.host.check && !it.host.check.reachable) { %>
+  <div class="flash flash-error">
+    <strong>The proxy cannot reach this dashboard.</strong>
+    <%= it.host.check.reachError %>. This is almost always the host firewall
+    dropping traffic from the Docker bridge. On Ubuntu:
+    <pre><code>ufw allow in on docker0 to any port 8000 proto tcp
+ufw deny 8000/tcp</code></pre>
+  </div>
+  <% } %>
+
+  <form method="post" action="/settings/dashboard-host" class="stack">
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <label>
+      Hostname
+      <input
+        name="host"
+        value="<%= it.host.host || '' %>"
+        placeholder="mus.example.com"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <small class="muted">
+        The A record must already point at this server. Leave it empty to go
+        back to answering on the bare address. Applies immediately — no restart
+        needed.
+      </small>
+    </label>
+    <div class="row end">
+      <button class="primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Save
+      </button>
+    </div>
+  </form>
+
+  <p class="muted">
+    Listening on <code><%= it.host.bindAddress %></code>. That port is reachable
+    from every interface, so your firewall — not the bind address — is what
+    keeps it off the internet.
+  </p>
+</div>
+
+<div class="card stack">
+  <h3>Restart musdash</h3>
+  <p class="muted">
+    The dashboard address above applies without one. A restart is how you pick
+    up the settings that still live in <code>musdash.env</code> — the ACME
+    email, the wildcard domain, the public URL. It takes about three seconds.
+  </p>
+
+  <% if (it.host.restart.blockedReason) { %>
+  <div class="flash flash-error">
+    Not right now: <%= it.host.restart.blockedReason %>.
+  </div>
+  <% } %>
+
+  <form
+    method="post"
+    action="/settings/restart"
+    data-confirm
+    data-confirm-title="Restart musdash?"
+    data-confirm-body="The dashboard is unavailable for about three seconds. Running deployments are not interrupted — a restart is refused while any job is in flight."
+    data-confirm-label="Restart"
+  >
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <button
+      class="primary"
+      type="submit"
+      <%= it.host.restart.available && !it.host.restart.blockedReason ? '' : 'disabled' %>
+    >
+      <svg class="icon" aria-hidden="true"><use href="#i-rotate-ccw" /></svg>
+      Restart musdash
+    </button>
+  </form>
+
+  <p class="muted">
+    <% if (!it.host.restart.available) { %>
+    Nothing is supervising this process, so the button would stop it rather than
+    restart it. Restart it the way you started it, or over SSH:
+    <% } else { %>
+    Or over SSH:
+    <% } %>
+    <code><%= it.host.restart.command %></code>
+  </p>
+</div>
+
 <div class="card stack">
   <h3>GitHub</h3>
   <p class="muted">
@@ -17,12 +165,12 @@
 
   <% if (!it.publicUrl) { %>
   <div class="flash flash-error">
-    <strong>MUSDASH_PUBLIC_URL is not set.</strong>
+    <strong>This dashboard has no domain yet.</strong>
     GitHub has to reach this instance to deliver the registration callback and
-    push webhooks, so it needs the public HTTPS address this dashboard is served
-    from. Set <code>MUSDASH_PUBLIC_URL</code> — for example
-    <code>https://musdash.example.com</code> — and restart musdash before
-    connecting.
+    push webhooks, and it cannot do that over a bare IP address. Set a domain
+    you have pointed at this server under <em>Dashboard address</em> above —
+    a certificate follows within a few seconds, and GitHub can be connected
+    straight after. No restart needed.
   </div>
   <% } %>
 

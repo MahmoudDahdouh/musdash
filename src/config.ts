@@ -29,30 +29,41 @@ const schema = z.object({
   MUSDASH_WILDCARD_DOMAIN: z.string().min(1).optional(),
   MUSDASH_ACME_EMAIL: z.string().email().optional(),
 
-  // Where this dashboard is reachable from the public internet. Optional for the
-  // same reason the wildcard domain is — a fresh install must boot and reach the
-  // setup page — but GitHub App registration cannot work without it, so its
-  // absence is a clear error at manifest-build time rather than at startup.
+  // FALLBACK ONLY. The public address is normally DERIVED from the dashboard
+  // host (src/settings.ts getPublicUrl), because it is by definition
+  // `https://` + that name. This stays for the one case derivation cannot
+  // express: something else fronting musdash on a different name — a tunnel, an
+  // external load balancer — where no dashboard host is set at all.
   MUSDASH_PUBLIC_URL: z.string().url().optional(),
 
-  // The hostname the dashboard itself answers on, once the operator has DNS.
-  // Unset is the normal state on a fresh install: the dashboard route is then a
-  // catch-all so it answers on the bare server IP, which is the only address a
-  // box without DNS has. Setting it narrows the route to that name and lets
-  // Caddy obtain a certificate for it — Let's Encrypt will not issue for an IP.
-  MUSDASH_DASHBOARD_HOST: z.string().min(1).optional(),
+  // The dashboard's own hostname — the FALLBACK for the `dashboard_host`
+  // settings row, which the Settings page writes and which wins when present
+  // (src/settings.ts). It stays here so a fresh box can be provisioned
+  // non-interactively by install.sh. Unset is the normal state: the dashboard
+  // route is then a catch-all answering on the bare server IP, which is the
+  // only address a box without DNS has. Setting it ADDS a host-matched route
+  // and lets Caddy obtain a certificate — Let's Encrypt will not issue for an
+  // IP, so the catch-all stays alongside it as the fallback.
+  // A BARE hostname: no scheme, no path, no port. It is written straight into a
+  // Caddy host matcher, which matches the literal string — so "https://x.com"
+  // produces a route that can never match, no certificate, and a clean startup
+  // log. That failure is invisible, so it is rejected here instead.
+  MUSDASH_DASHBOARD_HOST: z
+    .string()
+    .min(1)
+    .refine((h) => !/[:/]/.test(h), {
+      message:
+        "must be a bare hostname with no scheme, path or port — " +
+        "mus.example.com, not https://mus.example.com",
+    })
+    .optional(),
 
-  // How a container reaches the host. The dashboard binds the HOST's loopback
-  // (D2), so Caddy — which is in a container — cannot dial 127.0.0.1 and reach
-  // it. `host-gateway` is the Engine's own alias for the host's bridge address,
-  // added to the proxy's /etc/hosts via ExtraHosts.
+  // How a container reaches the host. Caddy is in a container, so 127.0.0.1
+  // from inside it reaches the proxy, not the dashboard. `host-gateway` is the
+  // Engine's own alias for the host's BRIDGE address, added to the proxy's
+  // /etc/hosts via ExtraHosts. That it is the bridge address and not loopback
+  // is why the dashboard cannot bind loopback — see bindHostname below.
   MUSDASH_HOST_GATEWAY: z.string().default("host-gateway"),
-
-  // Keeps the dashboard on 0.0.0.0 even after an admin exists. Off by default:
-  // §12 requires loopback in production, and Caddy fronts it. It exists for the
-  // operator who deliberately reaches the dashboard on the bare IP without a
-  // proxy in front, where narrowing to loopback is a lockout, not hardening.
-  MUSDASH_BIND_ALL: bool.default(false),
 
   MUSDASH_ACME_STAGING: bool.default(true), // D4
   MUSDASH_CADDY_ADMIN: z.string().url().default("http://127.0.0.1:2019"), // D2
@@ -114,7 +125,6 @@ export const config = Object.freeze({
   wildcardDomain: env.MUSDASH_WILDCARD_DOMAIN,
   dashboardHost: env.MUSDASH_DASHBOARD_HOST?.toLowerCase(),
   hostGatewayIp: env.MUSDASH_HOST_GATEWAY,
-  bindAll: env.MUSDASH_BIND_ALL,
   acmeEmail: env.MUSDASH_ACME_EMAIL,
   acmeStaging: env.MUSDASH_ACME_STAGING,
   // Trailing slash stripped so callers can join paths without doubling it.
@@ -147,20 +157,22 @@ export const HOST_ALIAS = "musdash-host"
 export type Config = typeof config
 
 /**
- * D3: the dashboard is reached through Caddy, so the port binds to loopback.
- * But a fresh install has no admin account and possibly no DNS yet, so while
- * the users table is empty we bind all interfaces — otherwise the operator is
- * locked out of the box they just installed. The window closes automatically
- * the moment an account exists.
+ * The dashboard always binds every interface. D23 supersedes D3 and D21.
  *
- * D20: narrowing to loopback is safe ONLY because Caddy proxies the dashboard.
- * When the operator has published the port directly (MUSDASH_BIND_ALL), moving
- * to 127.0.0.1 the instant the account is created takes the dashboard away with
- * nothing in front of it — the exact lockout the empty-users-table case exists
- * to prevent, just one restart later.
+ * §12 and the older decisions said "127.0.0.1 in production, reached through
+ * Caddy". That is unachievable with Caddy in a container: the proxy dials the
+ * host through `host-gateway`, which the Engine resolves to the host's BRIDGE
+ * address (docker0, typically 172.17.0.1) — not loopback. A socket bound to
+ * 127.0.0.1 cannot accept that connection, so narrowing the bind does not
+ * harden the dashboard, it disconnects it.
+ *
+ * The boundary therefore moves from an implicit bind address to an explicit
+ * firewall rule, which install.sh now creates. That is the honest place for it:
+ * the old rule was already untrue in practice, since install.sh set
+ * MUSDASH_BIND_ALL=true on every install without a dashboard host. What is
+ * exposed without a firewall is the login form, /health and /assets — every
+ * other route is behind a session and the global CSRF gate.
  */
-export function bindHostname(hasAdminUser: boolean): string {
-  if (!config.isProduction) return "0.0.0.0"
-  if (config.bindAll) return "0.0.0.0"
-  return hasAdminUser ? "127.0.0.1" : "0.0.0.0"
+export function bindHostname(): string {
+  return "0.0.0.0"
 }

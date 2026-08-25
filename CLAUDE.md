@@ -242,8 +242,12 @@ Expected once the app is real, not yet in package.json: `bun build --compile
   (they become container names and DNS labels), and image references must be
   validated against a registry-reference regex — an unvalidated image string is a
   command injection vector if it ever reaches a shell.
-- The Caddy admin API is never published to the host; the musdash HTTP port binds
-  to `127.0.0.1` in production and is reached through Caddy.
+- The Caddy admin API is never published to the host. The musdash HTTP port
+  binds `0.0.0.0` and the **firewall** is the boundary (D23) — Caddy runs in a
+  container and dials the host's bridge address, which a loopback-bound socket
+  cannot accept, so narrowing the bind disconnects the dashboard rather than
+  hardening it. `install.sh` creates the ufw rules; a box without a firewall
+  exposes the login page, `/health` and `/assets`, and nothing else.
 - Docker socket access is root-equivalent on the host. Treat any path that can
   influence a container spec as a privilege boundary.
 

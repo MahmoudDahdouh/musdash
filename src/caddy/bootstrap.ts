@@ -1,4 +1,4 @@
-import { caddy, CaddyError, ensureDashboardRoute } from "./client.ts"
+import { caddy, CaddyError, ensureDashboardRoutes } from "./client.ts"
 import { config, HOST_ALIAS } from "../config.ts"
 import {
   type ContainerState,
@@ -6,6 +6,8 @@ import {
   sidecarLabels,
 } from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
+import { probeDashboardReachable } from "../jobs/dashboard.ts"
+import { getDashboardHost } from "../settings.ts"
 import { logger } from "../log.ts"
 
 /**
@@ -172,7 +174,14 @@ export async function ensureCaddy(): Promise<void> {
   await verifyServing(id)
   // Re-appended every boot on purpose: the catch-all has to stay LAST, and any
   // resource route added since would otherwise sit behind it. See D20.
-  await ensureDashboardRoute()
+  await ensureDashboardRoutes(getDashboardHost())
+  await caddy.ensureTlsAutomation()
+
+  // Warn-only here, unlike in the apply job. This job has maxAttempts 1, and a
+  // new hard failure mode in it would turn a working proxy into a failed
+  // bootstrap on an unusual-but-valid firewall setup. The result is recorded
+  // either way, so the Settings page can say what is wrong.
+  await probeDashboardReachable()
 
   logger.info(
     { container: CADDY_CONTAINER, id, adopted },

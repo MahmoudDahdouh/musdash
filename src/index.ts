@@ -1,5 +1,4 @@
 import { Elysia } from "elysia"
-import { hasAdminUser } from "./auth.ts"
 import { bindHostname, config } from "./config.ts"
 import { migrate } from "./db/migrate.ts"
 import { logger } from "./log.ts"
@@ -48,7 +47,7 @@ const app = new Elysia()
   // to /login, which GitHub records as success and never retries.
   .use(githubWebhookRoutes)
   .use(appRoutes)
-  .listen({ port: config.port, hostname: bindHostname(hasAdminUser()) })
+  .listen({ port: config.port, hostname: bindHostname() })
 
 logger.info(
   {

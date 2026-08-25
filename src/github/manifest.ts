@@ -46,9 +46,9 @@ export function buildManifest(
 ): ManifestDescriptor {
   if (!publicUrl) {
     throw new ManifestError(
-      "MUSDASH_PUBLIC_URL is not set. GitHub needs a public address to send " +
-        "the registration callback and webhooks to, so set it and restart " +
-        "before connecting GitHub.",
+      "This dashboard has no domain yet. GitHub needs a public HTTPS address " +
+        "to send the registration callback and webhooks to, so set a domain " +
+        "under Dashboard address before connecting GitHub.",
     )
   }
   const base = publicUrl.replace(/\/$/, "")

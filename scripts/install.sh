@@ -185,14 +185,12 @@ log "Installed $INSTALL_DIR/musdash"
 
 # --------------------------------------------------------------- env file
 ENV_FILE="$INSTALL_DIR/musdash.env"
-# With a dashboard host the proxy fronts the dashboard, so it can bind loopback
-# as §12 requires. Without one it is reached directly by IP and must not.
+# Optional here: the dashboard address is set from the Settings page once
+# musdash is up. This only pre-seeds it for an unattended install.
 if [ -n "${MUSDASH_DASHBOARD_HOST:-}" ]; then
   DASHBOARD_HOST_LINE="MUSDASH_DASHBOARD_HOST=$MUSDASH_DASHBOARD_HOST"
-  BIND_ALL_VALUE="false"
 else
   DASHBOARD_HOST_LINE="#MUSDASH_DASHBOARD_HOST=mus.example.com"
-  BIND_ALL_VALUE="true"
 fi
 
 if [ ! -f "$ENV_FILE" ]; then
@@ -204,25 +202,24 @@ MUSDASH_NETWORK=$NETWORK
 MUSDASH_CADDY_ADMIN=http://127.0.0.1:2019
 
 # --- Dashboard address -------------------------------------------------
-# Unset: the dashboard answers on this host's bare IP over HTTP, which is the
-# only address a box without DNS has. Set it to a hostname you have pointed
-# here and Caddy obtains a certificate for it automatically.
+# SET THIS FROM THE SETTINGS PAGE, not here. The value below is only a seed for
+# an unattended install; once you save a hostname in the dashboard, that wins
+# and this line is ignored.
 #
-# Until it is set, two things are true and neither is a bug:
+# Unset, the dashboard answers on this host's bare IP over HTTP, which is the
+# only address a box without DNS has. Until a hostname is set, two things are
+# true and neither is a bug:
 #   - the admin session cookie travels in plaintext (no cert exists for an IP)
 #   - GitHub cannot be connected; its App requires a public HTTPS URL
 ${DASHBOARD_HOST_LINE}
-
-# Keeps the dashboard listening on all interfaces. Required while it is reached
-# by IP; turn it off once MUSDASH_DASHBOARD_HOST is set and Caddy fronts it.
-MUSDASH_BIND_ALL=${BIND_ALL_VALUE}
 
 # Point a wildcard A record (*.example.com) at this host to get automatic
 # HTTPS subdomains for every resource. Optional: without it, resources have no
 # auto-subdomain and you attach real domains on each resource's Domains tab.
 #MUSDASH_WILDCARD_DOMAIN=mus.example.com
-# Needed only to connect GitHub: the App's redirect and webhook URLs must be
-# publicly reachable HTTPS, so this cannot be localhost or a private address.
+# Not needed to connect GitHub: the App's redirect and webhook URLs are derived
+# from the dashboard host above. Set this only when something else fronts
+# musdash on a different name, such as a tunnel or an external load balancer.
 #MUSDASH_PUBLIC_URL=https://mus.example.com
 #MUSDASH_ACME_EMAIL=you@example.com
 
@@ -263,6 +260,27 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
+# --------------------------------------------------------------- firewall
+# The dashboard binds every interface, because Caddy is in a container and dials
+# the host through its bridge address — a socket on 127.0.0.1 cannot accept that
+# connection. So the firewall, not the bind address, is what keeps the port off
+# the internet. This is only meaningful when ufw is actually enabled; on a box
+# with no firewall the port is open either way, which is worth knowing.
+if command -v ufw >/dev/null 2>&1; then
+  log "Allowing the proxy to reach the dashboard, and denying everyone else"
+  ufw allow in on docker0 to any port "$PORT" proto tcp >/dev/null 2>&1 || true
+  BRIDGE_ID=$(docker network inspect "$NETWORK" -f '{{.Id}}' 2>/dev/null | cut -c1-12)
+  if [ -n "$BRIDGE_ID" ]; then
+    ufw allow in on "br-$BRIDGE_ID" to any port "$PORT" proto tcp >/dev/null 2>&1 || true
+  fi
+  ufw deny "$PORT/tcp" >/dev/null 2>&1 || true
+  if ! ufw status 2>/dev/null | grep -q "Status: active"; then
+    log "ufw is installed but inactive — port $PORT is reachable from anywhere"
+  fi
+else
+  log "No ufw here; port $PORT is reachable from anywhere. Firewall it."
+fi
+
 systemctl daemon-reload
 systemctl enable --now musdash
 
@@ -283,11 +301,10 @@ if systemctl is-active --quiet musdash; then
     frame "Open http://$IP to create your admin account."
     echo
     echo "  That is plain HTTP: no certificate authority issues for an IP."
-    echo "  Once you point a domain here, set it and restart:"
-    echo "    MUSDASH_DASHBOARD_HOST=mus.example.com in $ENV_FILE"
-    echo "    MUSDASH_BIND_ALL=false"
-    echo "    systemctl restart musdash"
-    echo "  That gets you HTTPS on the dashboard and enables GitHub."
+    echo "  Once you point a domain here, open Settings in the dashboard and"
+    echo "  enter it under Dashboard address. HTTPS follows within seconds,"
+    echo "  no restart and no SSH — and this address keeps working as a"
+    echo "  fallback if DNS or the certificate ever breaks."
   fi
   echo
   echo "  Logs: journalctl -u musdash -f"

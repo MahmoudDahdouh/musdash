@@ -1,6 +1,7 @@
 import { ensureBuildkit } from "../build/bootstrap.ts"
 import { removeResourceCache, sweepBuildCache } from "../build/cache.ts"
 import { ensureCaddy } from "../caddy/bootstrap.ts"
+import { runApplyDashboardHost } from "./dashboard.ts"
 import { caddy, routeIdFor } from "../caddy/client.ts"
 import { config } from "../config.ts"
 import { LABEL_RESOURCE, LABEL_ROLE } from "../docker/client.ts"
@@ -147,5 +148,8 @@ export const handlers: Record<string, JobHandler> = {
   // changed it must not run against the value that was current when it was.
   prune_build_cache: async () => runPruneBuildCache(),
   ensure_caddy: () => ensureCaddy(),
+  // No payload either: the hostname comes from the settings row, so a job
+  // queued before the operator changed it must not run against the old value.
+  apply_dashboard_host: async () => runApplyDashboardHost(),
   ensure_buildkit: () => ensureBuildkit(),
 }

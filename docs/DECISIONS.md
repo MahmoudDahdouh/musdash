@@ -1485,3 +1485,186 @@ substitutes, so the alias on the left is ours to choose.
 None of this has been run against a real VPS. The catch-all route ordering, the
 `host-gateway` mapping, and the end-to-end install were checked by typecheck,
 unit tests, and shell syntax only.
+
+## Slice: the dashboard address moves into the product (2026-08-25)
+
+### D23 — the dashboard binds every interface, and the firewall is the boundary
+
+§12, D3 and D21 all assumed "bind `127.0.0.1` in production, reached through
+Caddy". That is unachievable with Caddy in a container. The proxy dials the host
+through the `musdash-host` ExtraHosts alias, and the Engine resolves
+`host-gateway` to the host's **bridge** address (docker0, typically 172.17.0.1)
+— not loopback. A socket bound to `127.0.0.1` cannot accept that connection. The
+earlier section "Caddy reaches the host through an alias, not through localhost"
+asserted the opposite and was wrong: the alias mechanism is correct, the claim
+about loopback was not.
+
+**Resolution: `bindHostname()` returns `0.0.0.0` unconditionally, and
+`MUSDASH_BIND_ALL` is removed.** The boundary moves from an implicit bind
+address to an explicit firewall rule, which `install.sh` now creates. That is
+the honest place for it — the old rule was already untrue in practice, since
+`install.sh` set `MUSDASH_BIND_ALL=true` on every install without a dashboard
+host, which is the default path. What is exposed without a firewall is the login
+form, `/health` and `/assets`; every other route sits behind a SQLite session
+and the global CSRF gate.
+
+A stale `MUSDASH_BIND_ALL=false` line in an existing `musdash.env` is harmless:
+zod object parsing ignores unknown keys, so it fails nothing and does nothing.
+
+**Rejected: discovering the bridge gateway through `DockerClient` and binding
+that address.** It would bake a local-socket assumption into the one interface
+CLAUDE.md requires to stay free of them — a remote SSH implementation's
+`networkGateway()` returns the _remote_ host's address, which it would be
+actively wrong to bind locally. It also targets the wrong address, since the
+daemon's `--host-gateway-ip` can override what `host-gateway` means, and a
+socket bound to a bridge IP dies when docker0 is recreated with no rebind path.
+
+### D24 — the dashboard gets TWO routes, and the catch-all is unconditional
+
+D20 said setting `MUSDASH_DASHBOARD_HOST` "narrows the route to that name".
+Narrowing removed the catch-all, and with it the only way back in when DNS
+breaks, a registrar lapses, or issuance fails. Observed on a real VPS: every
+request to the bare IP became a 308 toward an `https://<ip>/` that can never
+have a certificate.
+
+**Resolution: `ensureDashboardRoutes()` appends `musdash-dashboard-host`
+(host-matched, which is what activates automatic HTTPS) and then
+`musdash-dashboard` (catch-all), in that order, deleting and re-appending both
+as a unit on every `ensureCaddy()`.** Caddy redirects :80 to :443 only for names
+it manages, so a bare-IP request falls to the catch-all and is served over plain
+HTTP rather than redirected. D20's ordering argument carries over verbatim: the
+catch-all must stay last or it swallows every resource route.
+
+The accepted cost is unchanged from D20 — the dashboard answers on any `Host`
+header — and a foreign host gets a login page whose session cookie is scoped to
+the host that set it.
+
+### D25 — the hostname lives in the database, with the env as a fallback
+
+`settings.dashboard_host` wins when the row exists; `MUSDASH_DASHBOARD_HOST` is
+read only when it does not. Env-wins would have made the feature a no-op for
+every existing install, since they all already carry the value in `musdash.env`.
+Seeding the row from the env at first boot would have made "clear the hostname"
+impossible — the next boot re-seeds it from a line the operator cannot edit from
+the UI. Read-through has neither problem. Clearing the field writes an empty
+row, not a deletion, because an absent row falls back to the environment and the
+operator who cleared it meant "none, including that one".
+
+Applying it is a new job type, `apply_dashboard_host`, enqueued with a fresh
+ULID. **Not** `ensure_caddy`: the reconciler enqueues that under a 5-minute
+bucketed id and swallows primary-key conflicts, so a save inside the same bucket
+would collide with an already-completed row and silently do nothing — the
+operator presses Save, sees a success flash, and nothing happens. A healthy
+proxy is also never re-bootstrapped, so `ensure_caddy` would not run at all. Any
+deterministic id has the same failure in a different costume; a fresh ULID
+cannot collide, and the handler is idempotent so a duplicate is a harmless
+no-op.
+
+### D26 — the restart is a route action, never a job
+
+The worker calls `complete()` _after_ its handler returns. A handler that exits
+the process never returns, so its row stays `leased`, `recoverExpiredLeases()`
+re-claims it fifteen minutes later, and the process restarts again. A restart
+job is a slow restart loop.
+
+`POST /settings/restart` therefore stops the worker, reconciler and scheduler,
+then `setTimeout(process.exit, 750)` so the 303 reaches the browser first. It
+refuses while any job is `pending` or `leased` — refusing costs three seconds
+and needs no state, where draining means a background timer holding a promise
+nobody is watching. systemd is detected by `INVOCATION_ID`, which needs no
+subprocess and no knowledge of the unit's own name; it cannot see a unit with
+`Restart=no`, which is why the UI shows the `systemctl` command alongside the
+button rather than instead of it.
+
+**The dashboard hostname does not need a restart** — nothing reads
+`config.dashboardHost` at runtime once the database is the source of truth, and
+the bind is unconditional. The button ships anyway, in its own card, because it
+is the only way to pick up the settings that are still environment-only.
+
+### D27 — a reachability probe, because a firewall failure is otherwise silent
+
+After applying the route, the job fetches `http://127.0.0.1:80/health` with a
+bare-IP `Host` header. That traverses host → the proxy's published :80 → the
+catch-all → the ExtraHosts alias → back into this process, so a `200 ok` proves
+the bind address, the bridge path, the firewall and the catch-all's continued
+existence in one call. The bare-IP `Host` is deliberate: a matching hostname
+would hit the automatic HTTPS redirect instead of the dashboard.
+
+Without it, a host firewall that DROPs traffic from the docker bridge presents
+as an unexplained 15-second timeout with nothing in any log. `ensureCaddy()`
+runs the same probe warn-only — that job has `maxAttempts: 1`, and a new hard
+failure mode in it would turn a working proxy into a failed bootstrap on an
+unusual-but-valid firewall setup.
+
+### D28 — the ACME issuer is reconciled, not written once
+
+`ensureBaseConfig()` early-returns when `srv0` exists, and Caddy runs `--resume`
+against a persisted config volume, so the TLS automation policy was written
+exactly once, on the first boot ever. A box first bootstrapped with
+`MUSDASH_ACME_STAGING=true` kept issuing untrusted staging certificates forever,
+and changing the env var and restarting did nothing at all — which reads to the
+operator as "musdash cannot get me a certificate".
+
+`caddy.ensureTlsAutomation()` now PATCHes
+`/config/apps/tls/automation/policies` when the persisted issuer differs from
+the configuration, and logs when it does. Flipping staging off triggers real
+issuance, which is rate limited to 50 per registered domain per week — that is
+the intended outcome, and the reason this logs rather than doing it quietly.
+
+### Verified, and not verified
+
+Verified locally: 125 tests pass, `bun run check` clean (prettier, biome with
+warnings as errors, `tsc --noEmit`), `bash -n scripts/install.sh` clean.
+
+**Not verified against a real VPS.** The bridge-path claim, the catch-all
+restoring plain HTTP on the bare IP, certificate issuance, and the restart
+button are reasoned from the Caddy and Docker documentation plus live probing of
+one box's _symptoms_ — not from running this code on it.
+
+## The public URL is derived, not configured (2026-08-25)
+
+`MUSDASH_DASHBOARD_HOST` and `MUSDASH_PUBLIC_URL` always encoded the same
+domain in two formats — bare for the Caddy host matcher, scheme-prefixed for
+GitHub's callback and webhook URLs. Requiring both is two chances to get one
+fact wrong, and the two fields disagreed about the scheme: one forbids it, the
+other (`z.string().url()`) requires it. Nothing validated the first.
+
+That is not hypothetical. A live install was set to
+`MUSDASH_DASHBOARD_HOST=https://musdash.neatwrk.com`. The value went straight
+into a Caddy host matcher, which matches the literal string, so the route could
+never match any request. No certificate was requested, every request fell
+through to Caddy's default HTTP→HTTPS redirect, and both the HTTP and HTTPS
+addresses were dead. musdash logged a clean startup throughout. The dashboard
+was unreachable and nothing anywhere said why.
+
+`getPublicUrl()` (`src/settings.ts`) now returns `https://` + the effective
+dashboard host, which is already database-first via `getDashboardHost()`. The
+operator sets one thing — the domain — on the Settings page.
+
+**Derivation wins over `MUSDASH_PUBLIC_URL`, not the reverse.** Env-wins looks
+safer and is worse: every existing install already carries the env line, so the
+value would go stale the instant the domain is changed from the Settings page,
+silently pointing GitHub at the old name. That is the same invisible breakage
+this change exists to remove. The env var survives only as the fallback for what
+derivation cannot express — something else fronting musdash on a different name,
+a tunnel or an external load balancer, where no dashboard host is set at all.
+
+`MUSDASH_DASHBOARD_HOST` also gained a refinement rejecting `:` or `/`, so the
+scheme mistake now fails at startup with a message naming the fix instead of
+producing a route that matches nothing. The refinement is written inline rather
+than reusing `isValidHostname()` from `src/caddy/client.ts`, which imports
+`config.ts` — importing it back would be circular.
+
+### Verified, and not verified
+
+Verified locally: 125 tests pass, `bun run ci` clean (prettier, biome with
+warnings as errors, `tsc --noEmit`). The refinement was exercised by booting
+`config.ts` with `https://musdash.neatwrk.com` (rejected, one clear message) and
+with the bare name (boots). `getPublicUrl()` was exercised against a migrated
+database across four states: host saved from the UI, host changed from the UI,
+host cleared in the UI, and no row at all — deriving in the first three and
+falling through to the env var only when the host is explicitly cleared or
+absent.
+
+**Not verified against a real VPS.** The GitHub App registration round trip
+against a derived URL has not been run.

@@ -39,6 +39,7 @@
       <symbol id="i-log-out" viewBox="0 0 24 24"><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /></symbol>
       <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></symbol>
       <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 5h16" /><path d="M4 12h16" /><path d="M4 19h16" /></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></symbol>
     </svg>
 
     <div
@@ -82,9 +83,9 @@
 
         <nav class="sidebar-nav" aria-label="Main">
           <a
-            class="nav-top <%= it.activeProjectId ? '' : 'active' %>"
+            class="nav-top <%= !it.activeProjectId && !it.activeSettings ? 'active' : '' %>"
             href="/"
-            <%~ it.activeProjectId ? '' : 'aria-current="page"' %>
+            <%~ !it.activeProjectId && !it.activeSettings ? 'aria-current="page"' : '' %>
           >
             Projects
           </a>
@@ -121,16 +122,18 @@
             <% }) %>
           </ul>
           <% } %>
-        </nav>
 
-        <div class="sidebar-foot">
           <a
-            class="nav-top <%= it.activeSettings ? 'active' : '' %>"
+            class="nav-top nav-settings <%= it.activeSettings ? 'active' : '' %>"
             href="/settings"
             <%~ it.activeSettings ? 'aria-current="page"' : '' %>
           >
+            <svg class="icon" aria-hidden="true"><use href="#i-settings" /></svg>
             Settings
           </a>
+        </nav>
+
+        <div class="sidebar-foot">
           <span class="muted nav-email" title="<%= it.user.email %>">
             <%= it.user.email %>
           </span>

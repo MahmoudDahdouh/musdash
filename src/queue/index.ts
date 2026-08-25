@@ -159,6 +159,23 @@ export function pendingCount(database: Database = defaultDb): number {
   )
 }
 
+/**
+ * Jobs that are queued or in flight.
+ *
+ * Distinct from pendingCount(), which counts only 'pending'. A deploy the
+ * worker has already claimed is 'leased', and that is precisely the state that
+ * makes a restart unsafe — so the restart guard needs both.
+ */
+export function activeJobCount(database: Database = defaultDb): number {
+  return (
+    database
+      .query<{ n: number }, []>(
+        "SELECT COUNT(*) AS n FROM jobs WHERE status IN ('pending', 'leased')",
+      )
+      .get()?.n ?? 0
+  )
+}
+
 export function getJob(
   id: string,
   database: Database = defaultDb,
