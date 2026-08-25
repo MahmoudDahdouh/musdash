@@ -34,6 +34,35 @@ RAILPACK_VERSION="${RAILPACK_VERSION:-v0.37.0}"
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# The install is long and noisy; the URL at the end is the one line that
+# matters, so it gets a name above it and a box around it rather than
+# scrolling past as more log output.
+banner() {
+  printf '\033[1;36m'
+  cat <<'ART'
+ __  __ _   _ ____  ____    _    ____  _   _
+|  \/  | | | / ___||  _ \  / \  / ___|| | | |
+| |\/| | | | \___ \| | | |/ _ \ \___ \| |_| |
+| |  | | |_| |___) | |_| / ___ \ ___) |  _  |
+|_|  |_|\___/|____/|____/_/   \_\____/|_| |_|
+ART
+  printf '\033[0m'
+}
+
+frame() {
+  local line width=0 bar
+  for line in "$@"; do
+    if [ "${#line}" -gt "$width" ]; then width=${#line}; fi
+  done
+  bar=$(printf '%*s' "$((width + 2))" '')
+  bar=${bar// /─}
+  printf '\033[1;36m┌%s┐\033[0m\n' "$bar"
+  for line in "$@"; do
+    printf '\033[1;36m│\033[0m %s%*s \033[1;36m│\033[0m\n' "$line" "$((width - ${#line}))" ''
+  done
+  printf '\033[1;36m└%s┘\033[0m\n' "$bar"
+}
+
 [ "$(id -u)" -eq 0 ] || die "run this as root (sudo)"
 
 # --------------------------------------------------------------- Docker
@@ -245,11 +274,13 @@ if systemctl is-active --quiet musdash; then
   IP=$(hostname -I | awk '{print $1}')
   log "musdash is running"
   echo
+  banner
+  echo
   if [ -n "${MUSDASH_DASHBOARD_HOST:-}" ]; then
-    echo "  Open https://$MUSDASH_DASHBOARD_HOST to create your admin account."
+    frame "Open https://$MUSDASH_DASHBOARD_HOST to create your admin account."
     echo "  (If the certificate is not ready yet, give Caddy a few seconds.)"
   else
-    echo "  Open http://$IP to create your admin account."
+    frame "Open http://$IP to create your admin account."
     echo
     echo "  That is plain HTTP: no certificate authority issues for an IP."
     echo "  Once you point a domain here, set it and restart:"
