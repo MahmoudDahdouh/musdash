@@ -224,6 +224,7 @@ export type JobType =
   | "stop"
   | "remove"
   | "prune_images"
+  | "prune_build_cache"
   | "ensure_caddy"
   | "ensure_buildkit"
 

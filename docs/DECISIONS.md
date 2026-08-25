@@ -1266,3 +1266,151 @@ interpolation error escaped before the deployment was marked running, so the
 queue retried three times and the user saw a bare queue error instead of a log
 line naming the variable. The same was already true of a `CryptoError` on a
 tampered ciphertext.
+
+---
+
+## Build cache cap (2026-08-25)
+
+`MUSDASH_BUILD_CACHE_GB` had been validated, exported and documented as the
+"layer cache ceiling" since Phase 1, and read by nothing. Meanwhile
+`data/build-cache/` grew without bound and a deleted resource left its cache
+directory behind forever. This is that promise implemented.
+
+### D15 — eviction is LRU by directory mtime, not largest-first
+
+Largest-first optimises bytes reclaimed per deletion, which is the wrong
+objective. The cache's only value is the hit rate on the next build of a
+resource, so evicting the biggest directories systematically targets the biggest
+apps — exactly the ones whose builds are slowest and whose cache is worth the
+most seconds. LRU evicts the caches of resources nobody is deploying, which is
+the right proxy for "no one will miss this".
+
+Eviction is a prefix cut over the mtime order, not a per-entry fit test. Keeping
+every directory that happens to fit and skipping past the ones that do not looks
+equivalent and is not: a large newest cache gets dropped while two small older
+ones survive, which is the largest-first behaviour this decision exists to
+avoid. The newest entry is exempt from the fit test, because something has to
+survive and it is the one most likely to be built again — without the exemption
+a resource whose cache alone exceeds the watermark takes every older cache down
+with it and the box ends up with nothing cached at all.
+
+mtime is a real access signal rather than a guess. BuildKit's `type=local`
+export rewrites `index.json` on every export, and every import in musdash is
+paired with an export in the same `buildctl` invocation, so an import can never
+occur without an export. Verified against a real `moby/buildkit:v0.27.0` daemon:
+two builds five seconds apart moved the directory mtime by exactly that. No
+`last_used_at` column and no migration — mtime already answers the question, and
+it survives a database restore against an existing cache directory.
+
+### D16 — two watermarks, evicting to 80% of the cap
+
+Nothing is evicted until the total exceeds the cap; once it does, eviction runs
+down to 80% of it. Evicting back to exactly the cap leaves a cache that trips
+again on the next build, so it would evict one directory per day forever, and in
+the log "ran daily and reclaimed almost nothing" is indistinguishable from "is
+broken". The 20% of headroom buys weeks of quiet and makes each pass reclaim a
+number worth reading. Both thresholds derive from the one existing knob; a
+second env var would be knob proliferation for a number nobody will tune.
+
+Both thresholds have to be checked, and the first implementation checked only
+the low one. Summing newest-first and evicting as soon as the running total
+passed 80% never consults the cap at all: it silently redefines the cap as 80%
+of itself, and a lone 9GB cache under a 10GB cap was deleted outright, then
+rebuilt and deleted again every day, with no warning because it never exceeded
+the cap. That version deleted the tail unmeasured, which is what made it look
+cheap. Measuring everything first costs ~350ms and under 1MB of heap at 20,000
+blobs — the shape of a real cache — so the correct version is affordable and the
+clever one was not worth its bug. A directory that cannot be fully read counts
+as filling the whole cap rather than as zero, so the one directory nothing can
+measure cannot be permanently exempt from the budget.
+
+A single resource whose cache exceeds the entire cap is still evicted — a disk
+that fills is worse than a build that runs cold — but it logs a warning naming
+the directory and the cap, because every deploy for it silently building cold is
+not something an operator should have to reverse-engineer.
+
+### D17 — the sweep runs on the queue, though it is filesystem work
+
+`sweepBuildDirs` runs inline in the scheduler and this does not, which looks
+inconsistent. The distinction is cost, not Docker: that call is one `readdir`
+over a handful of entries, while sizing the layer cache walks tens of thousands
+of blobs. All filesystem access here is synchronous, so inline it would block
+the event loop and stall the dashboard and its log streams. On the queue the
+only thing it delays is the queue, which already absorbs multi-minute builds.
+
+The queue also makes "never evict a cache that is being written" true
+structurally rather than by a check that could race: worker concurrency is
+exactly 1 and the worker awaits one handler at a time, so the sweep cannot
+overlap a build. There is deliberately no in-flight check, and its absence is
+commented so it does not read as an oversight.
+
+Sizes are not persisted. A size table would need a migration and invalidation on
+every build, and would go stale exactly when it matters — after a build the
+sweeper has not seen. The walk runs once a day.
+
+### D18 — the daemon cache is capped by flag, and the help text is wrong
+
+Only the Dockerfile strategy writes to `buildCacheDir`. Railpack — the default
+pack — caches inside the daemon's own `musdash-buildkit-cache` volume, which had
+no gc configured at all. Capping one without the other would have shipped the
+feature name without the feature, so `--oci-worker-gc` and
+`--oci-worker-gc-keepstorage` are set from the same knob.
+
+A flag rather than a `buildkitd.toml`, because the container's `command` array is
+flags-only and a config file would need a bind mount this bootstrap does not
+otherwise have.
+
+The value is in **MB**, not bytes — verified against v0.27.0's own `--help`
+rather than assumed, since an order-of-magnitude unit error is silent in both
+directions. Percentages are rejected; this flag takes integers only. Reserved is
+a quarter of the cap rather than equal to it: setting them equal leaves gc
+nothing it is permitted to reclaim, which is how a cap becomes a daemon that
+never collects.
+
+Two fields are passed, not three, and the help text is why this is subtle. It
+calls the value `"Reserved[,Free[,Maximum]]"`, but upstream parses it into
+`GCReservedSpace`, `GCMaxUsedSpace`, `GCMinFreeSpace` in that order — so
+position two is the maximum, not a free-space target. Following the help text
+set the ceiling to ~197GB and the free-space target to 10GB, which left the cap
+inert on any real disk while looking correct. The two-field form is unambiguous
+under either reading and was verified to parse. This could not be settled by
+observing the daemon: it accepts contradictory values (`Reserved` above
+`Maximum`) without a word, so the assignment order in upstream's source is the
+only evidence there is.
+
+Omitting a field by writing it empty is not an option either: `"2560,,10240"` is
+not "take the default", it is a parse error — buildkitd exits with
+`strconv.ParseInt: parsing "": invalid syntax`, which would have failed every
+install's build bootstrap at the readiness gate. An unrecognised flag also exits
+rather than warning, so a wrong name fails loudly instead of silently doing
+nothing.
+
+Adoption deliberately does not recreate the container: `ensureBuildkit` reuses an
+existing daemon by name and never inspects its command, so an upgrading install
+keeps its uncapped daemon until an operator runs `docker rm -f musdash-buildkit`.
+Recreating would discard the cache volume that makes redeploys fast, so this is
+an upgrade note in RUNNING.md rather than code.
+
+### D19 — the cache is deleted twice, on purpose
+
+The same shape as build directories above. `runRemove` deletes a resource's cache
+eagerly, with the row and before it goes — gated on `deleteRow` rather than
+unconditional, because a caller that removes the container while keeping the
+resource still wants its layer cache — once the row is gone the directory is identifiable
+only as an orphan, which is a daily sweep away rather than immediate — and the
+orphan pass is the backstop for a crash between the two. The eager delete never
+throws: a cache directory nobody will read again must not fail a resource
+deletion, and the only cost of a failure is that the bytes survive until
+tomorrow.
+
+Orphans are removed unconditionally, ahead of any size check, and never walked.
+A cache whose resource is gone can never be imported again, so it is pure waste,
+and deleting it first keeps its bytes out of the sizing walk entirely.
+
+### Deviation — cache usage is not surfaced in the UI
+
+PHASES.md §26 and the Phase 1 note above both ask for the cap "alongside image
+usage". No image-usage surface exists either — `pruneImages` reports its
+reclaimed bytes to pino and nowhere else — so building a cache widget alone would
+invert the documented intent, and it would put the sizing walk on an HTTP request
+path. Deferred to a disk-usage slice covering both.

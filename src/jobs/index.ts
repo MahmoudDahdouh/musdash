@@ -1,6 +1,8 @@
 import { ensureBuildkit } from "../build/bootstrap.ts"
+import { removeResourceCache, sweepBuildCache } from "../build/cache.ts"
 import { ensureCaddy } from "../caddy/bootstrap.ts"
 import { caddy, routeIdFor } from "../caddy/client.ts"
+import { config } from "../config.ts"
 import { LABEL_RESOURCE, LABEL_ROLE } from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
 import {
@@ -89,7 +91,17 @@ async function runRemove(payload: RemovePayload): Promise<void> {
   dropBuffer(resource.id)
   removeLogFiles(resource.id)
 
-  if (payload.deleteRow) deleteResource(resource.id)
+  if (payload.deleteRow) {
+    // Gated with the row, not run unconditionally: a caller that removes the
+    // container while keeping the resource still wants its layer cache, and
+    // throwing it away would make the next deploy cold for no reason. It has to
+    // happen before the row goes, though — afterwards the directory is
+    // identifiable only as an orphan, which is a daily sweep away rather than
+    // immediate. Not part of the container/route/row ordering above, which
+    // exists so a crash can be resumed from.
+    removeResourceCache(resource.id)
+    deleteResource(resource.id)
+  }
   publishStatus({ resourceId: resource.id, state: "stopped" })
 }
 
@@ -101,6 +113,22 @@ async function runPrune(payload: PrunePayload): Promise<void> {
     keep,
   )
   logger.info({ reclaimedBytes, protectedCount, hours }, "pruned images")
+}
+
+/**
+ * Keeps the layer cache under MUSDASH_BUILD_CACHE_GB.
+ *
+ * On the queue rather than inline in the scheduler because the sizing walk is
+ * synchronous over tens of thousands of blobs; inline it would block the event
+ * loop and stall the dashboard and its log streams. Here the only thing it
+ * delays is the queue, which already absorbs multi-minute builds.
+ */
+function runPruneBuildCache(): void {
+  const { orphansRemoved, evicted, keptBytes } = sweepBuildCache()
+  logger.info(
+    { orphansRemoved, evicted, keptBytes, capGb: config.buildCacheGb },
+    "pruned the build cache",
+  )
 }
 
 // Repository source arrives over the GitHub API from here on. Wired at the
@@ -115,6 +143,9 @@ export const handlers: Record<string, JobHandler> = {
   stop: (p) => runStop(p as unknown as StopPayload),
   remove: (p) => runRemove(p as unknown as RemovePayload),
   prune_images: (p) => runPrune(p as unknown as PrunePayload),
+  // No payload: the cap comes from config, so a job queued before an operator
+  // changed it must not run against the value that was current when it was.
+  prune_build_cache: async () => runPruneBuildCache(),
   ensure_caddy: () => ensureCaddy(),
   ensure_buildkit: () => ensureBuildkit(),
 }

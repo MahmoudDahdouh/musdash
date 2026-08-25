@@ -357,6 +357,15 @@ cd /root/musdash && sudo ./scripts/install.sh   # idempotent; reinstalls the bin
 
 Migrations run at startup. The env file is not overwritten if it already exists.
 
+The build daemon's cache ceiling is applied when its container is created, and
+musdash reuses an existing daemon rather than recreating it — recreating would
+throw away the cache that makes redeploys fast. An install that predates the
+cache cap therefore keeps an unbounded daemon cache until you retire it once:
+
+```bash
+docker rm -f musdash-buildkit   # recreated, capped, on the next deploy
+```
+
 ---
 
 ## Using the dashboard
@@ -437,7 +446,7 @@ any of these requires a restart.
 | `MUSDASH_ACME_STAGING`       | `true`                  | Safe default — set `false` deliberately, on real DNS   |
 | `MUSDASH_CADDY_ADMIN`        | `http://127.0.0.1:2019` | Never published beyond loopback                        |
 | `MUSDASH_BUILDKIT_ADDR`      | `tcp://127.0.0.1:1234`  | Unauthenticated API — loopback only                    |
-| `MUSDASH_BUILD_CACHE_GB`     | `10`                    | Layer cache ceiling                                    |
+| `MUSDASH_BUILD_CACHE_GB`     | `10`                    | Layer cache ceiling, on disk and in the build daemon   |
 | `MUSDASH_RAILPACK_BIN`       | `railpack`              | Shelled out to, not linked                             |
 | `MUSDASH_BUILDCTL_BIN`       | `buildctl`              | Shelled out to, not linked                             |
 | `MUSDASH_NETWORK`            | `musdash`               | Must be user-defined                                   |
@@ -471,6 +480,40 @@ docker volume ls | grep musdash
 - `/opt/musdash/data/secret.key` — **without it, every encrypted env var is
   unrecoverable.** Mode 0600. Back it up separately from the database.
 - `musdash-caddy-data` volume — your issued certificates.
+
+### Disk you should expect
+
+The layer cache is what makes a redeploy fast rather than cold, and it is the
+component most likely to fill a small box. It lives in two places, both bounded
+by `MUSDASH_BUILD_CACHE_GB`:
+
+- `data/build-cache/<resource>/` — one directory per resource, written by
+  Dockerfile builds.
+- The `musdash-buildkit-cache` volume — the build daemon's own cache, which is
+  where zero-config (Railpack) builds cache.
+
+Once a day musdash removes any cache whose resource no longer exists. If the
+total is then over the cap it evicts least-recently-built first until it is at
+80% of the cap; under the cap it evicts nothing. Stopping at exactly the cap
+would trip again on the very next build, so each pass leaves headroom. Deleting
+a resource takes its cache with it immediately, not on the next sweep.
+
+```bash
+du -sh /opt/musdash/data/build-cache/*            # per-resource cache
+docker system df -v | grep musdash-buildkit-cache # the daemon's own cache
+sudo journalctl -u musdash | grep "pruned the build cache"
+```
+
+Setting the cap below what a single application's cache needs makes **every**
+deploy for it build cold. That case is logged rather than left to be
+reverse-engineered:
+
+```
+one build cache exceeds the whole cap; every deploy for it will build cold
+```
+
+Build directories (`data/builds/`) are separate and short-lived: each is deleted
+when its build ends, with a daily sweep for anything a crash left behind.
 
 ### Memory you should expect
 

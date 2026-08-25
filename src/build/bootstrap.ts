@@ -49,6 +49,38 @@ const CACHE_VOLUME = "musdash-buildkit-cache"
 const BUILDKIT_MEMORY_BYTES = 1024 * 1024 * 1024
 
 /**
+ * The daemon's own cache ceiling, for --oci-worker-gc-keepstorage.
+ *
+ * Two fields, "Reserved,Maximum", in MB — verified to parse against
+ * moby/buildkit:v0.27.0. Reserved is the floor gc will never collect below and
+ * Maximum the ceiling it collects down to, both derived from the same knob that
+ * bounds the on-disk cache so one number governs the whole build cache.
+ *
+ * Reserved is a quarter of the cap rather than equal to it: setting them equal
+ * leaves gc nothing it is permitted to reclaim, which is how a cap becomes a
+ * daemon that never collects.
+ *
+ * The third field is deliberately omitted. buildkitd's own --help calls the
+ * value "Reserved[,Free[,Maximum]]", but upstream assigns the parsed fields in
+ * the order GCReservedSpace, GCMaxUsedSpace, GCMinFreeSpace — so position two
+ * is the maximum, not a free-space target, and the help text is misleading.
+ * Passing three fields on the help text's reading set the ceiling to ~197GB and
+ * left the cap inert. Two fields are unambiguous under either reading, and were
+ * verified to parse; the daemon accepts contradictory values silently, so this
+ * cannot be settled by observing it and is pinned to upstream's assignment
+ * order instead.
+ *
+ * Writing an empty field to skip one is not an option: "2560,,10240" is a parse
+ * error and buildkitd exits with `strconv.ParseInt: parsing "": invalid
+ * syntax`. Percentages are rejected too — this flag takes MB integers only.
+ */
+function gcKeepStorageMb(): string {
+  const maxMb = config.buildCacheGb * 1024
+  const reservedMb = Math.floor(maxMb / 4)
+  return `${reservedMb},${maxMb}`
+}
+
+/**
  * Extracts the port from a `tcp://host:port` address.
  *
  * musdash publishes the daemon itself, so it has to know the port as a number
@@ -94,6 +126,19 @@ export async function ensureBuildkit(): Promise<void> {
   let id: string
   if (existing) {
     id = existing.id
+    // The cache ceiling is applied when the container is created, and adoption
+    // deliberately does not recreate — that would discard the cache volume that
+    // makes redeploys fast. So a daemon from before the cap keeps collecting
+    // without one, and nothing else would ever say so: the flag is not
+    // observable through ManagedContainer, and widening the Docker interface to
+    // read a command line for one log line is not worth the surface. Logged at
+    // debug rather than warn because it is correct and expected on every boot
+    // of an install that predates the cap, and a warning every boot for a
+    // condition the operator may have chosen is noise.
+    logger.debug(
+      { container: BUILDKIT_CONTAINER, capGb: config.buildCacheGb },
+      "adopted an existing build daemon; if it predates the cache cap, `docker rm -f musdash-buildkit` recreates it capped",
+    )
   } else {
     if (!(await docker.imageExists(BUILDKIT_IMAGE))) {
       logger.info({ image: BUILDKIT_IMAGE }, "buildkit: pulling the build image")
@@ -149,7 +194,23 @@ export async function ensureBuildkit(): Promise<void> {
       // CADDY_ADMIN=0.0.0.0:2019. The container is not on the host network, so
       // binding 127.0.0.1 here would bind the container's own loopback and the
       // mapping would forward to a listener that refuses it.
-      command: ["--addr", `tcp://0.0.0.0:${BUILDKIT_PORT}`],
+      // The daemon keeps its own cache in CACHE_VOLUME, which is where Railpack
+      // builds cache — buildCacheDir only ever holds the Dockerfile strategy's
+      // exports. Capping one without the other would leave the default build
+      // pack unbounded, which is the disk leak this is here to close.
+      //
+      // A flag rather than buildkitd.toml because the array above is FLAGS
+      // ONLY, and a config file would need a bind mount this bootstrap does not
+      // otherwise have. Verified against v0.27.0's own --help: the value is
+      // "Reserved[,Free[,Maximum]]" in MB, not bytes, and an unrecognised flag
+      // makes buildkitd exit rather than warn — so a wrong name here fails
+      // loudly at the readiness gate instead of silently doing nothing.
+      command: [
+        "--addr",
+        `tcp://0.0.0.0:${BUILDKIT_PORT}`,
+        "--oci-worker-gc",
+        `--oci-worker-gc-keepstorage=${gcKeepStorageMb()}`,
+      ],
     })
   }
 

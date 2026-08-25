@@ -15,11 +15,18 @@ let timer: Timer | null = null
 function runDaily(): void {
   // Image pruning is Docker work, so it goes on the queue.
   enqueue("prune_images", { olderThanHours: 168 })
+  // Filesystem work, but it still goes on the queue — the distinction below is
+  // cost, not Docker. Sweeping the layer cache walks tens of thousands of blobs
+  // synchronously, which would block the event loop and stall the dashboard if
+  // it ran here. On the queue it also cannot overlap a build, so it can never
+  // evict a cache that is being written.
+  enqueue("prune_build_cache", {})
 
   const jobs = pruneFinishedJobs(168)
   const sessions = purgeExpiredSessions()
-  // Pure filesystem work, so it runs here rather than on the queue. The backstop
-  // for a build that was SIGKILLed before its own cleanup could run.
+  // Cheap filesystem work — one readdir over a handful of entries — so it runs
+  // here rather than on the queue. The backstop for a build that was SIGKILLed
+  // before its own cleanup could run.
   const buildDirs = sweepBuildDirs(24)
   logger.info(
     { prunedJobs: jobs, prunedSessions: sessions, sweptBuildDirs: buildDirs },

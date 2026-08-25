@@ -1,5 +1,6 @@
 import { config } from "../config.ts"
 import { docker } from "../docker/impl.ts"
+import { cacheDir } from "./cache.ts"
 import { BuildError, type BuildContext } from "./types.ts"
 import { runBuilder } from "./railpack.ts"
 
@@ -65,11 +66,3 @@ export async function buildWithDockerfile(ctx: BuildContext): Promise<void> {
   await docker.loadImage(tar.stream())
 }
 
-/** Cache directory for one resource. Lives beside builds, not inside one — a
- *  build directory is deleted when its build ends and would take the cache. */
-function cacheDir(cacheKey: string): string {
-  if (!/^[A-Za-z0-9._-]{1,64}$/.test(cacheKey)) {
-    throw new BuildError(`unsafe cache key: ${cacheKey}`)
-  }
-  return `${config.buildCacheDir}/${cacheKey}`
-}
