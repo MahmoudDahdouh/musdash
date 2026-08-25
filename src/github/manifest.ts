@@ -18,7 +18,7 @@ export interface ManifestDescriptor {
   hook_attributes: { url: string; active: true }
   redirect_url: string
   public: false
-  default_events: ["push", "installation", "installation_repositories"]
+  default_events: ["push"]
   default_permissions: { contents: "read"; metadata: "read" }
 }
 
@@ -63,7 +63,12 @@ export function buildManifest(
     // A public App can be installed by anyone who finds it. This one is for a
     // single self-hosted instance.
     public: false,
-    default_events: ["push", "installation", "installation_repositories"],
+    // push is the only event we can ask for. installation and
+    // installation_repositories are lifecycle events GitHub delivers to every
+    // App automatically and REJECTS in default_events — listing them makes
+    // the whole manifest invalid, which GitHub reports as "not a valid GitHub
+    // App manifest". routes/github.ts still receives both.
+    default_events: ["push"],
     default_permissions: { contents: "read", metadata: "read" },
   }
 }

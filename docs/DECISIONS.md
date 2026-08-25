@@ -127,6 +127,13 @@ memory by installation id. Use `@octokit/app`; do not hand-roll it.
 Webhooks: **verify the HMAC-SHA256 signature before parsing the body**, respond
 `202` immediately and enqueue the work — GitHub times out at 10 seconds.
 
+The manifest subscribes to `push` and nothing else. `installation` and
+`installation_repositories` are lifecycle events GitHub delivers to every App
+automatically and — because no permission covers them — rejects outright in
+`default_events`: including them makes the whole manifest invalid, which GitHub
+reports as "not a valid GitHub App manifest". `routes/github.ts` still handles
+both deliveries.
+
 ## Builds — Railpack, not Nixpacks
 
 Zero-config builds use Railpack. Nixpacks is in maintenance mode and its own
