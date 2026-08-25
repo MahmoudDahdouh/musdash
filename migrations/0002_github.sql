@@ -1,7 +1,7 @@
 -- Phase 2 schema. PHASES.md §26.
 -- STRICT on every table, matching 0001.
 
--- One GitHub App per mosdash instance, registered through the manifest flow.
+-- One GitHub App per musdash instance, registered through the manifest flow.
 -- Every secret is AES-256-GCM at rest, using the same key as env var values.
 CREATE TABLE github_apps (
   id                 TEXT PRIMARY KEY,

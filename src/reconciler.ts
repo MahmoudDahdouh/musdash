@@ -17,7 +17,7 @@ import { enqueue } from "./queue/index.ts"
 
 /**
  * Converges actual state toward desired state every 30 seconds. This is what
- * makes mosdash survive a reboot or a manual `docker rm -f` without anyone
+ * makes musdash survive a reboot or a manual `docker rm -f` without anyone
  * touching the dashboard.
  */
 
@@ -74,12 +74,12 @@ export async function reconcileOnce(): Promise<void> {
   // 4. managed containers with no matching resource row -> orphans
   //
   // This step deletes containers, so it is deliberately conservative: it acts
-  // only on containers that carry mosdash.managed=true AND a resource id that
+  // only on containers that carry musdash.managed=true AND a resource id that
   // is genuinely absent from the database, and it says so in the log before
   // removing anything.
   for (const container of containers) {
     if (container.labels[LABEL_MANAGED] !== "true") continue
-    // Infrastructure mosdash runs for itself (the proxy) is managed but is not
+    // Infrastructure musdash runs for itself (the proxy) is managed but is not
     // a resource, so it can never be an orphan. This check is explicit and
     // comes first on purpose: the resource-id check below happens to spare it
     // today, and relying on that coincidence is one refactor away from the
@@ -132,7 +132,7 @@ export async function reconcileOnce(): Promise<void> {
 
 /**
  * Re-queues the proxy bootstrap when the proxy is not running. This is what
- * makes `docker rm -f mosdash-caddy` heal itself.
+ * makes `docker rm -f musdash-caddy` heal itself.
  *
  * The job id is derived rather than random, so a proxy that stays down does not
  * queue a fresh job every 30 seconds and starve real deploys behind them —
@@ -274,7 +274,7 @@ export function queueBuildkitBootstrap(): void {
  * Queues both sidecar bootstraps at boot.
  *
  * One call rather than two at the call site: `src/index.ts` wires modules
- * together and is capped at 60 lines, and which sidecars mosdash runs for itself
+ * together and is capped at 60 lines, and which sidecars musdash runs for itself
  * is this module's business, not the entry point's.
  */
 export function queueSidecarBootstraps(): void {

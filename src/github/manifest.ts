@@ -1,7 +1,7 @@
 /**
  * The GitHub App manifest.
  *
- * Each mosdash instance registers its OWN App rather than being configured
+ * Each musdash instance registers its OWN App rather than being configured
  * against a shared one: the user POSTs this descriptor to GitHub, confirms, and
  * GitHub redirects back with a code that exchanges for the credentials
  * (DECISIONS, "GitHub — App, not OAuth App"). Nothing to copy and paste, and no
@@ -38,7 +38,7 @@ export class ManifestError extends Error {
  *
  * Permissions are the minimum that works: read contents to fetch a tarball,
  * read metadata because GitHub requires it alongside anything else. No write
- * scope at all — mosdash never pushes, comments, or sets a status.
+ * scope at all — musdash never pushes, comments, or sets a status.
  */
 export function buildManifest(
   publicUrl: string | undefined,
@@ -46,7 +46,7 @@ export function buildManifest(
 ): ManifestDescriptor {
   if (!publicUrl) {
     throw new ManifestError(
-      "MOSDASH_PUBLIC_URL is not set. GitHub needs a public address to send " +
+      "MUSDASH_PUBLIC_URL is not set. GitHub needs a public address to send " +
         "the registration callback and webhooks to, so set it and restart " +
         "before connecting GitHub.",
     )

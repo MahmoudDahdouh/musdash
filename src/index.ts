@@ -56,5 +56,5 @@ logger.info(
     hostname: app.server?.hostname,
     acmeStaging: config.acmeStaging,
   },
-  "mosdash listening",
+  "musdash listening",
 )

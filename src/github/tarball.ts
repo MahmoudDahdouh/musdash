@@ -99,7 +99,7 @@ async function download(
     // Never log `location`: the signed URL grants read access to the archive.
     logger.debug({ repo }, "following GitHub's archive redirect")
     const signed = await fetch(location, {
-      headers: { "user-agent": "mosdash" },
+      headers: { "user-agent": "musdash" },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
     if (!signed.ok) {

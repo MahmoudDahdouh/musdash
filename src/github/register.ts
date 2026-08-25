@@ -82,7 +82,7 @@ export async function convertManifestCode(code: string): Promise<ConvertedApp> {
  * An upsert-only sync cannot fix it, which made the button a placebo.
  *
  * Called after registration and from that button — the "Install" step happens
- * on github.com, and nothing tells mosdash about it except the webhook.
+ * on github.com, and nothing tells musdash about it except the webhook.
  *
  * `appRowId` is the App's ULID row id from getGithubApp(); `installationId` is
  * GitHub's integer. They are different values and only the second one mints a

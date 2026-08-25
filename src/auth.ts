@@ -12,7 +12,7 @@ import { config } from "./config.ts"
  */
 
 const SESSION_DAYS = 30
-export const SESSION_COOKIE = "mosdash_session"
+export const SESSION_COOKIE = "musdash_session"
 
 export interface SessionUser {
   id: string

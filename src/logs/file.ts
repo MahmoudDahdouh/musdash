@@ -14,7 +14,7 @@ import type { LogLine } from "../docker/client.ts"
  * Append-and-rotate log files under data/logs/. Rotate at 10MB, keep 2 files.
  *
  * Disk exhaustion generates more support load than any other single issue, so
- * the cap is enforced here rather than left to logrotate — mosdash cannot
+ * the cap is enforced here rather than left to logrotate — musdash cannot
  * assume anything about the host's log tooling.
  */
 

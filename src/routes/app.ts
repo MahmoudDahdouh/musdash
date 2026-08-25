@@ -631,16 +631,16 @@ export const appRoutes = new Elysia()
       const state = randomToken()
       setSetting(GITHUB_MANIFEST_STATE, state)
 
-      // GitHub App names are globally unique, so a bare "mosdash" collides for
+      // GitHub App names are globally unique, so a bare "musdash" collides for
       // the second person who ever tries this. The route generates the
       // disambiguated name; buildManifest stays pure.
-      const name = `mosdash-${randomToken(3).slice(0, 6)}`
+      const name = `musdash-${randomToken(3).slice(0, 6)}`
 
       let manifest: string
       try {
         manifest = JSON.stringify(buildManifest(config.publicUrl, name))
       } catch (err) {
-        // The only expected failure is an unset MOSDASH_PUBLIC_URL, whose
+        // The only expected failure is an unset MUSDASH_PUBLIC_URL, whose
         // message is written to be read by a user.
         logger.warn(
           { err: (err as Error).message },

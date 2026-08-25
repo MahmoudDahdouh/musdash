@@ -1,4 +1,4 @@
-# mosdash — Full Build Specification
+# musdash — Full Build Specification
 
 > **For the implementing agent:** this document specifies the entire project.
 >
@@ -15,7 +15,7 @@
 
 ## Contents
 
-**Part I — Phase 1 specification** · §1 What mosdash is · §2 Non-goals · §3 Scope
+**Part I — Phase 1 specification** · §1 What musdash is · §2 Non-goals · §3 Scope
 · §4 Technology · §5 The spike · §6 Docker client · §7 Data model · §8 Queue
 · §9 Deploy pipeline · §10 Caddy · §11 UI · §12 Security · §13 Resource
 discipline · §14 Reconciler · §15 Testing · §16 Definition of done
@@ -32,7 +32,7 @@ discipline · §14 Reconciler · §15 Testing · §16 Definition of done
 
 # Part I — Phase 1 Specification
 
-## 1. What mosdash is
+## 1. What musdash is
 
 A self-hosted PaaS. A user points it at their own VPS, and it deploys and runs
 their applications in Docker containers, each reachable at an HTTPS URL.
@@ -43,7 +43,7 @@ It is a Coolify alternative with one differentiating promise:
 
 Coolify's control plane consumes 750MB–1.2GB of RAM before deploying anything
 (a PHP app, its own PostgreSQL, Redis, a WebSocket server, and queue workers).
-mosdash does the same job as a single process holding a SQLite file.
+musdash does the same job as a single process holding a SQLite file.
 
 **The RAM budget is a hard product requirement, not an optimization.** Any
 proposed design that adds a second long-running process, a database server, or
@@ -85,7 +85,7 @@ Also explicitly excluded from Phase 1:
 
 At the end of Phase 1, a user can:
 
-1. Install mosdash on a fresh Ubuntu VPS with a single command.
+1. Install musdash on a fresh Ubuntu VPS with a single command.
 2. Log in with an admin account created on first run.
 3. Create a **project**, which contains **environments** (e.g. production, staging).
 4. Add a **resource** to an environment by specifying a public Docker image
@@ -208,10 +208,10 @@ export interface DockerClient {
 }
 
 export interface ContainerSpec {
-  name: string // mosdash-<resourceId>
+  name: string // musdash-<resourceId>
   image: string
   env: Record<string, string>
-  labels: Record<string, string> // must include mosdash.* labels
+  labels: Record<string, string> // must include musdash.* labels
   networks: string[]
   volumes: { name: string; mountPath: string }[]
   memoryLimitBytes: number // REQUIRED — never unlimited
@@ -264,13 +264,13 @@ chunk equals one frame. This is the single most common bug in this layer.
 
 ### Required container labels
 
-Every container mosdash creates carries these. The reconciler depends on them.
+Every container musdash creates carries these. The reconciler depends on them.
 
 ```
-mosdash.managed        = "true"
-mosdash.resource_id    = <resource id>
-mosdash.deployment_id  = <deployment id>
-mosdash.project_id     = <project id>
+musdash.managed        = "true"
+musdash.resource_id    = <resource id>
+musdash.deployment_id  = <deployment id>
+musdash.project_id     = <project id>
 ```
 
 ---
@@ -432,11 +432,11 @@ Job type `deploy`, payload `{ resourceId, deploymentId, image }`.
 Steps, each emitting a log line to the deployment's log stream:
 
 1. Mark deployment `running`, set `started_at`.
-2. `ensureNetwork("mosdash")`.
+2. `ensureNetwork("musdash")`.
 3. Pull the image, forwarding pull progress lines to the log stream.
 4. Decrypt env vars for the resource.
-5. Create the new container named `mosdash-<resourceId>-<short deploymentId>`
-   on the `mosdash` network, with all required labels and the memory limit.
+5. Create the new container named `musdash-<resourceId>-<short deploymentId>`
+   on the `musdash` network, with all required labels and the memory limit.
 6. Start it.
 7. **Health gate.** Poll until healthy or timeout (default 60s):
    - If the resource defines `health_path` and `container_port`, HTTP GET
@@ -459,11 +459,11 @@ and it is a correctness requirement, not a nicety.
 
 ## 10. Caddy integration
 
-Caddy runs as a container mosdash manages, on the `mosdash` network, so it can
+Caddy runs as a container musdash manages, on the `musdash` network, so it can
 resolve app containers by name via Docker's embedded DNS.
 
 - Start it with `--config /config/caddy.json` and the admin API bound to
-  `0.0.0.0:2019` **on the mosdash network only** — never published to the host.
+  `0.0.0.0:2019` **on the musdash network only** — never published to the host.
 - Ports 80 and 443 published to the host.
 - Persist `/data` (certificates) and `/config` to named volumes. Losing the
   certificate store means re-issuing and burning Let's Encrypt rate limit.
@@ -473,20 +473,20 @@ objects so each route can be replaced or deleted independently:
 
 ```json
 {
-  "@id": "mosdash-<resourceId>",
-  "match": [{ "host": ["myapp-production.mos.example.com"] }],
+  "@id": "musdash-<resourceId>",
+  "match": [{ "host": ["myapp-production.mus.example.com"] }],
   "handle": [
     {
       "handler": "reverse_proxy",
-      "upstreams": [{ "dial": "mosdash-<resourceId>-<deployShort>:3000" }]
+      "upstreams": [{ "dial": "musdash-<resourceId>-<deployShort>:3000" }]
     }
   ]
 }
 ```
 
 - Add: `POST /config/apps/http/servers/srv0/routes/`
-- Replace atomically: `PATCH /id/mosdash-<resourceId>`
-- Delete: `DELETE /id/mosdash-<resourceId>`
+- Replace atomically: `PATCH /id/musdash-<resourceId>`
+- Delete: `DELETE /id/musdash-<resourceId>`
 
 **Automatic HTTPS** activates when a route has a host matcher and an ACME email
 is configured. Store the admin email in settings on first run.
@@ -573,7 +573,7 @@ in-process `EventEmitter` keyed by resource id. Send a comment heartbeat
   No toggle in Phase 1.
 - Empty states matter: a new install should tell the user exactly what to do next.
 - All assets served from `public/`, embedded into the binary at compile time.
-  No CDN — mosdash must work on a firewalled server.
+  No CDN — musdash must work on a firewalled server.
 
 ---
 
@@ -597,13 +597,13 @@ Docker socket access is equivalent to root on the host. Treat this seriously.
   unvalidated image string is a command injection vector if it ever reaches a
   shell.
 - **The Caddy admin API is never published to the host.**
-- Bind mosdash's own HTTP port to `127.0.0.1` and route to it through Caddy.
+- Bind musdash's own HTTP port to `127.0.0.1` and route to it through Caddy.
 
 ---
 
 ## 13. Resource discipline
 
-**Baseline target: mosdash idles at or below 100MB RSS.**
+**Baseline target: musdash idles at or below 100MB RSS.**
 
 Enforce with:
 
@@ -611,7 +611,7 @@ Enforce with:
   transpiling cost from runtime to build time.
 - **Exactly one concurrent job.** Deploys spike memory (image extraction,
   layer decompression); the control plane must not multiply that.
-- **A hard memory limit on every container mosdash creates.** Default 512MB via
+- **A hard memory limit on every container musdash creates.** Default 512MB via
   `HostConfig.Memory`. A leaking user app must never take down the box or the
   dashboard. There is no "unlimited" option in the UI.
 - **Logs to ring buffer plus file, never the database.**
@@ -626,8 +626,8 @@ Add to `package.json`:
 
 ```json
 "scripts": {
-  "build":  "bun build --compile --minify src/index.ts --outfile dist/mosdash",
-  "rss":    "ps -o rss= -p $(pgrep -f dist/mosdash) | awk '{print $1/1024 \" MB\"}'"
+  "build":  "bun build --compile --minify src/index.ts --outfile dist/musdash",
+  "rss":    "ps -o rss= -p $(pgrep -f dist/musdash) | awk '{print $1/1024 \" MB\"}'"
 }
 ```
 
@@ -639,10 +639,10 @@ Record the idle RSS in `README.md` and re-measure after any dependency addition.
 ## 14. The reconciler
 
 A loop running every 30 seconds that converges actual state toward desired
-state. This is what makes mosdash survive reboots and manual `docker rm`.
+state. This is what makes musdash survive reboots and manual `docker rm`.
 
 ```
-1. containers := docker.listManagedContainers()   // label mosdash.managed=true
+1. containers := docker.listManagedContainers()   // label musdash.managed=true
 2. resources  := db.resources where desired_state = 'running'
 
 3. For each resource with no matching running container:
@@ -686,7 +686,7 @@ Phase 1 is complete when, on a fresh Ubuntu 24.04 VPS with a wildcard DNS
 record pointed at it, this sequence works end to end without touching a terminal
 after step 1:
 
-1. Run the install script. Docker, Caddy, and mosdash are running.
+1. Run the install script. Docker, Caddy, and musdash are running.
 2. Open `https://<server-ip>:8000`, create the admin account.
 3. Create project "demo". It gets a `production` environment automatically.
 4. Add resource "web" with image `nginx:alpine`, container port 80.
@@ -708,7 +708,7 @@ after step 1:
 ## 17. Repository layout
 
 ```
-mosdash/
+musdash/
 ├── src/
 │   ├── index.ts              # entry: migrate, reconcile, start worker, serve
 │   ├── config.ts             # env parsing + defaults, zod-validated
@@ -769,17 +769,17 @@ Read from environment with zod validation and sensible defaults:
 
 | Variable                     | Default                     | Notes                             |
 | ---------------------------- | --------------------------- | --------------------------------- |
-| `MOSDASH_PORT`               | `8000`                      | Bind to `127.0.0.1` in production |
-| `MOSDASH_DATA_DIR`           | `./data`                    | SQLite, logs, secret key          |
-| `MOSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock`      |                                   |
-| `MOSDASH_WILDCARD_DOMAIN`    | _(none)_                    | e.g. `mos.example.com`            |
-| `MOSDASH_ACME_EMAIL`         | _(none)_                    | Required for automatic HTTPS      |
-| `MOSDASH_ACME_STAGING`       | `false`                     | **Set true during development**   |
-| `MOSDASH_CADDY_ADMIN`        | `http://mosdash-caddy:2019` |                                   |
-| `MOSDASH_NETWORK`            | `mosdash`                   | Docker network name               |
-| `MOSDASH_DEFAULT_MEMORY_MB`  | `512`                       | Per-container limit               |
-| `MOSDASH_HEALTH_TIMEOUT_SEC` | `60`                        |                                   |
-| `MOSDASH_LOG_LEVEL`          | `info`                      |                                   |
+| `MUSDASH_PORT`               | `8000`                      | Bind to `127.0.0.1` in production |
+| `MUSDASH_DATA_DIR`           | `./data`                    | SQLite, logs, secret key          |
+| `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock`      |                                   |
+| `MUSDASH_WILDCARD_DOMAIN`    | _(none)_                    | e.g. `mus.example.com`            |
+| `MUSDASH_ACME_EMAIL`         | _(none)_                    | Required for automatic HTTPS      |
+| `MUSDASH_ACME_STAGING`       | `false`                     | **Set true during development**   |
+| `MUSDASH_CADDY_ADMIN`        | `http://musdash-caddy:2019` |                                   |
+| `MUSDASH_NETWORK`            | `musdash`                   | Docker network name               |
+| `MUSDASH_DEFAULT_MEMORY_MB`  | `512`                       | Per-container limit               |
+| `MUSDASH_HEALTH_TIMEOUT_SEC` | `60`                        |                                   |
+| `MUSDASH_LOG_LEVEL`          | `info`                      |                                   |
 
 ---
 
@@ -855,7 +855,7 @@ Things that will cost a day if not anticipated:
 ## 22. Product thesis
 
 Coolify is the incumbent: ~59k GitHub stars, 280+ one-click templates, years of
-accumulated edge cases. mosdash does not win on feature count and should not try.
+accumulated edge cases. musdash does not win on feature count and should not try.
 
 It wins on one axis:
 
@@ -866,7 +866,7 @@ PHP application (~300–400MB), its own PostgreSQL (~100–200MB), Redis, a
 WebSocket server, and queue workers. On a 2GB VPS that leaves roughly 800MB for
 actual workloads.
 
-mosdash targets **under 100MB idle** for the same feature set, because it is one
+musdash targets **under 100MB idle** for the same feature set, because it is one
 process holding a SQLite file.
 
 **This is an architectural advantage, not an optimization.** Coolify cannot
@@ -891,10 +891,10 @@ Phase 1 delivers #1 and half of #3. Phases 2–3 deliver the rest.
 
 Read this before committing months of effort.
 
-**Where mosdash wins:** memory footprint, single-binary install, no external
+**Where musdash wins:** memory footprint, single-binary install, no external
 database, faster cold start, simpler mental model, works on a 1GB VPS.
 
-**Where mosdash will not win:** template breadth, integration count (S3
+**Where musdash will not win:** template breadth, integration count (S3
 providers, notification channels, SSO), community size, battle-tested edge
 cases, Windows/exotic-distro support.
 
@@ -903,7 +903,7 @@ Dokku, and Easypanel all occupy adjacent ground. "Coolify but lighter" is not a
 pitch on its own — the RAM number is. Lead with the number in every README,
 landing page, and post. It is measurable, verifiable, and defensible.
 
-**Success criterion for the whole project:** 50 people running mosdash on a 1GB
+**Success criterion for the whole project:** 50 people running musdash on a 1GB
 box, in production, without complaints. That matters more than feature count.
 
 ---
@@ -991,7 +991,7 @@ Complete target state. `P#` is the delivering phase.
 
 | Feature                                     | Phase  |
 | ------------------------------------------- | ------ |
-| Single server (the machine mosdash runs on) | P1     |
+| Single server (the machine musdash runs on) | P1     |
 | Additional remote servers over SSH          | **P5** |
 | Dedicated build server                      | **P5** |
 
@@ -1024,7 +1024,7 @@ Auth flow:
 
 Use `@octokit/app`. Do not hand-roll this.
 
-**Self-hosted registration:** each mosdash instance registers its own GitHub App
+**Self-hosted registration:** each musdash instance registers its own GitHub App
 via the manifest flow — POST a manifest to GitHub, the user confirms, GitHub
 redirects back with a code, exchange it for the App's credentials. Store the
 private key encrypted with the same AES-256-GCM key used for env vars.
@@ -1064,7 +1064,7 @@ replacement. Railpack is Go-based, interfaces directly with BuildKit, and
 produces substantially smaller images (roughly 38% smaller for Node, 77% for
 Python).
 
-Run BuildKit as a container (`moby/buildkit`) that mosdash manages, the same way
+Run BuildKit as a container (`moby/buildkit`) that musdash manages, the same way
 it manages Caddy. Set `BUILDKIT_HOST` for Railpack invocations.
 
 **Build cache is the difference between a 20-second and a 3-minute redeploy.**
@@ -1140,7 +1140,7 @@ toggle per resource · redacted build-arg display.
 
 ### Phase 2 Definition of Done
 
-1. Install the GitHub App from within mosdash via the manifest flow.
+1. Install the GitHub App from within musdash via the manifest flow.
 2. Create a resource from a private repository.
 3. Deploy with Railpack, zero configuration, for a Node app and a Python app.
 4. Deploy a repo with a Dockerfile.
@@ -1165,21 +1165,21 @@ It is enormous — `depends_on`, healthchecks, profiles, `extends`, build
 contexts, configs, secrets, `x-` extensions. Reimplementing it is how this
 project dies.
 
-mosdash's actual job is a **YAML transform pipeline**:
+musdash's actual job is a **YAML transform pipeline**:
 
 1. Parse the user's `docker-compose.yaml` (`yaml` package).
 2. **Validate and reject dangerous constructs**: `privileged: true`,
    `network_mode: host`, bind mounts to sensitive host paths, and
    `/var/run/docker.sock` mounts. Present a clear error, not a silent strip.
-3. Inject the `mosdash` network so services can reach each other and Caddy can
+3. Inject the `musdash` network so services can reach each other and Caddy can
    reach them by name.
-4. Inject `mosdash.*` labels on every service for ownership tracking.
+4. Inject `musdash.*` labels on every service for ownership tracking.
 5. Rewrite named volumes to a project-scoped namespace so two stacks cannot
    collide.
 6. Merge resolved environment variables.
 7. Apply a default memory limit to any service lacking one.
 8. Write to `data/compose/<resourceId>/docker-compose.yaml`.
-9. `docker compose -p mosdash-<resourceId> up -d --remove-orphans`, streaming
+9. `docker compose -p musdash-<resourceId> up -d --remove-orphans`, streaming
    stdout and stderr to the SSE log channel via `Bun.spawn`.
 
 ### The genuinely hard parts
@@ -1208,7 +1208,7 @@ Compose works, templates are roughly a week's work for the single highest
 perceived-value feature in the product.
 
 ```
-mosdash-templates/
+musdash-templates/
 ├── index.json
 └── templates/
     ├── plausible/
@@ -1220,7 +1220,7 @@ mosdash-templates/
 ```
 
 Flow: fetch and cache `index.json` → render a searchable grid → user clicks →
-mosdash generates values for placeholders → runs the existing Compose pipeline.
+musdash generates values for placeholders → runs the existing Compose pipeline.
 
 **Placeholder convention** (compatible with Coolify's, which eases porting):
 
@@ -1238,7 +1238,7 @@ it rather than authoring 200 Compose files by hand. Ship ~30 curated templates
 that are genuinely tested rather than 280 that are not.
 
 **Add a `minimum_ram_mb` field to `meta.json` and warn the user when a template
-exceeds available memory.** No other platform does this, and for mosdash's
+exceeds available memory.** No other platform does this, and for musdash's
 audience — people on small VPSes — it is exactly on-brand.
 
 ### Schema additions
@@ -1272,7 +1272,7 @@ CREATE TABLE volumes (
 
 ### Phase 3 Definition of Done
 
-1. Paste a Compose file with three services; all start on the mosdash network.
+1. Paste a Compose file with three services; all start on the musdash network.
 2. Designate one service public; it is reachable over HTTPS.
 3. Services resolve each other by name.
 4. Redeploy preserves volume data.
@@ -1332,7 +1332,7 @@ Idle RSS still under 100MB.
 **Estimate:** 4–6 weeks.
 
 **Use SSH, not an agent.** The user adds a server by pasting an IP and adding
-mosdash's public key. Nothing to install. This is how Coolify does it and it is
+musdash's public key. Nothing to install. This is how Coolify does it and it is
 correct — an agent binary is another thing to version, update, and debug.
 
 - Generate an ed25519 keypair on first run, store the private key encrypted.
@@ -1377,7 +1377,7 @@ The number is the product. Measure at the end of every phase and publish it.
 Even at Phase 5, that is **five to eight times lighter than Coolify's control
 plane**. The comparison stays true through full feature parity.
 
-**Sidecar containers mosdash manages** (Caddy ~50MB, BuildKit idle ~30MB) are
+**Sidecar containers musdash manages** (Caddy ~50MB, BuildKit idle ~30MB) are
 reported separately and honestly in the README. Coolify's published overhead
 also includes its proxy, so the comparison remains fair — but never quote a
 number that excludes something a user will actually be running.
@@ -1396,16 +1396,16 @@ product loses its reason to exist.
 **Do not wait for Phase 5 to launch.** Ship at the end of every phase.
 
 - **Phase 1 → private alpha.** Ten people you can talk to directly.
-- **Phase 2 → public beta.** GitHub deploy is the threshold at which mosdash
+- **Phase 2 → public beta.** GitHub deploy is the threshold at which musdash
   becomes genuinely usable. Launch here, not later.
 - **Phase 3 → 1.0.** Compose and templates are the parity claim.
 - **Phase 4/5 → 1.x.** Iterate on real feedback.
 
 **Every announcement leads with the RAM number.** Not the feature list — the
-number. It is the only thing that distinguishes mosdash in a crowded field, and
+number. It is the only thing that distinguishes musdash in a crowded field, and
 it is verifiable in ten seconds by anyone who doubts it.
 
-Publish a reproducible benchmark: a script that installs mosdash and Coolify on
+Publish a reproducible benchmark: a script that installs musdash and Coolify on
 identical VPSes, deploys the same three apps to each, and prints idle RSS. Being
 willing to be measured is the strongest form of the claim.
 

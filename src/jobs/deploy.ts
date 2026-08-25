@@ -51,7 +51,7 @@ export function containerName(
   resourceId: string,
   deploymentId: string,
 ): string {
-  return `mosdash-${shortId(resourceId)}-${shortId(deploymentId)}`
+  return `musdash-${shortId(resourceId)}-${shortId(deploymentId)}`
 }
 
 /**
@@ -389,7 +389,7 @@ async function currentImageOf(
 /**
  * Waits for the new container to be usable, in the precedence §9 defines.
  *
- * mosdash runs on the host, so it dials the container's IP rather than its name
+ * musdash runs on the host, so it dials the container's IP rather than its name
  * — Docker's embedded DNS only resolves from inside the network (DECISIONS D2).
  */
 async function healthGate(

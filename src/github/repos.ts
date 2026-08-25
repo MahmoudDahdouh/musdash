@@ -3,7 +3,7 @@ import { ghJson, ghPaginate } from "./api.ts"
 import { appJwt } from "./jwt.ts"
 import { installationToken } from "./tokens.ts"
 
-/** Everything mosdash reads from GitHub: installations, repositories, commits. */
+/** Everything musdash reads from GitHub: installations, repositories, commits. */
 
 export interface RepoRef {
   /** "owner/name". */

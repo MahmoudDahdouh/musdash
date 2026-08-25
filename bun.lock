@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "mosdash",
+      "name": "musdash",
       "dependencies": {
         "@elysiajs/html": "^1.4.2",
         "drizzle-orm": "^0.45.2",

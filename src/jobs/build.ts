@@ -106,7 +106,7 @@ export async function buildFromSource(
     )
   }
 
-  const tag = `mosdash/${resource.name}:${shortId(deploymentId)}`
+  const tag = `musdash/${resource.name}:${shortId(deploymentId)}`
   const dir = createBuildDir(deploymentId)
 
   try {

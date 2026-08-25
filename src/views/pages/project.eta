@@ -261,7 +261,7 @@
       <p class="muted">
         <small>
           For testing on the server itself. Typing a path here clears the GitHub
-          account above and mosdash builds that directory on this host rather
+          account above and musdash builds that directory on this host rather
           than fetching from GitHub. Give an absolute path.
         </small>
       </p>

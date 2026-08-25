@@ -19,7 +19,7 @@ jobs:
 
   ram-gate:
     # The number is the product. Without this gate it drifts silently and
-    # mosdash loses its reason to exist. Linux-only: the ceiling is a Linux
+    # musdash loses its reason to exist. Linux-only: the ceiling is a Linux
     # number, measured the way users will measure it.
     runs-on: ubuntu-latest
     steps:

@@ -124,7 +124,7 @@ export const githubWebhookRoutes = new Elysia().post(
 
     const secret = getWebhookSecret()
     if (!secret) {
-      // 202, not an error: GitHub retries a non-2xx forever, and "mosdash is
+      // 202, not an error: GitHub retries a non-2xx forever, and "musdash is
       // not connected to GitHub" is not something a retry can fix.
       logger.warn(
         { event, delivery },

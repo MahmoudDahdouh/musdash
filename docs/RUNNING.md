@@ -1,4 +1,4 @@
-# Running mosdash
+# Running musdash
 
 How to run the code on your local machine (Windows + WSL2) and on a VPS, step by
 step, and what you can actually do with it once it is up.
@@ -49,7 +49,7 @@ This describes the code as it stands at commit `1ec05d0` (Phase 2, checkpoint
   domains.
 - A reconciler that restarts anything that disappears — a reboot or a stray
   `docker rm -f` heals within 30 seconds.
-- Two managed sidecars, started and self-healed by mosdash itself: **Caddy**
+- Two managed sidecars, started and self-healed by musdash itself: **Caddy**
   (`caddy:2-alpine`) and **BuildKit** (`moby/buildkit:v0.27.0`).
 - Daily image prune, because disk fills before RAM does.
 - Hard memory limit on every container it creates (512 MB by default).
@@ -122,25 +122,25 @@ bun --version
 
 ### A4. Get the code onto the Linux filesystem
 
-**Do not run from `/mnt/d/coding/mosdash`.** SQLite over the `9p` mount that
+**Do not run from `/mnt/d/coding/musdash`.** SQLite over the `9p` mount that
 backs `/mnt/*` takes locks that fail intermittently — this cost real debugging
 time already. Clone into the WSL filesystem instead:
 
 ```bash
-git clone <your-remote> ~/mosdash     # or: cp -r /mnt/d/coding/mosdash ~/mosdash
-cd ~/mosdash
+git clone <your-remote> ~/musdash     # or: cp -r /mnt/d/coding/musdash ~/musdash
+cd ~/musdash
 bun install
 ```
 
-Edit on Windows in `\\wsl$\Ubuntu-24.04\home\<you>\mosdash` if you like, but
-**run** from `~/mosdash`.
+Edit on Windows in `\\wsl$\Ubuntu-24.04\home\<you>\musdash` if you like, but
+**run** from `~/musdash`.
 
 ### A5. Install the build tools (only for git-repo deploys)
 
 Skip this if you are only deploying pre-built Docker images.
 
 ```bash
-# buildctl, copied out of the same BuildKit image mosdash runs — this keeps
+# buildctl, copied out of the same BuildKit image musdash runs — this keeps
 # client and daemon versions matched by construction.
 docker pull moby/buildkit:v0.27.0
 cid=$(docker create moby/buildkit:v0.27.0)
@@ -163,26 +163,26 @@ Must be user-defined — the default bridge gives no name resolution, and Caddy
 dials app containers by name.
 
 ```bash
-docker network create mosdash
+docker network create musdash
 ```
 
 ### A7. Write `.env`
 
 ```bash
-cat > ~/mosdash/.env <<'EOF'
-MOSDASH_PORT=8000
-MOSDASH_DATA_DIR=./data
-MOSDASH_DOCKER_SOCKET=/var/run/docker.sock
-MOSDASH_NETWORK=mosdash
-MOSDASH_CADDY_ADMIN=http://127.0.0.1:2019
-MOSDASH_ACME_STAGING=true
-MOSDASH_DEFAULT_MEMORY_MB=512
-MOSDASH_HEALTH_TIMEOUT_SEC=60
-MOSDASH_LOG_LEVEL=debug
+cat > ~/musdash/.env <<'EOF'
+MUSDASH_PORT=8000
+MUSDASH_DATA_DIR=./data
+MUSDASH_DOCKER_SOCKET=/var/run/docker.sock
+MUSDASH_NETWORK=musdash
+MUSDASH_CADDY_ADMIN=http://127.0.0.1:2019
+MUSDASH_ACME_STAGING=true
+MUSDASH_DEFAULT_MEMORY_MB=512
+MUSDASH_HEALTH_TIMEOUT_SEC=60
+MUSDASH_LOG_LEVEL=debug
 EOF
 ```
 
-Bun loads `.env` automatically. Leave `MOSDASH_WILDCARD_DOMAIN` unset locally —
+Bun loads `.env` automatically. Leave `MUSDASH_WILDCARD_DOMAIN` unset locally —
 you have no public DNS, so there is nothing for ACME to validate. Resources will
 still deploy and be reachable by container port; they just get no auto-domain.
 
@@ -192,19 +192,19 @@ still deploy and be reachable by container port; they just get no auto-domain.
 ### A8. Run it
 
 ```bash
-cd ~/mosdash
+cd ~/musdash
 bun run dev
 ```
 
-Watch for `mosdash listening` in the log. Then, on startup, mosdash enqueues the
+Watch for `musdash listening` in the log. Then, on startup, musdash enqueues the
 two sidecar bootstraps — first boot pulls `caddy:2-alpine` and
 `moby/buildkit:v0.27.0`, which takes a minute or two. Watch it:
 
 ```bash
-docker ps --filter label=mosdash.role
+docker ps --filter label=musdash.role
 ```
 
-You should end up with `mosdash-caddy` and `mosdash-buildkit` running.
+You should end up with `musdash-caddy` and `musdash-buildkit` running.
 
 ### A9. Open it
 
@@ -243,38 +243,38 @@ Before installing, create two records at your DNS provider:
 
 | Type | Name                | Value          |
 | ---- | ------------------- | -------------- |
-| A    | `mos.example.com`   | your server IP |
-| A    | `*.mos.example.com` | your server IP |
+| A    | `mus.example.com`   | your server IP |
+| A    | `*.mus.example.com` | your server IP |
 
 The wildcard is what gives every resource an automatic HTTPS subdomain at
-`<resource>-<environment>.mos.example.com`. Wait for it to resolve
-(`dig +short foo.mos.example.com`) before turning off ACME staging — a failed
+`<resource>-<environment>.mus.example.com`. Wait for it to resolve
+(`dig +short foo.mus.example.com`) before turning off ACME staging — a failed
 issuance burns rate limit.
 
 ### B2. Build the binary
 
-The installer expects `./dist/mosdash`. Build it on a **Linux x86_64** machine —
+The installer expects `./dist/musdash`. Build it on a **Linux x86_64** machine —
 your WSL distro is fine; a Windows build produces a `.exe` the VPS cannot run.
 
 ```bash
-cd ~/mosdash
+cd ~/musdash
 bun run build          # bun build --compile --minify --sourcemap
 ```
 
 ### B3. Copy the repo to the server
 
-The installer reads `./dist/mosdash` relative to where it runs, so copy both the
+The installer reads `./dist/musdash` relative to where it runs, so copy both the
 script and the binary:
 
 ```bash
-rsync -av --exclude node_modules --exclude data ~/mosdash/ root@<server-ip>:/root/mosdash/
+rsync -av --exclude node_modules --exclude data ~/musdash/ root@<server-ip>:/root/musdash/
 ```
 
 ### B4. Run the installer
 
 ```bash
 ssh root@<server-ip>
-cd /root/mosdash
+cd /root/musdash
 sudo ./scripts/install.sh
 ```
 
@@ -283,23 +283,23 @@ It does all of this, idempotently:
 1. Installs Docker if absent.
 2. Installs `buildctl` (copied out of `moby/buildkit:v0.27.0`) and
    `railpack v0.37.0`.
-3. Creates the `mosdash` system user, adds it to the `docker` group, and creates
-   `/opt/mosdash` + `/opt/mosdash/data`.
-4. Creates the `mosdash` Docker network.
-5. Creates the `mosdash-caddy-data` and `mosdash-caddy-config` volumes. **These
+3. Creates the `musdash` system user, adds it to the `docker` group, and creates
+   `/opt/musdash` + `/opt/musdash/data`.
+4. Creates the `musdash` Docker network.
+5. Creates the `musdash-caddy-data` and `musdash-caddy-config` volumes. **These
    hold your certificates — never delete them**, or you re-issue everything and
    burn the Let's Encrypt rate limit.
-6. Installs the binary to `/opt/mosdash/mosdash`.
-7. Writes `/opt/mosdash/mosdash.env` (mode 0600) if it does not exist.
-8. Installs and starts the `mosdash` systemd unit.
+6. Installs the binary to `/opt/musdash/musdash`.
+7. Writes `/opt/musdash/musdash.env` (mode 0600) if it does not exist.
+8. Installs and starts the `musdash` systemd unit.
 
-Caddy and BuildKit containers are **not** created by the installer — mosdash
+Caddy and BuildKit containers are **not** created by the installer — musdash
 creates them on first boot, so there is exactly one code path that also
 re-creates them if they are ever removed.
 
 ### B5. First login
 
-The installer prints the URL. Because no admin account exists yet, mosdash binds
+The installer prints the URL. Because no admin account exists yet, musdash binds
 `0.0.0.0` so you are not locked out of the box you just installed:
 
 ```
@@ -313,22 +313,22 @@ step before locking the port down.
 ### B6. Configure domains and TLS
 
 ```bash
-sudo nano /opt/mosdash/mosdash.env
+sudo nano /opt/musdash/musdash.env
 ```
 
 Set:
 
 ```ini
-MOSDASH_WILDCARD_DOMAIN=mos.example.com
-MOSDASH_ACME_EMAIL=you@example.com
-MOSDASH_ACME_STAGING=false      # only once DNS resolves — see B1
+MUSDASH_WILDCARD_DOMAIN=mus.example.com
+MUSDASH_ACME_EMAIL=you@example.com
+MUSDASH_ACME_STAGING=false      # only once DNS resolves — see B1
 ```
 
 Then:
 
 ```bash
-sudo systemctl restart mosdash
-sudo journalctl -u mosdash -f
+sudo systemctl restart musdash
+sudo journalctl -u musdash -f
 ```
 
 ### B7. Lock down the firewall
@@ -349,10 +349,10 @@ sudo ufw enable
 ```bash
 # on your build machine
 bun run build
-rsync -av dist/mosdash root@<server-ip>:/root/mosdash/dist/
+rsync -av dist/musdash root@<server-ip>:/root/musdash/dist/
 
 # on the server
-cd /root/mosdash && sudo ./scripts/install.sh   # idempotent; reinstalls the binary
+cd /root/musdash && sudo ./scripts/install.sh   # idempotent; reinstalls the binary
 ```
 
 Migrations run at startup. The env file is not overwritten if it already exists.
@@ -408,22 +408,22 @@ any of these requires a restart.
 
 | Variable                     | Default                 | Notes                                                  |
 | ---------------------------- | ----------------------- | ------------------------------------------------------ |
-| `MOSDASH_PORT`               | `8000`                  | Binds `127.0.0.1` in production once an admin exists   |
-| `MOSDASH_DATA_DIR`           | `./data`                | SQLite, `secret.key` (0600), logs, build cache         |
-| `MOSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock`  | Must be a real unix socket                             |
-| `MOSDASH_WILDCARD_DOMAIN`    | —                       | e.g. `mos.example.com`; needed for auto-domains        |
-| `MOSDASH_ACME_EMAIL`         | —                       | Required for automatic HTTPS                           |
-| `MOSDASH_PUBLIC_URL`         | —                       | Only for GitHub App registration; must be public HTTPS |
-| `MOSDASH_ACME_STAGING`       | `true`                  | Safe default — set `false` deliberately, on real DNS   |
-| `MOSDASH_CADDY_ADMIN`        | `http://127.0.0.1:2019` | Never published beyond loopback                        |
-| `MOSDASH_BUILDKIT_ADDR`      | `tcp://127.0.0.1:1234`  | Unauthenticated API — loopback only                    |
-| `MOSDASH_BUILD_CACHE_GB`     | `10`                    | Layer cache ceiling                                    |
-| `MOSDASH_RAILPACK_BIN`       | `railpack`              | Shelled out to, not linked                             |
-| `MOSDASH_BUILDCTL_BIN`       | `buildctl`              | Shelled out to, not linked                             |
-| `MOSDASH_NETWORK`            | `mosdash`               | Must be user-defined                                   |
-| `MOSDASH_DEFAULT_MEMORY_MB`  | `512`                   | Per-container hard limit; there is no "unlimited"      |
-| `MOSDASH_HEALTH_TIMEOUT_SEC` | `60`                    | How long a new container has to pass the gate          |
-| `MOSDASH_LOG_LEVEL`          | `info`                  | `trace`…`fatal`                                        |
+| `MUSDASH_PORT`               | `8000`                  | Binds `127.0.0.1` in production once an admin exists   |
+| `MUSDASH_DATA_DIR`           | `./data`                | SQLite, `secret.key` (0600), logs, build cache         |
+| `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock`  | Must be a real unix socket                             |
+| `MUSDASH_WILDCARD_DOMAIN`    | —                       | e.g. `mus.example.com`; needed for auto-domains        |
+| `MUSDASH_ACME_EMAIL`         | —                       | Required for automatic HTTPS                           |
+| `MUSDASH_PUBLIC_URL`         | —                       | Only for GitHub App registration; must be public HTTPS |
+| `MUSDASH_ACME_STAGING`       | `true`                  | Safe default — set `false` deliberately, on real DNS   |
+| `MUSDASH_CADDY_ADMIN`        | `http://127.0.0.1:2019` | Never published beyond loopback                        |
+| `MUSDASH_BUILDKIT_ADDR`      | `tcp://127.0.0.1:1234`  | Unauthenticated API — loopback only                    |
+| `MUSDASH_BUILD_CACHE_GB`     | `10`                    | Layer cache ceiling                                    |
+| `MUSDASH_RAILPACK_BIN`       | `railpack`              | Shelled out to, not linked                             |
+| `MUSDASH_BUILDCTL_BIN`       | `buildctl`              | Shelled out to, not linked                             |
+| `MUSDASH_NETWORK`            | `musdash`               | Must be user-defined                                   |
+| `MUSDASH_DEFAULT_MEMORY_MB`  | `512`                   | Per-container hard limit; there is no "unlimited"      |
+| `MUSDASH_HEALTH_TIMEOUT_SEC` | `60`                    | How long a new container has to pass the gate          |
+| `MUSDASH_LOG_LEVEL`          | `info`                  | `trace`…`fatal`                                        |
 | `NODE_ENV`                   | —                       | `production` enables the loopback bind                 |
 
 ---
@@ -432,31 +432,31 @@ any of these requires a restart.
 
 ```bash
 # service
-sudo systemctl status mosdash
-sudo systemctl restart mosdash
-sudo journalctl -u mosdash -f
+sudo systemctl status musdash
+sudo systemctl restart musdash
+sudo journalctl -u musdash -f
 
-# what mosdash manages — every managed container carries mosdash.* labels
-docker ps --filter label=mosdash.role          # sidecars: caddy, buildkit
-docker ps --filter label=mosdash.resource      # your apps
+# what musdash manages — every managed container carries musdash.* labels
+docker ps --filter label=musdash.role          # sidecars: caddy, buildkit
+docker ps --filter label=musdash.resource      # your apps
 
 # state
-ls -l /opt/mosdash/data/                       # mosdash.db, secret.key, logs/, builds/
-docker volume ls | grep mosdash
+ls -l /opt/musdash/data/                       # musdash.db, secret.key, logs/, builds/
+docker volume ls | grep musdash
 ```
 
 ### Back this up
 
-- `/opt/mosdash/data/mosdash.db` — everything: projects, resources, deployments.
-- `/opt/mosdash/data/secret.key` — **without it, every encrypted env var is
+- `/opt/musdash/data/musdash.db` — everything: projects, resources, deployments.
+- `/opt/musdash/data/secret.key` — **without it, every encrypted env var is
   unrecoverable.** Mode 0600. Back it up separately from the database.
-- `mosdash-caddy-data` volume — your issued certificates.
+- `musdash-caddy-data` volume — your issued certificates.
 
 ### Memory you should expect
 
 | Component             | Idle RSS              |
 | --------------------- | --------------------- |
-| mosdash control plane | ~50–80 MB (gate: 100) |
+| musdash control plane | ~50–80 MB (gate: 100) |
 | Caddy sidecar         | ~50 MB                |
 | BuildKit sidecar      | ~11–30 MB             |
 | Each app container    | capped at 512 MB      |
@@ -473,7 +473,7 @@ distro. Run Docker Engine inside WSL and check `ls -l /var/run/docker.sock`.
 
 **SQLite locking errors, intermittently**
 You are running from `/mnt/c` or `/mnt/d`. Move the checkout to the WSL
-filesystem (`~/mosdash`).
+filesystem (`~/musdash`).
 
 **Deploys queue but nothing happens**
 Job concurrency is exactly 1 by design — deploys spike memory, so serializing
@@ -481,19 +481,19 @@ them is what keeps the RAM budget. A stuck job blocks the rest. Check the log
 for the job that never finished.
 
 **Caddy will not start, or port 80/443/2019 is in use**
-Something else holds the port — often a stale `mosdash-caddy` from a previous
-run, or a system nginx. `docker ps -a --filter name=mosdash-caddy` and
+Something else holds the port — often a stale `musdash-caddy` from a previous
+run, or a system nginx. `docker ps -a --filter name=musdash-caddy` and
 `sudo ss -tlnp | grep -E ':(80|443|2019)'`.
 
 **Certificates fail to issue**
-Check that `MOSDASH_ACME_STAGING=false`, that the wildcard A record resolves,
-that 80 and 443 are open, and that `MOSDASH_ACME_EMAIL` is set. Staging
+Check that `MUSDASH_ACME_STAGING=false`, that the wildcard A record resolves,
+that 80 and 443 are open, and that `MUSDASH_ACME_EMAIL` is set. Staging
 certificates are untrusted by browsers on purpose — that is the default working
 as intended.
 
 **Builds fail with ENOENT on `railpack` or `buildctl`**
 Neither is on `PATH`. Install them (step A5), or point
-`MOSDASH_RAILPACK_BIN` / `MOSDASH_BUILDCTL_BIN` at their real locations.
+`MUSDASH_RAILPACK_BIN` / `MUSDASH_BUILDCTL_BIN` at their real locations.
 
 **A container disappeared and came back**
 That is the reconciler, working. It heals drift within 30 seconds.

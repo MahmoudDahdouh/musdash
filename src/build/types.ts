@@ -8,7 +8,7 @@ export type BuildPack = "dockerfile" | "railpack"
 export interface BuildContext {
   /** Directory holding the source to build. */
   contextDir: string
-  /** Image reference to produce, e.g. `mosdash/web:01J...`. */
+  /** Image reference to produce, e.g. `musdash/web:01J...`. */
   tag: string
   /**
    * Cache scope. Per resource rather than per deployment: a per-deployment key

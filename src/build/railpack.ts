@@ -56,7 +56,7 @@ export async function runBuilder(
   try {
     proc = Bun.spawn([bin, ...args], {
       // The build context is passed as an argument, never as the working
-      // directory, so nothing here depends on where mosdash was started.
+      // directory, so nothing here depends on where musdash was started.
       cwd: config.buildsDir,
       env: { ...process.env, ...env },
       stdout: "pipe",

@@ -58,7 +58,7 @@ mandatory rather than theoretical.
 - The response body streams; it is not buffered. An image pull produced 126
   progress lines over 101 chunks.
 - The `unix:` option accepts an **arbitrary socket path** (verified via a symlink),
-  so `MOSDASH_DOCKER_SOCKET` is viable.
+  so `MUSDASH_DOCKER_SOCKET` is viable.
 - **Pin the API version in the path.** The daemon reports `1.55` but serves
   `/v1.44/` requests fine; unversioned URLs would shift under a daemon upgrade.
 
@@ -69,12 +69,12 @@ the deployment target.
 
 ## Reverse proxy — Caddy
 
-Caddy runs as a container mosdash manages, on the shared `mosdash` network so it
+Caddy runs as a container musdash manages, on the shared `musdash` network so it
 resolves app containers by name via Docker's embedded DNS. Routes are managed by
 PATCHing its JSON admin API, using `@id` for addressable objects so each route
 can be replaced or deleted independently.
 
-- The admin API binds to the mosdash network only, **never published to the
+- The admin API binds to the musdash network only, **never published to the
   host**.
 - `/data` (certificates) and `/config` are named volumes. Losing the certificate
   store means re-issuing everything and burning Let's Encrypt rate limit.
@@ -116,7 +116,7 @@ Register a GitHub App, not an OAuth App, and never accept pasted personal access
 tokens. The user clicks Install and selects repositories; the App also delivers
 webhooks, so there is nothing separate to configure.
 
-Each mosdash instance registers its own App via the manifest flow — POST a
+Each musdash instance registers its own App via the manifest flow — POST a
 manifest, the user confirms, GitHub redirects back with a code, exchange it for
 credentials. Store the private key encrypted with the same key used for env vars.
 
@@ -134,7 +134,7 @@ authors recommend Railpack as the replacement; Railpack is Go-based, interfaces
 directly with BuildKit, and produces substantially smaller images (~38% smaller
 for Node, ~77% for Python).
 
-BuildKit runs as a container mosdash manages, the same way it manages Caddy, with
+BuildKit runs as a container musdash manages, the same way it manages Caddy, with
 `BUILDKIT_HOST` set for Railpack invocations. Cache the local build cache with a
 size cap (default 10GB) and surface its usage alongside image usage — build cache
 is the difference between a 20-second and a 3-minute redeploy.
@@ -150,10 +150,10 @@ configs, secrets, `x-` extensions — and reimplementing it in TypeScript would
 cost far more in code, bugs, and maintenance than it saves. Subprocesses cost
 transient memory, not resident memory, so this does not threaten the RAM budget.
 
-mosdash's actual job is a **YAML transform pipeline**: parse, then reject
+musdash's actual job is a **YAML transform pipeline**: parse, then reject
 dangerous constructs with a clear error (`privileged: true`, `network_mode: host`,
 docker-socket mounts, bind mounts to sensitive host paths) rather than silently
-stripping them; then inject the shared network, `mosdash.*` labels,
+stripping them; then inject the shared network, `musdash.*` labels,
 project-scoped volume names, resolved env vars, and a default memory limit on any
 service lacking one.
 
@@ -199,7 +199,7 @@ backup; include a "verify last backup" action that checks the dump is readable.
 
 ## Multiple servers — SSH, not an agent
 
-The user pastes an IP and adds mosdash's public key. Nothing to install, version,
+The user pastes an IP and adds musdash's public key. Nothing to install, version,
 update, or debug on the remote box. Generate an ed25519 keypair on first run and
 store the private key encrypted.
 
@@ -276,7 +276,7 @@ unix socket. Probing both pipe path forms and TCP 2375 failed on all three.
 
 Docker Engine is therefore installed **natively inside a WSL2 Ubuntu 24.04
 distro** (not via Docker Desktop's WSL integration), giving a genuine
-`/var/run/docker.sock` and matching the §16 deployment target. Run mosdash from
+`/var/run/docker.sock` and matching the §16 deployment target. Run musdash from
 the Linux filesystem, not `/mnt/d/` — the 9p mount is slow and breaks file
 watching.
 
@@ -284,18 +284,18 @@ Roughly half of Phase 1 (the Docker client, deploy job, Caddy, the swap, the
 reconciler) cannot be verified on Windows. Those acceptance criteria are marked
 `[manual, linux]` so a builder cannot claim verification it did not perform.
 
-### D2 — mosdash stays a host binary; health checks dial container IPs
+### D2 — musdash stays a host binary; health checks dial container IPs
 
-§9's health gate and §18's `MOSDASH_CADDY_ADMIN` default
-(`http://mosdash-caddy:2019`) both assume container-name DNS, which only resolves
-from inside the user-defined network. But §17's `install.sh` puts mosdash on the
+§9's health gate and §18's `MUSDASH_CADDY_ADMIN` default
+(`http://musdash-caddy:2019`) both assume container-name DNS, which only resolves
+from inside the user-defined network. But §17's `install.sh` puts musdash on the
 host with a mounted socket.
 
-**Resolution: mosdash remains a host process.** The health gate resolves the
+**Resolution: musdash remains a host process.** The health gate resolves the
 container's IP from `inspect` rather than its name, and Caddy's admin API is
-published loopback-only, so `MOSDASH_CADDY_ADMIN` defaults to
+published loopback-only, so `MUSDASH_CADDY_ADMIN` defaults to
 `http://127.0.0.1:2019`. This keeps `install.sh`, socket access, and the RSS
-measurement method exactly as specified. Containerising mosdash would have
+measurement method exactly as specified. Containerising musdash would have
 changed all three, and would have meant measuring RSS inside a container.
 
 The admin API is still never exposed beyond loopback (§12).
@@ -325,11 +325,11 @@ nothing is routing yet, so those conflict.
 **Resolution: `install.sh` creates a Caddy route for the dashboard on its own
 subdomain from the start.** To avoid locking out an install whose DNS is not yet
 propagated — and to match the Coolify experience of reaching the dashboard by IP
-— mosdash binds `0.0.0.0:8000` while the `users` table is empty, then binds
+— musdash binds `0.0.0.0:8000` while the `users` table is empty, then binds
 `127.0.0.1` once an admin exists. The insecure window is exactly one account
 creation, and it closes automatically.
 
-### D4 — `MOSDASH_ACME_STAGING` defaults to `true`
+### D4 — `MUSDASH_ACME_STAGING` defaults to `true`
 
 §18 defaults it `false`, but §21 and this file both say to use the Let's Encrypt
 staging endpoint during development, always. A `false` default means the first
@@ -337,7 +337,7 @@ careless dev run burns real certificates against a limit of 50 per registered
 domain per week.
 
 **Resolution: default `true`.** Production is the deliberate case, so
-`install.sh` sets `MOSDASH_ACME_STAGING=false` explicitly. Safe by default;
+`install.sh` sets `MUSDASH_ACME_STAGING=false` explicitly. Safe by default;
 impossible to burn the rate limit by accident.
 
 ### D5 — `src/routes/**` ownership convention
@@ -404,7 +404,7 @@ route does, shows zero gaps.
 - Resource-name and image-reference validation both reject bad input
 - Env vars absent from the database file in plaintext, present in the container
 - Deploy handler returns in **10ms** — it enqueues and redirects, never awaits Docker
-- Container carries all four `mosdash.*` labels, a 256MB cap, and `Tty:false`
+- Container carries all four `musdash.*` labels, a 256MB cap, and `Tty:false`
 - **Zero failed requests across a redeploy** (§16 step 9)
 - Rollback returns the previous image (§16 step 10)
 - Reconciler restores a `docker rm -f`'d container within 30s (§16 step 11)
@@ -444,7 +444,7 @@ and rollback worked for a week and then did not.
 
 The Engine offers no way to exempt an image list: `filters={"reference":[...]}`
 is rejected outright (`400 invalid filter 'reference'`), and `label!=` is
-inapplicable because mosdash does not build these images and cannot label them.
+inapplicable because musdash does not build these images and cannot label them.
 Both verified against a real daemon.
 
 **Resolution: dangling-prune plus selective removal.** `/images/prune` is
@@ -457,12 +457,12 @@ bytes are only counted once every tag is gone; and historical `deployments` rows
 are deliberately **not** protected, since the UI offers only `previous_image` as
 a rollback target.
 
-### D7 — mosdash owns the Caddy container, and adopts one it did not create
+### D7 — musdash owns the Caddy container, and adopts one it did not create
 
 `scripts/install.sh` created the proxy with `docker run` at install time. That put
 the container definition in shell, where it ran exactly once and drifted: the D2
 amendment (`CADDY_ADMIN=0.0.0.0:2019`) could be fixed in the installer and still
-leave every already-installed box broken, and `docker rm -f mosdash-caddy` was
+leave every already-installed box broken, and `docker rm -f musdash-caddy` was
 unrecoverable without re-running the installer. Separately, `ensureBaseConfig()`
 had no caller at all, so `srv0` never existed and `upsertRoute` POSTed 404 even
 against a reachable Caddy — an independent defect the same absent bootstrap
@@ -471,14 +471,14 @@ explains.
 **Resolution: an `ensure_caddy` job owns the proxy.** `src/caddy/bootstrap.ts`
 ensures the network, both named volumes, the container, its start, a bounded
 readiness poll on the admin API, and finally `ensureBaseConfig()`. It is enqueued
-at boot and re-enqueued by the reconciler whenever no running `mosdash-caddy` is
+at boot and re-enqueued by the reconciler whenever no running `musdash-caddy` is
 present, so removing the proxy heals within 30 seconds. `install.sh` keeps only
 the volume creation.
 
 Consequences of note:
 
 - **Discovery is by container name, not by label.** A proxy from an older install
-  carries no `mosdash.*` labels and is invisible to a `managed=true` filter; a
+  carries no `musdash.*` labels and is invisible to a `managed=true` filter; a
   label lookup would conclude nothing is there and try to bind `:80` twice. The
   Engine's name filter substring-matches (verified against a real daemon:
   filtering `caddy` returns `/caddy`), so `findContainersByName` compares exact
@@ -487,21 +487,21 @@ Consequences of note:
   connections. If an adopted container fails the readiness poll — which every
   pre-amendment container will, its admin API being bound inside the container —
   the error names `CADDY_ADMIN=0.0.0.0:2019` as the cause and `docker rm -f
-mosdash-caddy` as the fix. Destroying an operator's running proxy unasked is
+musdash-caddy` as the fix. Destroying an operator's running proxy unasked is
   worse than a clear error.
-- **The volume names `mosdash-caddy-data` / `mosdash-caddy-config` are frozen.** A
+- **The volume names `musdash-caddy-data` / `musdash-caddy-config` are frozen.** A
   new name means an empty certificate store, re-issuance of everything, and a
   burnt Let's Encrypt rate limit.
 - **The proxy's memory cap is hardcoded at 512MB**, deliberately not
-  `MOSDASH_DEFAULT_MEMORY_MB`. That setting is the default for user apps; lowering
+  `MUSDASH_DEFAULT_MEMORY_MB`. That setting is the default for user apps; lowering
   it to fit more apps on a small box must not throttle the component they are all
   served through.
-- **The sidecar carries `mosdash.managed=true` + `mosdash.role=proxy` and no
+- **The sidecar carries `musdash.managed=true` + `musdash.role=proxy` and no
   resource id.** A synthetic resource id would resolve to no row, which is exactly
   what the orphan sweep deletes. Both sweeps (`reconciler.ts`, `jobs/index.ts`)
-  now skip on `mosdash.role` explicitly, ahead of the resource-id check that
+  now skip on `musdash.role` explicitly, ahead of the resource-id check that
   spares it today by coincidence — relying on that coincidence is one refactor
-  away from mosdash force-removing its own proxy every 30 seconds.
+  away from musdash force-removing its own proxy every 30 seconds.
 - **The reconciler's re-enqueue uses a time-bucketed job id.** `enqueue` inserts
   without `OR IGNORE`, so a duplicate id throws; that conflict is caught and read
   as "already queued", which is what stops the tick crashing every 30s while the
@@ -526,22 +526,22 @@ the old container matching the row and does not redeploy.
 ## Slice C — the readiness poll was asking the wrong question (2026-08-24)
 
 Three defects, one root cause: `waitForAdmin` asked "does _anything_ answer on
-127.0.0.1:2019?" and treated the answer as proof that the container mosdash had
+127.0.0.1:2019?" and treated the answer as proof that the container musdash had
 just started was serving. It is proof of neither, and it asked without a clock.
 
 **Amendment to the readiness poll.** That host port is reachable by any process
 on the box, so a stale Caddy or a host-installed caddy service answers 200 while
 the container is dead; and Caddy's admin API comes up independently of its HTTP
 servers, so a Caddy whose `srv0` failed to bind `:80` answers 200 throughout.
-mosdash logged "started Caddy" in both. The poll now asks in order:
-`inspectContainer` says the container mosdash started is running — the only one
+musdash logged "started Caddy" in both. The poll now asks in order:
+`inspectContainer` says the container musdash started is running — the only one
 of the three that is evidence about _that_ container, the others being evidence
 about whatever holds the port; the admin API answers; and, after
 `ensureBaseConfig()` has guaranteed `srv0` exists, a real connection to `:80` is
 accepted. Placing the bind check _after_ the config install is deliberate: before
 it, an empty config on a fresh `--resume` volume is legitimate and
 indistinguishable from a failed bind, so the check would have no single correct
-answer. A container mosdash created that has already restarted fails immediately
+answer. A container musdash created that has already restarted fails immediately
 rather than being polled — Caddy exits when it cannot bind, `unless-stopped`
 turns that into a loop, and the poll would otherwise catch it during an up-phase.
 The adopted path deliberately skips that check: an operator's proxy that has been
@@ -579,11 +579,11 @@ became 21ms and the right one.
 **`ensureBaseConfig` now checks for `srv0` specifically, not for any `apps` key.**
 Every `upsertRoute` POSTs to `/config/apps/http/servers/srv0/routes/`, so a config
 resumed from an autosave carrying an http app under a different server name left
-mosdash unable to add a single route while `ensureBaseConfig` reported nothing to
+musdash unable to add a single route while `ensureBaseConfig` reported nothing to
 do. The consequence is recorded plainly: `POST /load` replaces the entire
 configuration, so a hand-edited config lacking `srv0` is now overwritten where
 before it was preserved. That is the correct trade — preserved-but-broken made
-mosdash unusable — but it is not silent: a warning names the replacement first.
+musdash unusable — but it is not silent: a warning names the replacement first.
 
 **The reconciler's re-enqueue gate moved from "running" to "answering".** Gating
 on the Docker running flag was the same mistake one layer up: a Caddy in a
@@ -613,7 +613,7 @@ D7 trade, now measured rather than assumed.
 the job boundary: the `ensure_caddy` payload carries no `deploymentId`, so there
 is no row to attach a failure to. The error messages were made specific instead —
 each names the gate that failed and the command to run (`ss -ltnp`,
-`docker logs mosdash-caddy`), which is what an operator on a self-hosted box
+`docker logs musdash-caddy`), which is what an operator on a self-hosted box
 actually reads. A system-status surface is its own slice.
 
 ### Verified against a real daemon (2026-08-24, WSL2 Ubuntu 24.04, Engine 29.7.2)
@@ -645,7 +645,7 @@ also no systemd unit here, so the reboot criterion has nothing to exercise.
 **One caution recorded from the test run.** Forcing a host-port conflict left the
 Engine with a container whose bindings were configured but unprogrammed, and a
 `docker restart` did not repair it — only a daemon restart did. That is Engine
-behaviour, not mosdash's, but it is the state `publishedPortCount` now detects
+behaviour, not musdash's, but it is the state `publishedPortCount` now detects
 and reports rather than misdiagnosing.
 
 ## Slice D — the build daemon, and two ways a sidecar lies about being ready (2026-08-24)
@@ -661,14 +661,14 @@ reachable without GitHub existing at all.
 
 ### D8 — BuildKit is a managed sidecar, and `privileged` is gated at the client
 
-BuildKit runs as a container mosdash owns, exactly as Caddy does: adopted by
+BuildKit runs as a container musdash owns, exactly as Caddy does: adopted by
 name if present, created if not, re-queued by the reconciler when it goes. The
 bootstrap is a deliberate structural clone of `src/caddy/bootstrap.ts`, because
 the failure modes are identical and that module is the product of a slice spent
 learning them.
 
 **`ContainerSpec` gained `privileged`, and `createContainer` refuses it on any
-spec without a `mosdash.role` label.** A privileged container is root on the
+spec without a `musdash.role` label.** A privileged container is root on the
 host, so the flag is a privilege boundary rather than a tuning knob, and the
 check is enforced in the client instead of trusted to callers — it is one line,
 and what it prevents is a user reaching root on the box. Verified three ways: a
@@ -742,8 +742,8 @@ build daemon being down is not an outage — so it is logged at info, not warn.
 
 - Bootstrap from nothing: **49.4s** including the image pull; the next tick took
   the adopted path in **59ms**.
-- Container state: privileged, 1GB cap, `mosdash.managed=true` +
-  `mosdash.role=builder`, port published to **127.0.0.1 only**, 0 restarts.
+- Container state: privileged, 1GB cap, `musdash.managed=true` +
+  `musdash.role=builder`, port published to **127.0.0.1 only**, 0 restarts.
 - `buildctl debug workers` over TCP lists a real worker.
 - Self-heal after `docker rm -f`: **15s**, 0 restarts, one log line.
 - Privilege guard: refused on a resource spec, accepted on a sidecar spec, and
@@ -777,7 +777,7 @@ dockerfile.v0` are invoked with `Bun.spawn` (shell out, never reimplement).
 Both are pinned and both are installed by `scripts/install.sh` rather than at
 first use, so a missing one is a clear install-time failure instead of an ENOENT
 inside somebody's first deploy. **`buildctl` is copied out of the BuildKit image
-mosdash already runs** — the client and daemon versions then match by
+musdash already runs** — the client and daemon versions then match by
 construction and there is no second download to keep in step.
 
 The two strategies differ in one way that matters: **Railpack loads the finished
@@ -921,7 +921,7 @@ The first implementation keyed the step-8c write on whether _this deploy_ had
 built something (`builtImage === null`). That is correct on the build path and
 wrong on every other one: a rollback of a git resource builds nothing, so the
 flag stayed null, the image-resource branch ran, and `source_json` was
-overwritten with `{"image":"mosdash/gitapp:23gr9g75"}` — destroying the
+overwritten with `{"image":"musdash/gitapp:23gr9g75"}` — destroying the
 repository spec on exactly the path the column was introduced to protect.
 
 Verified by reading the row after a real rollback, not by reasoning about it.
@@ -941,7 +941,7 @@ this", and only the second one holds across every path into the write.
   columns to NULL. This test cannot be re-run once the schema has moved on.
 - **The compiled binary** applied both migrations from a fresh data dir — the
   only thing that proves the static-import path (trap 6).
-- A git resource **built and deployed end to end**: `mosdash/gitapp:23gr9g75` in
+- A git resource **built and deployed end to end**: `musdash/gitapp:23gr9g75` in
   3842ms, whole deploy 9188ms, container serving `node-dockerfile ok` on HTTP 200.
 - `source_json` intact after deploy, after a second build, and after a rollback.
 - **Rollback ran 0 builds** and redeployed the previous tag.
@@ -955,7 +955,7 @@ this", and only the second one holds across every path into the write.
 ### A false alarm worth recording
 
 The first zero-downtime run reported 22 failures out of 400. It was not a
-regression: `MOSDASH_WILDCARD_DOMAIN` had been restored to commented-out at the
+regression: `MUSDASH_WILDCARD_DOMAIN` had been restored to commented-out at the
 end of Slice C, the `domains` table is empty, and with no host there is no route
 to switch — so Caddy kept a stale upstream from a previous session and the
 resource was already unreachable before the test began. With the variable set,

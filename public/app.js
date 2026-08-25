@@ -1,4 +1,4 @@
-/* mosdash client behaviour. Alpine components plus one delegated DOM
+/* musdash client behaviour. Alpine components plus one delegated DOM
    listener — no framework, no router. */
 
 document.addEventListener("alpine:init", () => {

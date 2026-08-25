@@ -11,17 +11,17 @@
 <div class="card stack">
   <h3>GitHub</h3>
   <p class="muted">
-    Connecting a GitHub App lets mosdash read your repositories, build them from
+    Connecting a GitHub App lets musdash read your repositories, build them from
     source, and deploy automatically when you push.
   </p>
 
   <% if (!it.publicUrl) { %>
   <div class="flash flash-error">
-    <strong>MOSDASH_PUBLIC_URL is not set.</strong>
+    <strong>MUSDASH_PUBLIC_URL is not set.</strong>
     GitHub has to reach this instance to deliver the registration callback and
     push webhooks, so it needs the public HTTPS address this dashboard is served
-    from. Set <code>MOSDASH_PUBLIC_URL</code> — for example
-    <code>https://mosdash.example.com</code> — and restart mosdash before
+    from. Set <code>MUSDASH_PUBLIC_URL</code> — for example
+    <code>https://musdash.example.com</code> — and restart musdash before
     connecting.
   </div>
   <% } %>
@@ -29,7 +29,7 @@
   <% if (!it.app) { %>
   <p class="muted">
     No GitHub App is connected. Creating one sends you to GitHub, where you
-    confirm the App and choose which repositories it may read. mosdash never
+    confirm the App and choose which repositories it may read. musdash never
     asks for your GitHub password and stores only the credentials GitHub hands
     back, encrypted at rest.
   </p>
@@ -74,7 +74,7 @@
   <p class="muted">
     <small>
       Install the App on the accounts and repositories you want to deploy from,
-      then sync so mosdash sees them.
+      then sync so musdash sees them.
     </small>
   </p>
 
@@ -101,7 +101,7 @@
 <div class="card stack danger-zone">
   <h3>Disconnect GitHub</h3>
   <p class="muted">
-    Removes the App and its installations from mosdash. Existing resources keep
+    Removes the App and its installations from musdash. Existing resources keep
     their repository and branch, but lose their link to GitHub: they can no
     longer build private repositories or deploy on push until you connect again.
     The App itself is not deleted from GitHub — remove it there too if you want
@@ -120,7 +120,7 @@
     data-confirm
     data-confirm-danger
     data-confirm-title="Disconnect GitHub?"
-    data-confirm-body="<%= it.linkedResourceCount > 0 ? it.linkedResourceCount + ' resource(s) build from this connection and will stop deploying on push or building private repositories until GitHub is connected again.' : 'The App and its installations are removed from mosdash. Nothing is deleted on GitHub.' %>"
+    data-confirm-body="<%= it.linkedResourceCount > 0 ? it.linkedResourceCount + ' resource(s) build from this connection and will stop deploying on push or building private repositories until GitHub is connected again.' : 'The App and its installations are removed from musdash. Nothing is deleted on GitHub.' %>"
     data-confirm-label="Disconnect"
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />

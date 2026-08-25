@@ -18,7 +18,7 @@ import { logger } from "../log.ts"
  * that user deploys are waiting on. The reconciler re-enqueues it soon enough.
  */
 
-export const CADDY_CONTAINER = "mosdash-caddy"
+export const CADDY_CONTAINER = "musdash-caddy"
 const CADDY_IMAGE = "caddy:2-alpine"
 
 /**
@@ -28,8 +28,8 @@ const CADDY_IMAGE = "caddy:2-alpine"
  * per week). These are the same names scripts/install.sh has always used, so an
  * existing install keeps its certificates.
  */
-const DATA_VOLUME = "mosdash-caddy-data"
-const CONFIG_VOLUME = "mosdash-caddy-config"
+const DATA_VOLUME = "musdash-caddy-data"
+const CONFIG_VOLUME = "musdash-caddy-config"
 
 /**
  * The proxy's cap is deliberately NOT config.defaultMemoryMb. That setting is
@@ -60,7 +60,7 @@ export async function ensureCaddy(): Promise<void> {
   await docker.createVolume(CONFIG_VOLUME)
 
   // Discovery is BY NAME, not by label. A container created by an older
-  // install.sh carries no mosdash labels at all and is invisible to a
+  // install.sh carries no musdash labels at all and is invisible to a
   // managed=true filter, so a label-based lookup would conclude nothing is
   // there and try to create a second proxy on the same ports.
   const existing = (await docker.findContainersByName(CADDY_CONTAINER))[0]
@@ -69,7 +69,7 @@ export async function ensureCaddy(): Promise<void> {
   let id: string
   if (existing) {
     // Adopt as-is: no recreate, no relabel, no remove. The operator's running
-    // proxy is holding live TLS connections, and mosdash has no business
+    // proxy is holding live TLS connections, and musdash has no business
     // destroying it just because it did not create it.
     id = existing.id
   } else {
@@ -149,7 +149,7 @@ export async function ensureCaddy(): Promise<void> {
 
   await docker.startContainer(id)
 
-  // A container mosdash created moments ago has never restarted. Any nonzero
+  // A container musdash created moments ago has never restarted. Any nonzero
   // count means it started, died, and was restarted by the unless-stopped
   // policy — which for Caddy means a bind failure, and which the readiness
   // poll would otherwise paper over by catching it during an up-phase of the
@@ -197,10 +197,10 @@ function notReadyError(adopted: boolean, lastReason: string): CaddyError {
   const base = `${CADDY_CONTAINER} did not become ready within ${READY_TIMEOUT_SEC}s (${lastReason}).`
   if (adopted) {
     return new CaddyError(
-      `${base} The container was adopted, not created by mosdash. The most common cause is that it was ` +
+      `${base} The container was adopted, not created by musdash. The most common cause is that it was ` +
         "created without CADDY_ADMIN=0.0.0.0:2019, which leaves the admin API bound inside the container " +
         "where the loopback port mapping cannot reach it. Recreate it: " +
-        `'docker rm -f ${CADDY_CONTAINER}' and mosdash will start a correctly configured one.`,
+        `'docker rm -f ${CADDY_CONTAINER}' and musdash will start a correctly configured one.`,
     )
   }
   return new CaddyError(base)
@@ -235,7 +235,7 @@ async function waitForAdmin(id: string, adopted: boolean): Promise<void> {
     // probe means a full probe plus sleep runs past the deadline unnoticed.
     if (Date.now() > deadline) throw notReadyError(adopted, lastReason)
 
-    // Gate 1 — the container mosdash started, not whatever holds the host port.
+    // Gate 1 — the container musdash started, not whatever holds the host port.
     const state = await docker.inspectContainer(id).catch(() => null)
     if (state && !state.running) {
       // Fail now rather than burning the full 30s: an exited Caddy is not going

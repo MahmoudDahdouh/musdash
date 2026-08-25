@@ -3,9 +3,9 @@ name: docker-client
 description: >
   Building or changing anything in src/docker/ — the DockerClient interface, log
   stream demultiplexing, container specs, labels, or memory limits. Load before
-  writing the demultiplexer, which is the single most bug-prone code in mosdash.
+  writing the demultiplexer, which is the single most bug-prone code in musdash.
   Triggers on "docker client", "streamLogs", "demux", "container spec",
-  "mosdash labels", "attach to logs", "pull image".
+  "musdash labels", "attach to logs", "pull image".
 ---
 
 # The Docker client
@@ -57,14 +57,14 @@ two places that warrant a real one.
 
 ### Test it properly
 
-This is one of only four things in mosdash with `bun test` coverage. The cases
+This is one of only four things in musdash with `bun test` coverage. The cases
 that matter are the ones that break naive implementations: a split mid-header, a
 split mid-payload, multiple frames in one chunk, a zero-length payload, and a
 payload containing bytes that look like a header.
 
 ## Container specs
 
-Two fields are non-negotiable on every container mosdash creates.
+Two fields are non-negotiable on every container musdash creates.
 
 **A hard memory limit** — `HostConfig.Memory`, default 512MB. A leaking user app
 must never take down the box or the dashboard. There is no "unlimited" option in
@@ -73,14 +73,14 @@ the UI.
 **The labels** — the reconciler identifies live containers and orphans by them:
 
 ```
-mosdash.managed        = "true"
-mosdash.resource_id    = <resource id>
-mosdash.deployment_id  = <deployment id>
-mosdash.project_id     = <project id>
+musdash.managed        = "true"
+musdash.resource_id    = <resource id>
+musdash.deployment_id  = <deployment id>
+musdash.project_id     = <project id>
 ```
 
-Containers are named `mosdash-<resourceId>-<short deploymentId>` and join the
-user-defined `mosdash` network — **container-name DNS does not work on the
+Containers are named `musdash-<resourceId>-<short deploymentId>` and join the
+user-defined `musdash` network — **container-name DNS does not work on the
 default bridge**, and Caddy resolves upstreams by name.
 
 ## Security

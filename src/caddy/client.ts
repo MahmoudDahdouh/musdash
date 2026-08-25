@@ -4,7 +4,7 @@ import { logger } from "../log.ts"
 /**
  * Caddy admin API wrapper.
  *
- * Caddy runs as a container mosdash manages. Its admin API is never published
+ * Caddy runs as a container musdash manages. Its admin API is never published
  * to the host beyond loopback: anyone who reaches port 2019 can replace the
  * entire configuration, unauthenticated.
  *
@@ -35,7 +35,7 @@ export class CaddyError extends Error {
 }
 
 export interface RouteSpec {
-  /** Stable id: `mosdash-<resourceId>`. */
+  /** Stable id: `musdash-<resourceId>`. */
   id: string
   hosts: string[]
   /** Container IP or name, plus port. */
@@ -157,18 +157,18 @@ export class CaddyClient {
     // Deliberately NOT "any apps key exists". Every upsertRoute POSTs to
     // /config/apps/http/servers/srv0/routes/, so a config resumed from an
     // autosave that carries an http app under a different server name leaves
-    // mosdash unable to add a single route while this reported nothing to do.
+    // musdash unable to add a single route while this reported nothing to do.
     // The only condition that makes the rest of this client work is that srv0
     // itself is present, so that is what is checked.
     if (hasServer(existing, SERVER)) return
 
     // /load replaces the WHOLE config, so a hand-edited one without srv0 is
     // about to be overwritten. That is the right trade — preserved-but-broken
-    // left mosdash unusable — but it must not be silent.
+    // left musdash unusable — but it must not be silent.
     if (existing !== null) {
       logger.warn(
         { server: SERVER },
-        "the existing Caddy configuration has no srv0 server; replacing it — mosdash routes require srv0",
+        "the existing Caddy configuration has no srv0 server; replacing it — musdash routes require srv0",
       )
     }
 
@@ -251,7 +251,7 @@ export class CaddyClient {
 export const caddy = new CaddyClient()
 
 export function routeIdFor(resourceId: string): string {
-  return `mosdash-${resourceId}`
+  return `musdash-${resourceId}`
 }
 
 /** `<resource>-<environment>.<wildcard>` (§10). */

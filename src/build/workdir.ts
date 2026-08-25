@@ -16,7 +16,7 @@ import { logger } from "../log.ts"
 /**
  * The directory for one deployment's build context.
  *
- * The deployment id is a ULID from mosdash's own generator, never user input,
+ * The deployment id is a ULID from musdash's own generator, never user input,
  * but it is still validated before being joined onto a path: an id carrying
  * `..` would escape buildsDir, and this function's whole job is to hand back a
  * path that something later deletes recursively.

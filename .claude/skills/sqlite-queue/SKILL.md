@@ -1,7 +1,7 @@
 ---
 name: sqlite-queue
 description: >
-  Building or changing the mosdash job queue, the worker loop, or anything
+  Building or changing the musdash job queue, the worker loop, or anything
   touching SQLite connections, PRAGMAs, or job claiming. Load before writing
   claim logic, retries, lease recovery, or scheduled work. Triggers on "job
   queue", "worker loop", "claim a job", "enqueue", "lease", "backoff",
@@ -72,7 +72,7 @@ that leaves a deployment showing "running" forever is a real bug.
 
 ## Testing
 
-Job claiming under concurrency is one of only four things in mosdash with
+Job claiming under concurrency is one of only four things in musdash with
 `bun test` coverage. The test that matters: two concurrent claims must never
 return the same row. Also cover the startup lease-reset path.
 

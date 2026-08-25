@@ -2,7 +2,7 @@ import { createSign } from "node:crypto"
 
 /**
  * The App-level credential: a short-lived RS256 JWT signed with the App's RSA
- * private key. It authenticates mosdash AS the App, which is only enough to
+ * private key. It authenticates musdash AS the App, which is only enough to
  * list installations and mint installation tokens — every repository call uses
  * an installation token instead.
  *

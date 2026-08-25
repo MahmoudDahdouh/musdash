@@ -28,7 +28,7 @@ export interface SettingsInstallation {
 
 export interface SettingsView {
   csrf: string
-  /** undefined renders the "set MOSDASH_PUBLIC_URL" warning. */
+  /** undefined renders the "set MUSDASH_PUBLIC_URL" warning. */
   publicUrl: string | undefined
   app: SettingsGithubApp | null
   installations: SettingsInstallation[]

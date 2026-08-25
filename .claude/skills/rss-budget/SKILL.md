@@ -12,7 +12,7 @@ description: >
 
 ## Why this is not an optimization
 
-mosdash's differentiating promise is that the control plane idles at or below
+musdash's differentiating promise is that the control plane idles at or below
 **100MB RSS**, doing as a single process what Coolify needs 750MB–1.2GB for. It
 is a hard product requirement. A design that adds a second long-running process,
 a database server, or a client-side rendering runtime is out of scope by
@@ -26,8 +26,8 @@ explicit, justified decision recorded in `docs/DECISIONS.md`.
 
 ```json
 "scripts": {
-  "build": "bun build --compile --minify src/index.ts --outfile dist/mosdash",
-  "rss":   "ps -o rss= -p $(pgrep -f dist/mosdash) | awk '{print $1/1024 \" MB\"}'"
+  "build": "bun build --compile --minify src/index.ts --outfile dist/musdash",
+  "rss":   "ps -o rss= -p $(pgrep -f dist/musdash) | awk '{print $1/1024 \" MB\"}'"
 }
 ```
 
@@ -63,7 +63,7 @@ There is no SQLite package; it is built into the runtime.
 
 ## Sidecars are reported honestly
 
-Caddy (~50MB) and BuildKit (idle ~30MB) are containers mosdash manages. Report
+Caddy (~50MB) and BuildKit (idle ~30MB) are containers musdash manages. Report
 them **separately but always** — never quote a number that excludes something
 the user will actually be running.
 

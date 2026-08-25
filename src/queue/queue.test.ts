@@ -13,7 +13,7 @@ import {
 
 /**
  * The queue is tested against an in-memory database with the same DDL as the
- * migration, so these tests never touch data/mosdash.db.
+ * migration, so these tests never touch data/musdash.db.
  */
 const DDL = `
 CREATE TABLE jobs (

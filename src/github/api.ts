@@ -42,7 +42,7 @@ function headers(auth: Auth): Record<string, string> {
   const base: Record<string, string> = {
     accept: "application/vnd.github+json",
     "x-github-api-version": API_VERSION,
-    "user-agent": "mosdash",
+    "user-agent": "musdash",
   }
   if (auth.kind === "app") base.authorization = `Bearer ${auth.jwt}`
   if (auth.kind === "installation") base.authorization = `Bearer ${auth.token}`
@@ -139,7 +139,7 @@ async function describe(res: Response, path: string): Promise<GitHubError> {
   }
   if (res.status === 401) {
     return new GitHubError(
-      "GitHub rejected mosdash's credentials — the App may have been deleted or its key rotated. Reconnect GitHub in Settings.",
+      "GitHub rejected musdash's credentials — the App may have been deleted or its key rotated. Reconnect GitHub in Settings.",
       401,
     )
   }

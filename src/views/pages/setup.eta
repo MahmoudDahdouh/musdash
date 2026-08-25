@@ -1,7 +1,7 @@
 <div class="narrow">
-  <h1>Welcome to mosdash</h1>
+  <h1>Welcome to musdash</h1>
   <p class="muted">
-    Create the administrator account. This is the only account — mosdash is
+    Create the administrator account. This is the only account — musdash is
     single-user by design.
   </p>
   <% if (it.error) { %><div class="flash flash-error"><%= it.error %></div><% } %>

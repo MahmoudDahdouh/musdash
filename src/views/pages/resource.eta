@@ -183,7 +183,7 @@
   <% } else { %>
   <p class="muted">
     No wildcard domain configured, so there is no automatic subdomain. Set
-    <code>MOSDASH_WILDCARD_DOMAIN</code> to enable it.
+    <code>MUSDASH_WILDCARD_DOMAIN</code> to enable it.
   </p>
   <% } %>
   <ul class="plain">

@@ -1,4 +1,4 @@
-# mosdash
+# musdash
 
 A self-hosted PaaS for a single VPS. Point it at your server and it deploys your
 apps in Docker containers, each reachable at an HTTPS URL.
@@ -9,7 +9,7 @@ apps in Docker containers, each reachable at an HTTPS URL.
 
 |                           | Idle RSS        |
 | ------------------------- | --------------- |
-| **mosdash control plane** | **50.7 MB**     |
+| **musdash control plane** | **50.7 MB**     |
 | Coolify control plane     | 750 MB – 1.2 GB |
 
 Measured on Ubuntu 24.04 (kernel 5.15, x86_64) with Bun 1.4.0: compiled with
@@ -22,7 +22,7 @@ running them: Caddy adds roughly 50 MB. Every app container you deploy has its
 own hard memory limit (512 MB by default) and is counted separately. No number
 here excludes something you will be running.
 
-mosdash is one process holding a SQLite file. There is no PostgreSQL, no Redis,
+musdash is one process holding a SQLite file. There is no PostgreSQL, no Redis,
 no queue worker daemon, and no WebSocket server, because each of those is a
 process that costs memory before it does anything useful.
 
@@ -54,27 +54,27 @@ sudo ./scripts/install.sh
 ```
 
 Then open `http://<server-ip>:8000` and create your admin account. Once an admin
-exists, mosdash binds to `127.0.0.1` and is reached through Caddy.
+exists, musdash binds to `127.0.0.1` and is reached through Caddy.
 
 To get automatic HTTPS subdomains, point a wildcard A record
-(`*.mos.example.com`) at the host and set `MOSDASH_WILDCARD_DOMAIN` and
-`MOSDASH_ACME_EMAIL` in `/opt/mosdash/mosdash.env`.
+(`*.mus.example.com`) at the host and set `MUSDASH_WILDCARD_DOMAIN` and
+`MUSDASH_ACME_EMAIL` in `/opt/musdash/musdash.env`.
 
 ## Configuration
 
 | Variable                     | Default                 | Notes                                        |
 | ---------------------------- | ----------------------- | -------------------------------------------- |
-| `MOSDASH_PORT`               | `8000`                  | Binds `127.0.0.1` once an admin exists       |
-| `MOSDASH_DATA_DIR`           | `./data`                | SQLite, logs, secret key                     |
-| `MOSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock`  |                                              |
-| `MOSDASH_WILDCARD_DOMAIN`    | —                       | e.g. `mos.example.com`                       |
-| `MOSDASH_ACME_EMAIL`         | —                       | Required for automatic HTTPS                 |
-| `MOSDASH_ACME_STAGING`       | `true`                  | Safe default; set `false` in production      |
-| `MOSDASH_CADDY_ADMIN`        | `http://127.0.0.1:2019` | Never exposed beyond loopback                |
-| `MOSDASH_NETWORK`            | `mosdash`               | Must be a user-defined network               |
-| `MOSDASH_DEFAULT_MEMORY_MB`  | `512`                   | Per-container limit; there is no "unlimited" |
-| `MOSDASH_HEALTH_TIMEOUT_SEC` | `60`                    |                                              |
-| `MOSDASH_LOG_LEVEL`          | `info`                  |                                              |
+| `MUSDASH_PORT`               | `8000`                  | Binds `127.0.0.1` once an admin exists       |
+| `MUSDASH_DATA_DIR`           | `./data`                | SQLite, logs, secret key                     |
+| `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock`  |                                              |
+| `MUSDASH_WILDCARD_DOMAIN`    | —                       | e.g. `mus.example.com`                       |
+| `MUSDASH_ACME_EMAIL`         | —                       | Required for automatic HTTPS                 |
+| `MUSDASH_ACME_STAGING`       | `true`                  | Safe default; set `false` in production      |
+| `MUSDASH_CADDY_ADMIN`        | `http://127.0.0.1:2019` | Never exposed beyond loopback                |
+| `MUSDASH_NETWORK`            | `musdash`               | Must be a user-defined network               |
+| `MUSDASH_DEFAULT_MEMORY_MB`  | `512`                   | Per-container limit; there is no "unlimited" |
+| `MUSDASH_HEALTH_TIMEOUT_SEC` | `60`                    |                                              |
+| `MUSDASH_LOG_LEVEL`          | `info`                  |                                              |
 
 ## Development
 

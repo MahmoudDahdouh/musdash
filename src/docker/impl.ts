@@ -257,7 +257,7 @@ export class DockerHttpClient implements DockerClient {
    *
    * `POST /images/prune` only accepts `dangling`, `until`, `label` and
    * `label!`; a `reference` filter is rejected outright with
-   * `invalid filter 'reference'`, and `label!` is useless here because mosdash
+   * `invalid filter 'reference'`, and `label!` is useless here because musdash
    * does not build (and therefore cannot label) the images it deploys. A blanket
    * `dangling:false` prune would happily delete a rollback target, which is
    * referenced only by a row in the database and is invisible to Docker.
@@ -350,14 +350,14 @@ export class DockerHttpClient implements DockerClient {
     }
 
     // A privileged container is root on the host. The only legitimate caller is
-    // mosdash's own build sidecar, which is identified by the role label that
+    // musdash's own build sidecar, which is identified by the role label that
     // sidecarLabels() sets and that no resource-derived spec ever carries. This
     // is enforced here rather than trusted to callers: the check is one line,
     // and the failure it prevents is a user obtaining root on the box.
     if (spec.privileged === true && spec.labels[LABEL_ROLE] === undefined) {
       throw new DockerError(
-        "refusing to create a privileged container without a mosdash.role label: " +
-          "privileged mode is reserved for mosdash's own infrastructure",
+        "refusing to create a privileged container without a musdash.role label: " +
+          "privileged mode is reserved for musdash's own infrastructure",
       )
     }
 
@@ -546,7 +546,7 @@ export class DockerHttpClient implements DockerClient {
       `/containers/json?all=true&filters=${filters}`,
     )
     // The Engine's name filter is a SUBSTRING match, verified against a real
-    // daemon: filtering on "caddy" also returns "/mosdash-caddy". Adopting or
+    // daemon: filtering on "caddy" also returns "/musdash-caddy". Adopting or
     // deleting on that basis would act on the wrong container, so the match is
     // narrowed to an exact name here. A container can carry several names, so
     // every one is checked.

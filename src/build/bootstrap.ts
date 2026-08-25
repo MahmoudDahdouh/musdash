@@ -24,7 +24,7 @@ import { logger } from "../log.ts"
  * are queued behind.
  */
 
-export const BUILDKIT_CONTAINER = "mosdash-buildkit"
+export const BUILDKIT_CONTAINER = "musdash-buildkit"
 
 /**
  * Pinned to a major tag rather than `latest`. A build daemon that silently
@@ -38,7 +38,7 @@ const BUILDKIT_IMAGE = "moby/buildkit:v0.27.0"
  * new name means an empty cache, and the cache is the difference between a
  * 20-second and a 3-minute redeploy.
  */
-const CACHE_VOLUME = "mosdash-buildkit-cache"
+const CACHE_VOLUME = "musdash-buildkit-cache"
 
 /**
  * Deliberately not config.defaultMemoryMb, for the same reason Caddy's is not:
@@ -51,7 +51,7 @@ const BUILDKIT_MEMORY_BYTES = 1024 * 1024 * 1024
 /**
  * Extracts the port from a `tcp://host:port` address.
  *
- * mosdash publishes the daemon itself, so it has to know the port as a number
+ * musdash publishes the daemon itself, so it has to know the port as a number
  * rather than passing the address through opaquely. A malformed value is a
  * configuration error worth failing loudly on at import: the alternative is a
  * container published on a port nobody intended.
@@ -61,7 +61,7 @@ function parseBuildkitPort(addr: string): number {
   const port = match ? Number(match[1]) : Number.NaN
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new DockerError(
-      `MOSDASH_BUILDKIT_ADDR must look like tcp://127.0.0.1:1234, got ${JSON.stringify(addr)}`,
+      `MUSDASH_BUILDKIT_ADDR must look like tcp://127.0.0.1:1234, got ${JSON.stringify(addr)}`,
     )
   }
   return port
@@ -85,7 +85,7 @@ export async function ensureBuildkit(): Promise<void> {
   await docker.createVolume(CACHE_VOLUME)
 
   // By name, not by label — the same reasoning as the proxy: a container left
-  // by an earlier install carries no mosdash labels and is invisible to a
+  // by an earlier install carries no musdash labels and is invisible to a
   // managed=true filter, so a label lookup would conclude nothing is there and
   // try to bind an already-held port.
   const existing = (await docker.findContainersByName(BUILDKIT_CONTAINER))[0]
@@ -155,7 +155,7 @@ export async function ensureBuildkit(): Promise<void> {
 
   await docker.startContainer(id)
 
-  // A container mosdash created moments ago has never restarted. A nonzero
+  // A container musdash created moments ago has never restarted. A nonzero
   // count means it started, died, and was restarted by the unless-stopped
   // policy — which the readiness poll would otherwise paper over by catching it
   // during an up-phase. The adopted path skips this: a daemon that has been up
@@ -214,7 +214,7 @@ async function waitForDaemon(id: string, adopted: boolean): Promise<void> {
       throw new DockerError(
         `${BUILDKIT_CONTAINER} did not become ready within ${READY_TIMEOUT_SEC}s (${lastReason})` +
           (adopted
-            ? `. The container was adopted, not created by mosdash — if it was created without ` +
+            ? `. The container was adopted, not created by musdash — if it was created without ` +
               `'--addr tcp://0.0.0.0:${BUILDKIT_PORT}' its API is bound inside the container where the ` +
               `port mapping cannot reach it. Recreate it: 'docker rm -f ${BUILDKIT_CONTAINER}'.`
             : "."),
@@ -256,7 +256,7 @@ async function waitForDaemon(id: string, adopted: boolean): Promise<void> {
  * back to its unix socket, which is exactly the false success the Caddy slice
  * was spent eliminating.
  *
- * BuildKit speaks gRPC, which mosdash has no client for and will not add one
+ * BuildKit speaks gRPC, which musdash has no client for and will not add one
  * for. Instead it asks `buildctl` — which ships inside the image, so this costs
  * no host install — to list workers. That round-trips through the real API and
  * fails if the daemon is absent, wedged, or listening somewhere else.

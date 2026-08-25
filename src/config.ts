@@ -8,7 +8,7 @@ import { z } from "zod"
  * could return different answers at different points in a request.
  *
  * Defaults follow PHASES.md §18, with two deliberate deviations recorded in
- * docs/DECISIONS.md — D2 (Caddy admin on loopback, because mosdash runs on the
+ * docs/DECISIONS.md — D2 (Caddy admin on loopback, because musdash runs on the
  * host and cannot resolve container-name DNS) and D4 (ACME staging defaults on,
  * so a careless dev run cannot burn the Let's Encrypt rate limit).
  */
@@ -20,38 +20,38 @@ const bool = z
   .transform((v) => v === "true" || v === "1")
 
 const schema = z.object({
-  MOSDASH_PORT: z.coerce.number().int().min(1).max(65535).default(8000),
-  MOSDASH_DATA_DIR: z.string().default("./data"),
-  MOSDASH_DOCKER_SOCKET: z.string().default("/var/run/docker.sock"),
+  MUSDASH_PORT: z.coerce.number().int().min(1).max(65535).default(8000),
+  MUSDASH_DATA_DIR: z.string().default("./data"),
+  MUSDASH_DOCKER_SOCKET: z.string().default("/var/run/docker.sock"),
 
   // Optional so a fresh install still boots and can reach the setup page.
   // Absence is fatal only where a domain is actually needed (route creation).
-  MOSDASH_WILDCARD_DOMAIN: z.string().min(1).optional(),
-  MOSDASH_ACME_EMAIL: z.string().email().optional(),
+  MUSDASH_WILDCARD_DOMAIN: z.string().min(1).optional(),
+  MUSDASH_ACME_EMAIL: z.string().email().optional(),
 
   // Where this dashboard is reachable from the public internet. Optional for the
   // same reason the wildcard domain is — a fresh install must boot and reach the
   // setup page — but GitHub App registration cannot work without it, so its
   // absence is a clear error at manifest-build time rather than at startup.
-  MOSDASH_PUBLIC_URL: z.string().url().optional(),
+  MUSDASH_PUBLIC_URL: z.string().url().optional(),
 
-  MOSDASH_ACME_STAGING: bool.default(true), // D4
-  MOSDASH_CADDY_ADMIN: z.string().url().default("http://127.0.0.1:2019"), // D2
+  MUSDASH_ACME_STAGING: bool.default(true), // D4
+  MUSDASH_CADDY_ADMIN: z.string().url().default("http://127.0.0.1:2019"), // D2
 
   // The build daemon's address, loopback for the same reason the Caddy admin
   // API is: BuildKit runs arbitrary build steps and its API is unauthenticated,
   // so it must never be reachable off the box.
-  MOSDASH_BUILDKIT_ADDR: z.string().default("tcp://127.0.0.1:1234"),
-  MOSDASH_BUILD_CACHE_GB: z.coerce.number().int().positive().default(10),
+  MUSDASH_BUILDKIT_ADDR: z.string().default("tcp://127.0.0.1:1234"),
+  MUSDASH_BUILD_CACHE_GB: z.coerce.number().int().positive().default(10),
   // Both are external binaries invoked via Bun.spawn (shell out, never
   // reimplement). Configurable rather than assumed on PATH so a packaged
   // install can place them wherever it likes.
-  MOSDASH_RAILPACK_BIN: z.string().default("railpack"),
-  MOSDASH_BUILDCTL_BIN: z.string().default("buildctl"),
-  MOSDASH_NETWORK: z.string().default("mosdash"),
-  MOSDASH_DEFAULT_MEMORY_MB: z.coerce.number().int().positive().default(512),
-  MOSDASH_HEALTH_TIMEOUT_SEC: z.coerce.number().int().positive().default(60),
-  MOSDASH_LOG_LEVEL: z
+  MUSDASH_RAILPACK_BIN: z.string().default("railpack"),
+  MUSDASH_BUILDCTL_BIN: z.string().default("buildctl"),
+  MUSDASH_NETWORK: z.string().default("musdash"),
+  MUSDASH_DEFAULT_MEMORY_MB: z.coerce.number().int().positive().default(512),
+  MUSDASH_HEALTH_TIMEOUT_SEC: z.coerce.number().int().positive().default(60),
+  MUSDASH_LOG_LEVEL: z
     .enum(["trace", "debug", "info", "warn", "error", "fatal"])
     .default("info"),
 })
@@ -66,15 +66,15 @@ if (!parsed.success) {
 
 const env = parsed.data
 
-const dataDir = isAbsolute(env.MOSDASH_DATA_DIR)
-  ? env.MOSDASH_DATA_DIR
-  : resolve(process.cwd(), env.MOSDASH_DATA_DIR)
+const dataDir = isAbsolute(env.MUSDASH_DATA_DIR)
+  ? env.MUSDASH_DATA_DIR
+  : resolve(process.cwd(), env.MUSDASH_DATA_DIR)
 mkdirSync(dataDir, { recursive: true })
 
 export const config = Object.freeze({
-  port: env.MOSDASH_PORT,
+  port: env.MUSDASH_PORT,
   dataDir,
-  dbPath: resolve(dataDir, "mosdash.db"),
+  dbPath: resolve(dataDir, "musdash.db"),
   secretKeyPath: resolve(dataDir, "secret.key"),
   logDir: resolve(dataDir, "logs"),
   // Build contexts are extracted here and deleted when the build finishes,
@@ -84,24 +84,24 @@ export const config = Object.freeze({
   // build ends, which would take the layer cache with it every time.
   buildCacheDir: resolve(dataDir, "build-cache"),
 
-  dockerSocket: env.MOSDASH_DOCKER_SOCKET,
-  network: env.MOSDASH_NETWORK,
+  dockerSocket: env.MUSDASH_DOCKER_SOCKET,
+  network: env.MUSDASH_NETWORK,
 
-  wildcardDomain: env.MOSDASH_WILDCARD_DOMAIN,
-  acmeEmail: env.MOSDASH_ACME_EMAIL,
-  acmeStaging: env.MOSDASH_ACME_STAGING,
+  wildcardDomain: env.MUSDASH_WILDCARD_DOMAIN,
+  acmeEmail: env.MUSDASH_ACME_EMAIL,
+  acmeStaging: env.MUSDASH_ACME_STAGING,
   // Trailing slash stripped so callers can join paths without doubling it.
-  publicUrl: env.MOSDASH_PUBLIC_URL?.replace(/\/$/, ""),
-  caddyAdmin: env.MOSDASH_CADDY_ADMIN.replace(/\/$/, ""),
+  publicUrl: env.MUSDASH_PUBLIC_URL?.replace(/\/$/, ""),
+  caddyAdmin: env.MUSDASH_CADDY_ADMIN.replace(/\/$/, ""),
 
-  buildkitAddr: env.MOSDASH_BUILDKIT_ADDR,
-  buildCacheGb: env.MOSDASH_BUILD_CACHE_GB,
-  railpackBin: env.MOSDASH_RAILPACK_BIN,
-  buildctlBin: env.MOSDASH_BUILDCTL_BIN,
+  buildkitAddr: env.MUSDASH_BUILDKIT_ADDR,
+  buildCacheGb: env.MUSDASH_BUILD_CACHE_GB,
+  railpackBin: env.MUSDASH_RAILPACK_BIN,
+  buildctlBin: env.MUSDASH_BUILDCTL_BIN,
 
-  defaultMemoryMb: env.MOSDASH_DEFAULT_MEMORY_MB,
-  healthTimeoutSec: env.MOSDASH_HEALTH_TIMEOUT_SEC,
-  logLevel: env.MOSDASH_LOG_LEVEL,
+  defaultMemoryMb: env.MUSDASH_DEFAULT_MEMORY_MB,
+  healthTimeoutSec: env.MUSDASH_HEALTH_TIMEOUT_SEC,
+  logLevel: env.MUSDASH_LOG_LEVEL,
 
   isProduction: process.env.NODE_ENV === "production",
 })

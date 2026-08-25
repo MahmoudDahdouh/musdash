@@ -18,7 +18,7 @@
 const CEILING_MB = 100
 const IDLE_SEC = 60
 const BINARY =
-  process.platform === "win32" ? "dist/mosdash.exe" : "dist/mosdash"
+  process.platform === "win32" ? "dist/musdash.exe" : "dist/musdash"
 
 function arg(flag: string, fallback: number): number {
   const i = process.argv.indexOf(flag)

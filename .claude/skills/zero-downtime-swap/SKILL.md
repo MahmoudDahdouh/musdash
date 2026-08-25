@@ -1,7 +1,7 @@
 ---
 name: zero-downtime-swap
 description: >
-  Building or changing the mosdash deploy pipeline, the health gate, the Caddy
+  Building or changing the musdash deploy pipeline, the health gate, the Caddy
   route switch, rollback, or resource deletion. Load before touching deploy
   ordering — the sequence is the product's core guarantee, and reordering it
   breaks that guarantee silently. Triggers on "deploy pipeline", "health gate",
@@ -27,12 +27,12 @@ Job type `deploy`, payload `{ resourceId, deploymentId, image }`. Each step emit
 a log line to the deployment's stream.
 
 1. Mark deployment `running`, set `started_at`.
-2. `ensureNetwork("mosdash")`.
+2. `ensureNetwork("musdash")`.
 3. Pull the image, forwarding progress lines to the log stream.
 4. Decrypt env vars. **Never log a decrypted value** — redact in every path,
    including errors.
-5. Create the new container, `mosdash-<resourceId>-<short deploymentId>`, on the
-   `mosdash` network, with all required labels and the memory limit.
+5. Create the new container, `musdash-<resourceId>-<short deploymentId>`, on the
+   `musdash` network, with all required labels and the memory limit.
 6. Start it.
 7. **Health gate**, polling until healthy or timeout (default 60s), in this
    precedence:
@@ -57,16 +57,16 @@ outage.
 Route objects use `@id` so each can be replaced or deleted independently:
 
 - Add — `POST /config/apps/http/servers/srv0/routes/`
-- Replace atomically — `PATCH /id/mosdash-<resourceId>`
-- Delete — `DELETE /id/mosdash-<resourceId>`
+- Replace atomically — `PATCH /id/musdash-<resourceId>`
+- Delete — `DELETE /id/musdash-<resourceId>`
 
-The upstream dials the container **by name** on the `mosdash` network, which is
+The upstream dials the container **by name** on the `musdash` network, which is
 why the network must be user-defined — the default bridge gives no name
 resolution.
 
 ### Caddy security
 
-- **The admin API is never published to the host.** Bind it to the mosdash
+- **The admin API is never published to the host.** Bind it to the musdash
   network only. Anyone reaching port 2019 can replace the entire config with no
   authentication.
 - `/data` (certificates) and `/config` are named volumes. Losing the cert store

@@ -30,7 +30,7 @@ export interface ContainerSpec {
   name: string
   image: string
   env: Record<string, string>
-  /** Must include the mosdash.* labels; the reconciler identifies containers by them. */
+  /** Must include the musdash.* labels; the reconciler identifies containers by them. */
   labels: Record<string, string>
   networks: string[]
   volumes: { name: string; mountPath: string }[]
@@ -47,7 +47,7 @@ export interface ContainerSpec {
    * reach the host kernel, and granting it to anything derived from user input
    * would hand a user root on the box. It exists solely for the BuildKit
    * sidecar, which needs mount and namespace operations to assemble images, and
-   * `createContainer` REJECTS it on any spec that is not marked as mosdash's own
+   * `createContainer` REJECTS it on any spec that is not marked as musdash's own
    * infrastructure via `sidecarLabels`. There is deliberately no UI for it.
    */
   privileged?: boolean
@@ -71,7 +71,7 @@ export interface ContainerState {
   exitCode: number | null
   startedAt: string | null
   restartCount: number
-  /** Container IP on the mosdash network. mosdash runs on the host and cannot
+  /** Container IP on the musdash network. musdash runs on the host and cannot
    *  use Docker's embedded DNS, so the health gate dials this (DECISIONS D2). */
   ipAddress: string | null
   /**
@@ -137,7 +137,7 @@ export interface DockerClient {
    * Containers whose name is exactly `name`, running or not.
    *
    * Distinct from `listManagedContainers` because a container created by an
-   * earlier installer carries no mosdash labels and is therefore invisible to a
+   * earlier installer carries no musdash labels and is therefore invisible to a
    * label filter — bootstrap has to find it by name in order to adopt it rather
    * than collide with it.
    */
@@ -200,12 +200,12 @@ export function isValidResourceName(name: string): boolean {
   return RESOURCE_NAME_RE.test(name)
 }
 
-export const LABEL_MANAGED = "mosdash.managed"
-export const LABEL_RESOURCE = "mosdash.resource_id"
-export const LABEL_DEPLOYMENT = "mosdash.deployment_id"
-export const LABEL_PROJECT = "mosdash.project_id"
-/** Marks infrastructure mosdash runs for itself (the proxy), not a user resource. */
-export const LABEL_ROLE = "mosdash.role"
+export const LABEL_MANAGED = "musdash.managed"
+export const LABEL_RESOURCE = "musdash.resource_id"
+export const LABEL_DEPLOYMENT = "musdash.deployment_id"
+export const LABEL_PROJECT = "musdash.project_id"
+/** Marks infrastructure musdash runs for itself (the proxy), not a user resource. */
+export const LABEL_ROLE = "musdash.role"
 
 export function managedLabels(args: {
   resourceId: string
@@ -221,7 +221,7 @@ export function managedLabels(args: {
 }
 
 /**
- * Labels for a container mosdash runs for itself.
+ * Labels for a container musdash runs for itself.
  *
  * Deliberately carries NO resource id, not even a synthetic one: a resource id
  * is a foreign key into the resources table, and inventing a value that resolves

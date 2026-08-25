@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title><%= it.title %> · mosdash</title>
+    <title><%= it.title %> · musdash</title>
     <link rel="stylesheet" href="/assets/app.css" />
     <link
       rel="icon"
@@ -56,7 +56,7 @@
         >
           <svg class="icon" aria-hidden="true"><use href="#i-menu" /></svg>
         </button>
-        <a class="brand" href="/">mosdash</a>
+        <a class="brand" href="/">musdash</a>
       </div>
 
       <div
@@ -69,7 +69,7 @@
 
       <aside class="sidebar" :class="navOpen ? 'open' : ''">
         <div class="sidebar-head">
-          <a class="brand" href="/">mosdash</a>
+          <a class="brand" href="/">musdash</a>
           <button
             class="iconbtn sidebar-close"
             type="button"

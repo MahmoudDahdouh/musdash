@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## What mosdash is
+## What musdash is
 
 A self-hosted PaaS — a Coolify alternative. The user points it at their own VPS
 and it deploys and runs their applications in Docker containers, each reachable
@@ -15,7 +15,7 @@ optimization — a design that adds a second long-running process, a database
 server, or a client-side rendering runtime is out of scope by definition, no
 matter how much users want the feature it would enable.
 
-mosdash does not win on feature count and should not try. It targets parity with
+musdash does not win on feature count and should not try. It targets parity with
 Coolify's core at one-tenth the memory, and concedes template breadth,
 integration count, and battle-tested edge cases.
 
@@ -71,7 +71,7 @@ the build if it exceeds 100MB**. Without that gate the number drifts silently an
 the product loses its reason to exist. The ceiling does not move to accommodate a
 new component without an explicit, justified decision.
 
-Sidecar containers mosdash manages (Caddy ~50MB, BuildKit idle ~30MB) are
+Sidecar containers musdash manages (Caddy ~50MB, BuildKit idle ~30MB) are
 reported separately — never quote a number that excludes something the user will
 actually be running.
 
@@ -113,7 +113,7 @@ the result against.
 
 ### The roles
 
-mosdash is one process with server-rendered templates, so there is no
+musdash is one process with server-rendered templates, so there is no
 backend/frontend split. The seams that matter are these:
 
 | Role              | May touch                                  | Produces                                                         |
@@ -162,8 +162,8 @@ guarantee the product makes. A feature that violates one is redesigned or
 dropped, regardless of how much users want it. The Validator checks every one.
 
 - **One long-running process, and SQLite is the only datastore.** No Redis, no
-  Postgres, no separate worker daemon, no sidecar for mosdash itself. The
-  containers mosdash manages (Caddy, BuildKit) are the exception.
+  Postgres, no separate worker daemon, no sidecar for musdash itself. The
+  containers musdash manages (Caddy, BuildKit) are the exception.
 - **No route handler calls Docker directly.** Every mutating Docker operation is
   enqueued as a job in the SQLite-backed queue and executed by the single worker
   loop. Read-only `inspect` calls for rendering status are the only exception.
@@ -190,14 +190,14 @@ dropped, regardless of how much users want it. The Validator checks every one.
 - **Logs never go to SQLite** — in-memory ring buffer (1000 lines/resource) plus
   a rotated file under `data/logs/`. Writing them to the database is the fastest
   way to wreck both the RAM and the disk profile.
-- **Every container mosdash creates has a hard memory limit** (default 512MB). A
+- **Every container musdash creates has a hard memory limit** (default 512MB). A
   leaking user app must never take down the box or the dashboard, so there is no
   "unlimited" option in the UI.
-- **Every managed container carries the `mosdash.*` labels** — the reconciler
+- **Every managed container carries the `musdash.*` labels** — the reconciler
   identifies live containers and orphans by them.
 - **No build step for the frontend.** Server-rendered Eta + vendored Alpine.js +
   handwritten CSS, assets served from `public/` and embedded into the compiled
-  binary. No CDN — mosdash must work on a firewalled server. The UI is a view of
+  binary. No CDN — musdash must work on a firewalled server. The UI is a view of
   server state; SQLite already knows everything, so do not build a parallel
   client-side store.
 
@@ -229,7 +229,7 @@ bun add <pkg>          # bun is the package manager — bun.lock is committed
 ```
 
 Expected once the app is real, not yet in package.json: `bun build --compile
---minify src/index.ts --outfile dist/mosdash` for the release build, and
+--minify src/index.ts --outfile dist/musdash` for the release build, and
 `bun run rss` to measure its idle RSS.
 
 ## Security constraints
@@ -242,7 +242,7 @@ Expected once the app is real, not yet in package.json: `bun build --compile
   (they become container names and DNS labels), and image references must be
   validated against a registry-reference regex — an unvalidated image string is a
   command injection vector if it ever reaches a shell.
-- The Caddy admin API is never published to the host; the mosdash HTTP port binds
+- The Caddy admin API is never published to the host; the musdash HTTP port binds
   to `127.0.0.1` in production and is reached through Caddy.
 - Docker socket access is root-equivalent on the host. Treat any path that can
   influence a container spec as a privilege boundary.
