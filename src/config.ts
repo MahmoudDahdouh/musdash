@@ -62,6 +62,11 @@ const schema = z.object({
   // so it must never be reachable off the box.
   MUSDASH_BUILDKIT_ADDR: z.string().default("tcp://127.0.0.1:1234"),
   MUSDASH_BUILD_CACHE_GB: z.coerce.number().int().positive().default(10),
+
+  // Verification only. A cached build proves nothing about what reaches the
+  // build log, so DoD item 9 — build-time secrets never appear in build output
+  // — can only be checked with the build steps forced to actually execute.
+  MUSDASH_BUILD_NO_CACHE: bool.default(false),
   // Both are external binaries invoked via Bun.spawn (shell out, never
   // reimplement). Configurable rather than assumed on PATH so a packaged
   // install can place them wherever it likes.
@@ -118,6 +123,7 @@ export const config = Object.freeze({
 
   buildkitAddr: env.MUSDASH_BUILDKIT_ADDR,
   buildCacheGb: env.MUSDASH_BUILD_CACHE_GB,
+  buildNoCache: env.MUSDASH_BUILD_NO_CACHE,
   railpackBin: env.MUSDASH_RAILPACK_BIN,
   buildctlBin: env.MUSDASH_BUILDCTL_BIN,
 

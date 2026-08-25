@@ -47,6 +47,9 @@ export function createBuildDir(deploymentId: string): string {
 export function removeBuildDir(deploymentId: string): void {
   try {
     rmSync(buildDir(deploymentId), { recursive: true, force: true })
+    // debug, not info: this fires on every deploy, and the success path is only
+    // interesting while proving that no build leaks a directory.
+    logger.debug({ deploymentId }, "removed the build directory")
   } catch (err) {
     logger.warn(
       { deploymentId, err: (err as Error).message },

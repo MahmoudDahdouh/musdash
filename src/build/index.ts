@@ -98,8 +98,13 @@ export async function buildImage(req: BuildRequest): Promise<void> {
     await buildWithRailpack(ctx)
   }
 
-  logger.info(
-    { tag: req.tag, pack: req.pack, ms: Date.now() - started },
-    "build finished",
-  )
+  const ms = Date.now() - started
+  logger.info({ tag: req.tag, pack: req.pack, ms }, "build finished")
+
+  // Build-only time, into the deploy log the user actually reads. The
+  // deployment row's duration spans fetch, health gate, and a fixed drain, so a
+  // build dropping from cold to warm barely moves it — this line is what makes
+  // the cache's effect visible. Through the redacting onLog, so every line out
+  // of here still has exactly one path.
+  onLog(`Build finished in ${(ms / 1000).toFixed(1)}s using ${req.pack}`)
 }

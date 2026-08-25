@@ -1,6 +1,7 @@
 import { cpSync, existsSync } from "node:fs"
 import { buildImage, detectBuildPack } from "../build/index.ts"
 import { createBuildDir, removeBuildDir } from "../build/workdir.ts"
+import { config } from "../config.ts"
 import { gitSource } from "../db/queries.ts"
 import type { Resource } from "../db/schema.ts"
 import { shortId } from "../ids.ts"
@@ -148,6 +149,7 @@ export async function buildFromSource(
       dockerfilePath: source.dockerfilePath,
       buildArgs,
       redactSecrets,
+      noCache: config.buildNoCache,
       onLog: emit,
     })
     return { image: tag, commit }
