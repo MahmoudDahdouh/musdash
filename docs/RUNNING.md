@@ -233,134 +233,118 @@ gate — it must stay under 100 MB.
 
 ## Part B — VPS (fresh Ubuntu)
 
-The target is a fresh Ubuntu 22.04/24.04 host with root access. 1 GB RAM is
-enough for the control plane plus Caddy; give it 2 GB if you intend to build
-from source, because BuildKit and image extraction spike.
+A fresh Ubuntu 22.04/24.04 host with root SSH. **No build machine and no DNS are
+required.** 1 GB RAM runs the control plane plus Caddy; use **2 GB** if you will
+build from GitHub, because BuildKit and image extraction spike during a build.
 
-### B1. Point DNS at the host
-
-Before installing, create two records at your DNS provider:
-
-| Type | Name                | Value          |
-| ---- | ------------------- | -------------- |
-| A    | `mus.example.com`   | your server IP |
-| A    | `*.mus.example.com` | your server IP |
-
-The wildcard is what gives every resource an automatic HTTPS subdomain at
-`<resource>-<environment>.mus.example.com`. Wait for it to resolve
-(`dig +short foo.mus.example.com`) before turning off ACME staging — a failed
-issuance burns rate limit.
-
-### B2. Build the binary
-
-The installer expects `./dist/musdash`. Build it on a **Linux x86_64** machine —
-your WSL distro is fine; a Windows build produces a `.exe` the VPS cannot run.
-
-```bash
-cd ~/musdash
-bun run build          # bun build --compile --minify --sourcemap
-```
-
-### B3. Copy the repo to the server
-
-The installer reads `./dist/musdash` relative to where it runs, so copy both the
-script and the binary:
-
-```bash
-rsync -av --exclude node_modules --exclude data ~/musdash/ root@<server-ip>:/root/musdash/
-```
-
-### B4. Run the installer
+### B1. Run one command
 
 ```bash
 ssh root@<server-ip>
-cd /root/musdash
-sudo ./scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/MahmoudDahdouh/musdash/main/scripts/install.sh | bash
 ```
 
-It does all of this, idempotently:
+That installs Docker, `buildctl`, `railpack`, `git`, and Bun; clones the source;
+**compiles the binary on the host** (~60s); creates the `musdash` user, network,
+and Caddy volumes; and starts the systemd unit.
 
-1. Installs Docker if absent.
-2. Installs `buildctl` (copied out of `moby/buildkit:v0.27.0`) and
-   `railpack v0.37.0`.
-3. Creates the `musdash` system user, adds it to the `docker` group, and creates
-   `/opt/musdash` + `/opt/musdash/data`.
-4. Creates the `musdash` Docker network.
-5. Creates the `musdash-caddy-data` and `musdash-caddy-config` volumes. **These
-   hold your certificates — never delete them**, or you re-issue everything and
-   burn the Let's Encrypt rate limit.
-6. Installs the binary to `/opt/musdash/musdash`.
-7. Writes `/opt/musdash/musdash.env` (mode 0600) if it does not exist.
-8. Installs and starts the `musdash` systemd unit.
+> **While the repository is private**, the one-liner cannot clone it. Copy the
+> checkout up and run the script from inside it — it builds from the current
+> directory when it finds a `package.json` and a `src/`:
+>
+> ```bash
+> rsync -av --exclude node_modules --exclude data --exclude dist ./ root@<ip>:/root/musdash/
+> ssh root@<ip> 'cd /root/musdash && ./scripts/install.sh'
+> ```
 
-Caddy and BuildKit containers are **not** created by the installer — musdash
-creates them on first boot, so there is exactly one code path that also
-re-creates them if they are ever removed.
-
-### B5. First login
-
-The installer prints the URL. Because no admin account exists yet, musdash binds
-`0.0.0.0` so you are not locked out of the box you just installed:
+### B2. Open the IP and create your account
 
 ```
-http://<server-ip>:8000
+http://<server-ip>
 ```
 
-Create your admin account. **The moment that account exists, the next restart
-binds `127.0.0.1`** and the dashboard is only reachable through Caddy. Do this
-step before locking the port down.
+Caddy serves the dashboard on port 80 as a catch-all route, so the bare IP works
+with no DNS at all. Create your admin account and start adding projects.
 
-### B6. Configure domains and TLS
+**This is plain HTTP.** No certificate authority issues certificates for an IP
+address, so until you attach a domain the admin session cookie travels in
+plaintext, and **GitHub cannot be connected** — its App requires a public HTTPS
+URL. Treat an IP-only install as fine for trying musdash out, and attach a domain
+before you rely on it.
+
+### B3. Deploy an app on your main domain
+
+Point your domain's A record at the server:
+
+| Type | Name              | Value          |
+| ---- | ----------------- | -------------- |
+| A    | `example.com`     | your server IP |
+| A    | `www.example.com` | your server IP |
+
+Then in the dashboard: create a project, add a resource, deploy it, and open its
+**Domains** tab. Add `example.com`. Caddy obtains a certificate automatically and
+routes the domain to that container. Resource routes carry a host matcher and are
+evaluated before the dashboard's catch-all, so your app wins its own domain.
+
+### B4. Move the dashboard onto a domain (recommended)
+
+Add an A record for `mus.example.com`, then:
 
 ```bash
-sudo nano /opt/musdash/musdash.env
+nano /opt/musdash/musdash.env
 ```
-
-Set:
 
 ```ini
-MUSDASH_WILDCARD_DOMAIN=mus.example.com
+MUSDASH_DASHBOARD_HOST=mus.example.com
+MUSDASH_BIND_ALL=false
+MUSDASH_PUBLIC_URL=https://mus.example.com
 MUSDASH_ACME_EMAIL=you@example.com
-MUSDASH_ACME_STAGING=false      # only once DNS resolves — see B1
+MUSDASH_ACME_STAGING=false
 ```
-
-Then:
 
 ```bash
-sudo systemctl restart musdash
-sudo journalctl -u musdash -f
+systemctl restart musdash
 ```
 
-### B7. Lock down the firewall
-
-Only 80 and 443 should be public. Caddy holds them; the Caddy admin API (2019)
-and BuildKit (1234) are loopback-only by design and must never be exposed —
-BuildKit's API is unauthenticated and runs arbitrary build steps.
+The dashboard is now HTTPS, the port returns to loopback behind Caddy, and
+GitHub integration works. You can do this at install time instead:
 
 ```bash
-sudo ufw allow 22/tcp
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw enable
+MUSDASH_DASHBOARD_HOST=mus.example.com ./scripts/install.sh
 ```
 
-### B8. Upgrading later
+Optionally add `*.mus.example.com` and set `MUSDASH_WILDCARD_DOMAIN` to give
+every resource a free auto-subdomain alongside its real domain.
+
+### B5. Firewall
 
 ```bash
-# on your build machine
-bun run build
-rsync -av dist/musdash root@<server-ip>:/root/musdash/dist/
-
-# on the server
-cd /root/musdash && sudo ./scripts/install.sh   # idempotent; reinstalls the binary
+ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw enable
 ```
 
-Migrations run at startup. The env file is not overwritten if it already exists.
+Only 80 and 443 are public. The Caddy admin API (2019) and BuildKit (1234) are
+loopback-only by design and **must never be exposed** — BuildKit's API is
+unauthenticated and runs arbitrary build steps.
 
-The build daemon's cache ceiling is applied when its container is created, and
-musdash reuses an existing daemon rather than recreating it — recreating would
-throw away the cache that makes redeploys fast. An install that predates the
-cache cap therefore keeps an unbounded daemon cache until you retire it once:
+Note that port 8000 is **not** in that list. While the dashboard is reached by
+IP it is served through Caddy on port 80, so 8000 needs no rule.
+
+### B6. Upgrading
+
+```bash
+ssh root@<server-ip>
+cd /opt/musdash-src && ./scripts/install.sh
+```
+
+It pulls the latest source, rebuilds, stops the service, replaces the binary, and
+restarts. Migrations run at startup and `musdash.env` is never overwritten.
+
+**Never delete** the `musdash-caddy-data` or `musdash-caddy-config` volumes —
+they hold your certificates, and losing them means re-issuing everything and
+burning the Let's Encrypt rate limit (50 per domain per week).
+
+An install predating the build-cache cap keeps an unbounded daemon cache until
+you retire the container once:
 
 ```bash
 docker rm -f musdash-buildkit   # recreated, capped, on the next deploy
@@ -435,25 +419,27 @@ Private repos work through the GitHub App connect flow under **Settings**.
 Read once at startup by [src/config.ts](../src/config.ts) and frozen. Changing
 any of these requires a restart.
 
-| Variable                     | Default                 | Notes                                                  |
-| ---------------------------- | ----------------------- | ------------------------------------------------------ |
-| `MUSDASH_PORT`               | `8000`                  | Binds `127.0.0.1` in production once an admin exists   |
-| `MUSDASH_DATA_DIR`           | `./data`                | SQLite, `secret.key` (0600), logs, build cache         |
-| `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock`  | Must be a real unix socket                             |
-| `MUSDASH_WILDCARD_DOMAIN`    | —                       | e.g. `mus.example.com`; needed for auto-domains        |
-| `MUSDASH_ACME_EMAIL`         | —                       | Required for automatic HTTPS                           |
-| `MUSDASH_PUBLIC_URL`         | —                       | Only for GitHub App registration; must be public HTTPS |
-| `MUSDASH_ACME_STAGING`       | `true`                  | Safe default — set `false` deliberately, on real DNS   |
-| `MUSDASH_CADDY_ADMIN`        | `http://127.0.0.1:2019` | Never published beyond loopback                        |
-| `MUSDASH_BUILDKIT_ADDR`      | `tcp://127.0.0.1:1234`  | Unauthenticated API — loopback only                    |
-| `MUSDASH_BUILD_CACHE_GB`     | `10`                    | Layer cache ceiling, on disk and in the build daemon   |
-| `MUSDASH_RAILPACK_BIN`       | `railpack`              | Shelled out to, not linked                             |
-| `MUSDASH_BUILDCTL_BIN`       | `buildctl`              | Shelled out to, not linked                             |
-| `MUSDASH_NETWORK`            | `musdash`               | Must be user-defined                                   |
-| `MUSDASH_DEFAULT_MEMORY_MB`  | `512`                   | Per-container hard limit; there is no "unlimited"      |
-| `MUSDASH_HEALTH_TIMEOUT_SEC` | `60`                    | How long a new container has to pass the gate          |
-| `MUSDASH_LOG_LEVEL`          | `info`                  | `trace`…`fatal`                                        |
-| `NODE_ENV`                   | —                       | `production` enables the loopback bind                 |
+| Variable                     | Default                 | Notes                                                                     |
+| ---------------------------- | ----------------------- | ------------------------------------------------------------------------- |
+| `MUSDASH_PORT`               | `8000`                  | Binds `127.0.0.1` in production once an admin exists                      |
+| `MUSDASH_DATA_DIR`           | `./data`                | SQLite, `secret.key` (0600), logs, build cache                            |
+| `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock`  | Must be a real unix socket                                                |
+| `MUSDASH_DASHBOARD_HOST`     | —                       | Dashboard's own hostname; unset means it answers on the bare IP over HTTP |
+| `MUSDASH_BIND_ALL`           | `false`                 | Keep listening on all interfaces; required while reached by IP            |
+| `MUSDASH_WILDCARD_DOMAIN`    | —                       | e.g. `mus.example.com`; needed for auto-domains                           |
+| `MUSDASH_ACME_EMAIL`         | —                       | Required for automatic HTTPS                                              |
+| `MUSDASH_PUBLIC_URL`         | —                       | Only for GitHub App registration; must be public HTTPS                    |
+| `MUSDASH_ACME_STAGING`       | `true`                  | Safe default — set `false` deliberately, on real DNS                      |
+| `MUSDASH_CADDY_ADMIN`        | `http://127.0.0.1:2019` | Never published beyond loopback                                           |
+| `MUSDASH_BUILDKIT_ADDR`      | `tcp://127.0.0.1:1234`  | Unauthenticated API — loopback only                                       |
+| `MUSDASH_BUILD_CACHE_GB`     | `10`                    | Layer cache ceiling, on disk and in the build daemon                      |
+| `MUSDASH_RAILPACK_BIN`       | `railpack`              | Shelled out to, not linked                                                |
+| `MUSDASH_BUILDCTL_BIN`       | `buildctl`              | Shelled out to, not linked                                                |
+| `MUSDASH_NETWORK`            | `musdash`               | Must be user-defined                                                      |
+| `MUSDASH_DEFAULT_MEMORY_MB`  | `512`                   | Per-container hard limit; there is no "unlimited"                         |
+| `MUSDASH_HEALTH_TIMEOUT_SEC` | `60`                    | How long a new container has to pass the gate                             |
+| `MUSDASH_LOG_LEVEL`          | `info`                  | `trace`…`fatal`                                                           |
+| `NODE_ENV`                   | —                       | `production` enables the loopback bind                                    |
 
 ---
 

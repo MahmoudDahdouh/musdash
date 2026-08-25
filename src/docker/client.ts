@@ -51,6 +51,14 @@ export interface ContainerSpec {
    * infrastructure via `sidecarLabels`. There is deliberately no UI for it.
    */
   privileged?: boolean
+  /**
+   * Extra `/etc/hosts` entries, as `name:address`.
+   *
+   * Used to give the proxy `host-gateway`, which the Engine resolves to the
+   * host's address on the bridge. Caddy needs it to reach the dashboard, which
+   * binds the HOST's loopback rather than living in a container (D2).
+   */
+  extraHosts?: string[]
   /** Overrides the image's CMD. */
   command?: string[]
   healthcheck?: {

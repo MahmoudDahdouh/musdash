@@ -1414,3 +1414,67 @@ usage". No image-usage surface exists either — `pruneImages` reports its
 reclaimed bytes to pino and nowhere else — so building a cache widget alone would
 invert the documented intent, and it would put the sizing walk on an HTTP request
 path. Deferred to a disk-usage slice covering both.
+
+## One-command install, and the dashboard on a bare IP (2026-08-25)
+
+### D20 — the dashboard gets its own Caddy route, and it is a catch-all
+
+D3 said "`install.sh` creates a Caddy route for the dashboard on its own
+subdomain from the start." It never did — no dashboard route existed anywhere in
+the code. The consequence was a lockout, not a cosmetic gap: `bindHostname`
+narrows to `127.0.0.1` the moment the users table is non-empty, so the first
+restart after creating an admin account moved the listener to loopback with
+nothing proxying it. The operator was locked out of the box one restart after
+installing it.
+
+`ensureDashboardRoute()` now creates that route, and it has no host matcher.
+A catch-all is not laziness: on a fresh VPS the only address the box has is its
+IP, and a host matcher cannot express "whatever address the operator typed".
+Let's Encrypt does not issue for IP addresses, so this path is HTTP only, and the
+installer says so rather than implying otherwise.
+
+Ordering is what makes a catch-all safe. Caddy evaluates routes in array order;
+every resource route carries a host matcher and `terminal: true`, so a request
+for a deployed app's domain matches its own route and stops. Only unmatched hosts
+reach the dashboard. That guarantee holds only while the catch-all is LAST, and
+`upsertRoute` appends, so a resource deployed later would land behind it — hence
+the route is deleted and re-appended on every `ensureCaddy()` rather than created
+once.
+
+Setting `MUSDASH_DASHBOARD_HOST` narrows the route to that name, which also
+turns automatic HTTPS on for it.
+
+### D21 — `MUSDASH_BIND_ALL`, because loopback is only safe behind a proxy
+
+§12's "bind 127.0.0.1 in production" is correct _given_ that Caddy fronts the
+dashboard. When the operator is reaching it on the bare IP, the same rule is the
+lockout above. The flag makes the precondition explicit instead of assuming it,
+and the installer sets it to `true` exactly when no dashboard host is configured.
+
+### D22 — the installer compiles on the host
+
+The alternative was a release artifact, which is what Coolify does. It was
+rejected for now because the repository is private and has no releases: a
+download-based installer cannot work at all until both change. Compiling on the
+VPS needs no published build, works from a private checkout, and produces a
+binary matched to the host's libc. It costs about a minute and ~200MB for the Bun
+toolchain and `node_modules`, which is why the source lives in `/opt/musdash-src`
+and not under `/opt/musdash` — nothing there is runtime state worth backing up.
+
+The build stops the service before overwriting the binary. Replacing it under a
+running process is what leaves a half-upgraded install that restarts into old
+code.
+
+### Caddy reaches the host through an alias, not through localhost
+
+The dashboard binds the host's loopback (D2) while Caddy is in a container, so
+`127.0.0.1` from inside the proxy reaches the proxy. The container now gets an
+`ExtraHosts` entry mapping `musdash-host` to the Engine's `host-gateway`, and the
+dashboard route dials that. `host-gateway` is the _address_ the Engine
+substitutes, so the alias on the left is ours to choose.
+
+### Still unverified, and not claimed
+
+None of this has been run against a real VPS. The catch-all route ordering, the
+`host-gateway` mapping, and the end-to-end install were checked by typecheck,
+unit tests, and shell syntax only.

@@ -1,4 +1,4 @@
-import { config } from "../config.ts"
+import { config, HOST_ALIAS } from "../config.ts"
 import { logger } from "../log.ts"
 
 /**
@@ -37,6 +37,7 @@ export class CaddyError extends Error {
 export interface RouteSpec {
   /** Stable id: `musdash-<resourceId>`. */
   id: string
+  /** Empty means catch-all: no host matcher, so it answers on any address. */
   hosts: string[]
   /** Container IP or name, plus port. */
   upstream: string
@@ -63,7 +64,9 @@ function hasServer(cfg: unknown, name: string): boolean {
 function routeBody(spec: RouteSpec): unknown {
   return {
     "@id": spec.id,
-    match: [{ host: spec.hosts }],
+    // An empty matcher array is not the same as a matcher with no hosts: the
+    // latter matches nothing. Omit `match` outright to get a catch-all.
+    ...(spec.hosts.length > 0 ? { match: [{ host: spec.hosts }] } : {}),
     handle: [
       {
         handler: "reverse_proxy",
@@ -235,6 +238,20 @@ export class CaddyClient {
     })
   }
 
+  /**
+   * Appends a route to the END of the list, without replacing an existing one.
+   *
+   * upsertRoute PATCHes in place when the id already exists, which preserves
+   * position. The dashboard's catch-all must instead always land last, so it
+   * is deleted and re-appended rather than upserted.
+   */
+  async appendRoute(spec: RouteSpec): Promise<void> {
+    await this.expectOk(`/config/apps/http/servers/${SERVER}/routes/`, {
+      method: "POST",
+      ...this.json(routeBody(spec)),
+    })
+  }
+
   async deleteRoute(id: string): Promise<void> {
     const res = await this.request(`/id/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -261,4 +278,46 @@ export function autoDomainFor(
 ): string | null {
   if (!config.wildcardDomain) return null
   return `${resourceName}-${environmentName}.${config.wildcardDomain}`.toLowerCase()
+}
+
+/** Stable id for the dashboard's own route. */
+export const DASHBOARD_ROUTE_ID = "musdash-dashboard"
+
+/**
+ * Routes the dashboard through Caddy so it stays reachable after the bind
+ * narrows to loopback.
+ *
+ * Without this the operator is locked out of the box: config.ts binds
+ * 0.0.0.0 only while the users table is empty, so the restart after account
+ * creation moves the listener to 127.0.0.1 with nothing in front of it. D3
+ * claimed install.sh created this route; it never did.
+ *
+ * The route is deliberately a CATCH-ALL — no host matcher — so it answers on
+ * the bare server IP, which is the whole point on an install with no DNS yet.
+ * A host matcher cannot express "whatever address the operator typed", and
+ * Let's Encrypt will not issue for an IP, so this path is HTTP only.
+ *
+ * Ordering is what keeps that safe. Caddy evaluates routes in array order and
+ * every resource route is `terminal` with a host matcher, so appending here
+ * puts the catch-all LAST: a request for a deployed app's domain matches its
+ * own route and stops, and only unmatched hosts fall through to the dashboard.
+ * upsertRoute POSTs to the same collection, so routes added later also append
+ * after this one — which would break that guarantee — so the dashboard route
+ * is re-appended on every ensureCaddy() rather than created once.
+ */
+export async function ensureDashboardRoute(): Promise<void> {
+  // Delete-then-append rather than PATCH in place: the id may sit anywhere in
+  // the array from a previous boot, and only a fresh append puts it last.
+  await caddy.deleteRoute(DASHBOARD_ROUTE_ID)
+
+  const hosts = config.dashboardHost ? [config.dashboardHost] : []
+  await caddy.appendRoute({
+    id: DASHBOARD_ROUTE_ID,
+    // An empty host list means catch-all; a configured dashboard host narrows
+    // it, which also turns on automatic HTTPS for that name.
+    hosts,
+    // The dashboard binds loopback on the HOST, not in a container, so Caddy
+    // dials the host alias from its ExtraHosts rather than a container name (D2).
+    upstream: `${HOST_ALIAS}:${config.port}`,
+  })
 }

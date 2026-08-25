@@ -1,5 +1,5 @@
-import { caddy, CaddyError } from "./client.ts"
-import { config } from "../config.ts"
+import { caddy, CaddyError, ensureDashboardRoute } from "./client.ts"
+import { config, HOST_ALIAS } from "../config.ts"
 import {
   type ContainerState,
   DockerError,
@@ -105,6 +105,9 @@ export async function ensureCaddy(): Promise<void> {
         CADDY_ADMIN: "0.0.0.0:2019",
       },
       labels: sidecarLabels("proxy"),
+      // Lets Caddy dial the dashboard, which binds the host's loopback rather
+      // than living on this network (D2).
+      extraHosts: [`${HOST_ALIAS}:${config.hostGatewayIp}`],
       networks: [config.network],
       volumes: [
         { name: DATA_VOLUME, mountPath: "/data" },
@@ -167,6 +170,9 @@ export async function ensureCaddy(): Promise<void> {
   await caddy.ensureBaseConfig()
   // Only now is there unambiguously an srv0 to be bound. See verifyServing.
   await verifyServing(id)
+  // Re-appended every boot on purpose: the catch-all has to stay LAST, and any
+  // resource route added since would otherwise sit behind it. See D20.
+  await ensureDashboardRoute()
 
   logger.info(
     { container: CADDY_CONTAINER, id, adopted },

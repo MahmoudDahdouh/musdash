@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
 #
-# musdash installer. One command on a fresh Ubuntu host:
+# musdash installer. One command on a fresh Ubuntu host, as root:
 #
-#   curl -fsSL https://raw.githubusercontent.com/MahmoudDahdouh/musdash/main/scripts/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/MahmoudDahdouh/musdash/main/scripts/install.sh | bash
 #
-# Installs Docker if absent, creates the musdash network, starts Caddy, installs
-# the binary and a systemd unit, and generates the secret key.
+# Installs Docker, the build tools, and Bun; fetches the source; compiles the
+# binary ON THIS HOST; installs a systemd unit. No build machine, no release
+# artifact, no DNS required.
+#
+# Options (env vars):
+#   MUSDASH_REPO=<git url>        source to build from
+#   MUSDASH_REF=<branch|tag|sha>  what to check out (default: main)
+#   MUSDASH_DASHBOARD_HOST=<fqdn> serve the dashboard on a domain, with HTTPS
+#   MUSDASH_SRC=<path>            build from a local checkout instead of cloning
 set -euo pipefail
 
 MUSDASH_USER="${MUSDASH_USER:-musdash}"
+MUSDASH_REPO="${MUSDASH_REPO:-https://github.com/MahmoudDahdouh/musdash.git}"
+MUSDASH_REF="${MUSDASH_REF:-main}"
+# Where the source is compiled. Kept out of INSTALL_DIR so the toolchain and
+# node_modules are never mistaken for runtime state worth backing up.
+SRC_DIR="${MUSDASH_SRC:-/opt/musdash-src}"
+BUN_INSTALL="${BUN_INSTALL:-/usr/local}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/musdash}"
 DATA_DIR="${DATA_DIR:-$INSTALL_DIR/data}"
 NETWORK="${MUSDASH_NETWORK:-musdash}"
@@ -90,18 +103,69 @@ docker volume create musdash-caddy-data >/dev/null
 docker volume create musdash-caddy-config >/dev/null
 log "Caddy volumes ready; musdash starts Caddy on first boot"
 
-# ----------------------------------------------------------------- binary
-if [ -f "./dist/musdash" ]; then
-  log "Installing the local build"
-  install -o "$MUSDASH_USER" -g "$MUSDASH_USER" -m 0755 ./dist/musdash "$INSTALL_DIR/musdash"
-elif [ -f "$INSTALL_DIR/musdash" ]; then
-  log "Reusing the existing binary"
-else
-  die "no ./dist/musdash found — build it first with 'bun run build'"
+# -------------------------------------------------------------- toolchain
+# Bun compiles the binary. Installed to /usr/local so root and the service user
+# see the same one; the upstream script honours BUN_INSTALL for exactly this.
+if ! command -v bun >/dev/null 2>&1; then
+  log "Installing Bun"
+  command -v unzip >/dev/null 2>&1 || {
+    apt-get update -qq && apt-get install -y -qq unzip >/dev/null
+  }
+  curl -fsSL https://bun.sh/install | BUN_INSTALL="$BUN_INSTALL" bash >/dev/null
 fi
+BUN_BIN="$(command -v bun || echo "$BUN_INSTALL/bin/bun")"
+[ -x "$BUN_BIN" ] || die "bun was installed but is not executable at $BUN_BIN"
+log "Bun ready: $($BUN_BIN --version)"
+
+command -v git >/dev/null 2>&1 || {
+  log "Installing git"
+  apt-get update -qq && apt-get install -y -qq git >/dev/null
+}
+
+# ------------------------------------------------------------------ source
+# A local checkout wins over cloning: it is how an operator installs a working
+# copy they have already modified, and how this script is tested.
+if [ -f "./package.json" ] && [ -d "./src" ]; then
+  log "Building from the current directory"
+  SRC_DIR="$(pwd)"
+elif [ -d "$SRC_DIR/.git" ]; then
+  log "Updating the source in $SRC_DIR"
+  git -C "$SRC_DIR" fetch --depth=1 origin "$MUSDASH_REF"
+  git -C "$SRC_DIR" checkout -q FETCH_HEAD
+else
+  log "Cloning $MUSDASH_REPO ($MUSDASH_REF)"
+  rm -rf "$SRC_DIR"
+  git clone --depth=1 --branch "$MUSDASH_REF" "$MUSDASH_REPO" "$SRC_DIR" 2>/dev/null     || die "could not clone $MUSDASH_REPO. If it is private, clone it yourself and re-run this script from inside the checkout."
+fi
+
+# ----------------------------------------------------------------- binary
+# Compiled here rather than shipped as a release artifact: it needs no published
+# build, works from a private repo, and guarantees the binary matches this host's
+# libc. Costs about a minute.
+log "Building the binary (this takes ~60s)"
+cd "$SRC_DIR"
+"$BUN_BIN" install --frozen-lockfile >/dev/null 2>&1 || "$BUN_BIN" install >/dev/null
+"$BUN_BIN" run build >/dev/null
+
+[ -f "$SRC_DIR/dist/musdash" ] || die "the build produced no dist/musdash"
+# Stop before overwriting: replacing the binary under a running process is what
+# leaves a half-upgraded service that restarts into the old code.
+systemctl stop musdash >/dev/null 2>&1 || true
+install -o "$MUSDASH_USER" -g "$MUSDASH_USER" -m 0755 "$SRC_DIR/dist/musdash" "$INSTALL_DIR/musdash"
+log "Installed $INSTALL_DIR/musdash"
 
 # --------------------------------------------------------------- env file
 ENV_FILE="$INSTALL_DIR/musdash.env"
+# With a dashboard host the proxy fronts the dashboard, so it can bind loopback
+# as §12 requires. Without one it is reached directly by IP and must not.
+if [ -n "${MUSDASH_DASHBOARD_HOST:-}" ]; then
+  DASHBOARD_HOST_LINE="MUSDASH_DASHBOARD_HOST=$MUSDASH_DASHBOARD_HOST"
+  BIND_ALL_VALUE="false"
+else
+  DASHBOARD_HOST_LINE="#MUSDASH_DASHBOARD_HOST=mus.example.com"
+  BIND_ALL_VALUE="true"
+fi
+
 if [ ! -f "$ENV_FILE" ]; then
   log "Writing $ENV_FILE"
   cat > "$ENV_FILE" <<EOF
@@ -110,8 +174,23 @@ MUSDASH_DATA_DIR=$DATA_DIR
 MUSDASH_NETWORK=$NETWORK
 MUSDASH_CADDY_ADMIN=http://127.0.0.1:2019
 
+# --- Dashboard address -------------------------------------------------
+# Unset: the dashboard answers on this host's bare IP over HTTP, which is the
+# only address a box without DNS has. Set it to a hostname you have pointed
+# here and Caddy obtains a certificate for it automatically.
+#
+# Until it is set, two things are true and neither is a bug:
+#   - the admin session cookie travels in plaintext (no cert exists for an IP)
+#   - GitHub cannot be connected; its App requires a public HTTPS URL
+${DASHBOARD_HOST_LINE}
+
+# Keeps the dashboard listening on all interfaces. Required while it is reached
+# by IP; turn it off once MUSDASH_DASHBOARD_HOST is set and Caddy fronts it.
+MUSDASH_BIND_ALL=${BIND_ALL_VALUE}
+
 # Point a wildcard A record (*.example.com) at this host to get automatic
-# HTTPS subdomains for every resource.
+# HTTPS subdomains for every resource. Optional: without it, resources have no
+# auto-subdomain and you attach real domains on each resource's Domains tab.
 #MUSDASH_WILDCARD_DOMAIN=mus.example.com
 # Needed only to connect GitHub: the App's redirect and webhook URLs must be
 # publicly reachable HTTPS, so this cannot be localhost or a private address.
@@ -158,16 +237,29 @@ EOF
 systemctl daemon-reload
 systemctl enable --now musdash
 
-sleep 2
+# Caddy is started by musdash on first boot, via the queue, so port 80 is not
+# serving the instant the unit goes active. Give it a moment before printing a
+# URL that tells the operator to open it.
+sleep 5
 if systemctl is-active --quiet musdash; then
   IP=$(hostname -I | awk '{print $1}')
   log "musdash is running"
   echo
-  echo "  Open http://$IP:$PORT to create your admin account."
-  echo "  After that it binds to 127.0.0.1 and is reached through Caddy."
+  if [ -n "${MUSDASH_DASHBOARD_HOST:-}" ]; then
+    echo "  Open https://$MUSDASH_DASHBOARD_HOST to create your admin account."
+    echo "  (If the certificate is not ready yet, give Caddy a few seconds.)"
+  else
+    echo "  Open http://$IP to create your admin account."
+    echo
+    echo "  That is plain HTTP: no certificate authority issues for an IP."
+    echo "  Once you point a domain here, set it and restart:"
+    echo "    MUSDASH_DASHBOARD_HOST=mus.example.com in $ENV_FILE"
+    echo "    MUSDASH_BIND_ALL=false"
+    echo "    systemctl restart musdash"
+    echo "  That gets you HTTPS on the dashboard and enables GitHub."
+  fi
   echo
-  echo "  Edit $ENV_FILE to set your wildcard domain and ACME email,"
-  echo "  then: systemctl restart musdash"
+  echo "  Logs: journalctl -u musdash -f"
 else
   die "musdash failed to start — check: journalctl -u musdash -n 50"
 fi

@@ -398,6 +398,9 @@ export class DockerHttpClient implements DockerClient {
         ...(spec.cpuShares ? { CpuShares: spec.cpuShares } : {}),
         ...(spec.privileged === true ? { Privileged: true } : {}),
         RestartPolicy: { Name: spec.restartPolicy },
+        ...(spec.extraHosts && spec.extraHosts.length > 0
+          ? { ExtraHosts: spec.extraHosts }
+          : {}),
         Binds: spec.volumes.map((v) => `${v.name}:${v.mountPath}`),
         LogConfig: {
           Type: "json-file",
