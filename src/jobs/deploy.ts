@@ -148,10 +148,10 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     //
     // Inside the try, deliberately: resolution merges project → environment →
     // resource and expands ${VAR}, and an unresolvable reference throws. Doing
-    // this before the try would let that error escape runDeploy before the
-    // deployment is marked running, so the queue would retry it three times
-    // and the user would see a bare queue error instead of a deploy log line
-    // naming the variable.
+    // this before the try would let that error bypass the catch below: no
+    // deploy log line would name the variable, the resource's status would
+    // not be restored, and the user would see only the bare error the worker's
+    // generic job-failure path copies onto the deployment row.
     const env = resolveEnvVars(resourceId)
     // Every value at every scope, not just the runtime map: a build-only
     // secret never reaches the container, but BuildKit echoes RUN lines into
@@ -661,6 +661,28 @@ const REUSES_IMAGE: ReadonlySet<DeployTrigger> = new Set([
   "reconcile",
 ])
 
+/**
+ * A deploy job runs exactly once, like the sidecar bootstraps; the queue's
+ * retry-with-backoff stays for stop, remove, route sync and prune.
+ *
+ * - Most deploy failures are deterministic — a bad Dockerfile, a RUN step over
+ *   BuildKit's limit, an unresolvable ${VAR}, an app that never passes the
+ *   health gate. A builder exit cannot be told apart from a transient one
+ *   without parsing BuildKit's free text, so retrying just repeats the failure.
+ * - Each attempt holds the single worker. Three runs of a failing build park
+ *   every other job — stops, sidecar re-ensures, other deploys — behind it.
+ * - A delayed retry is claimed by created_at once its backoff expires, so it can
+ *   land AFTER a newer deploy of the same resource succeeded and put the older
+ *   image back over it, repointing the resource and its rollback target.
+ *
+ * Recovery is the user's Deploy button or the next push. A failed redeploy
+ * leaves the old container serving; the reconciler only redeploys the last
+ * image that succeeded, for a resource whose container is gone, so it never
+ * retries a failed build. A job recovered from an expired lease after a crash
+ * still re-runs once: claim() does not check attempts.
+ */
+const DEPLOY_MAX_ATTEMPTS = 1
+
 /** Queues a deploy and returns the deployment id. Handlers call this, never runDeploy. */
 export function enqueueDeploy(
   resourceId: string,
@@ -668,12 +690,16 @@ export function enqueueDeploy(
   trigger: DeployTrigger = "manual",
 ): string {
   const deployment = createDeployment({ resourceId, image, trigger })
-  enqueue("deploy", {
-    resourceId,
-    deploymentId: deployment.id,
-    image,
-    useExistingImage: REUSES_IMAGE.has(trigger),
-  } satisfies DeployPayload)
+  enqueue(
+    "deploy",
+    {
+      resourceId,
+      deploymentId: deployment.id,
+      image,
+      useExistingImage: REUSES_IMAGE.has(trigger),
+    } satisfies DeployPayload,
+    { maxAttempts: DEPLOY_MAX_ATTEMPTS },
+  )
   publishStatus({ resourceId, state: "queued" })
   return deployment.id
 }
@@ -748,7 +774,7 @@ export function enqueueDeployCoalesced(
         // A push always builds. Never REUSES_IMAGE — see that set's comment.
         useExistingImage: false,
       } satisfies DeployPayload,
-      { id: pushJobId(resourceId) },
+      { id: pushJobId(resourceId), maxAttempts: DEPLOY_MAX_ATTEMPTS },
     )
   } catch (err) {
     deleteDeployment(deployment.id)

@@ -2910,3 +2910,35 @@ second with `MUSDASH_BUILDKIT_MEMORY_MB=320`, both logged `ensure_caddy` and
 replaced the daemon at 320 MB; removing the override and restarting restored 384. With the daemon removed by hand, the next tick queued exactly one
 bootstrap and it came back. No test: the id helpers are private, and the
 behaviour needs a restart.
+
+## A failed deploy is not retried (R-2, 2026-09-26)
+
+A Dockerfile RUN step that exceeded BuildKit's memory cap failed three times on
+the 1 GB host, each attempt rebuilding to the cap on the single worker: deploy
+jobs took the queue's default of three attempts with 10 s and 60 s backoff
+(line 93 here, PHASES §8), and nothing on that path can tell a deterministic
+failure from a transient one — a builder exit is one `BuildError` whatever the
+cause. Reading the queue also showed a second hazard: a retry whose backoff has
+expired is claimed by `created_at`, so it can run after a newer deploy of the
+same resource succeeded and put the older image back, repointing the resource
+and its rollback target.
+
+### D44 — deploy jobs get one attempt
+
+`enqueueDeploy` (manual, rollback, reconcile) and `enqueueDeployCoalesced`
+(push) pass `maxAttempts: 1`, as the sidecar bootstraps already do (D7). Stop,
+remove, route sync and prune keep the queue's backoff. Recovery from a failed
+deploy is the Deploy button or the next push; a failed redeploy leaves the old
+container serving. The cost is a push that lands during a transient outage (a
+registry or GitHub blip, Caddy restarting mid-switch): it is not deployed until
+the next push or a click. An allow-list of retryable errors can be added for
+pushes later if that matters. This makes the D40 follow-up about a retry
+showing the previous attempt's error and duration moot.
+
+Follow-up, not changed here: the reconciler re-enqueues a redeploy every 30 s
+for a resource that should be running and has no container, with no check for
+one already queued, so an image that fails every time queues a deploy per tick.
+
+Verified on the 1 GB host: the runaway build failed once (`attempts 1` of 1,
+`retrying: false`), the deployment stayed failed, and the app's previous
+container kept serving.
