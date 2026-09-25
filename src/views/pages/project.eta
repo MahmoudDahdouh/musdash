@@ -23,13 +23,6 @@
 </nav>
 
 <% if (it.tab === 'env') { %>
-<% if (it.envError) { %>
-<div class="notice notice-error" role="alert">
-  <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
-  <div><%= it.envError %></div>
-</div>
-<% } %>
-
 <div class="card stack">
   <h2 class="card-title">Project variables</h2>
   <p class="muted">
@@ -376,8 +369,11 @@
 
     <div class="field">
       <label class="label" for="<%= git %>-branch">Branch</label>
-      <input id="<%= git %>-branch" name="branch" x-model="branch" required placeholder="main" aria-describedby="<%= git %>-branch-hint" />
+      <%/* isValidGitRef (src/github/repos.ts) as a v-flag pattern: no leading
+           "/", no "..", no control characters, space or ~ ^ : ? * [ \ */%>
+      <input id="<%= git %>-branch" name="branch" x-model="branch" required pattern="(?!/)(?!.*\.\.)[^\x00-\x1f\x7f \~\^\:\?\*\[\\]{1,255}" placeholder="main" aria-describedby="<%= git %>-branch-hint" />
       <p class="hint" id="<%= git %>-branch-hint">Filled in from the repository's default branch when you pick one.</p>
+      <p class="error">No spaces, no "..", no leading "/", and none of ~ ^ : ? * [ \</p>
     </div>
 
     <div class="field">

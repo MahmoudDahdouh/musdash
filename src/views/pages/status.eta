@@ -2,6 +2,10 @@
   <% if (it.status === 400) { %>
   <h1>That request was not valid</h1>
   <p>Go back and try again. If the page had been open a long time, reload it first.</p>
+  <% } else if (it.status === 403) { %>
+  <h1>This page had expired</h1>
+  <%/* Not just "reload": reloading this page re-posts the stale token. */%>
+  <p>Nothing was saved. Go back, reload that page, then try again.</p>
   <% } else if (it.status === 404) { %>
   <h1>Not found</h1>
   <p>There is nothing at this address.</p>
@@ -12,4 +16,5 @@
   <h1>Something went wrong</h1>
   <p>The details are in the server logs: <code>journalctl -u musdash</code>.</p>
   <% } %>
+  <p><a class="btn" href="/">Back to projects</a></p>
 </div>

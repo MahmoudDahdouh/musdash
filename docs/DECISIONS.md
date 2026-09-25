@@ -2503,3 +2503,91 @@ one does not. A one-account upgrade kept the existing session working.
 (criterion 14) and the upgrade on the 1GB VPS (criterion 18). Noted: the
 argon2 gate's busy warn says "sign-in busy" for setup requests too; the
 wording lives in `src/password.ts`.
+
+## Refusals are pages, not bare text (V-4, 2026-09-25)
+
+The 1GB re-test found that refusing the dashboard hostname as a resource
+domain answered `409` with the words "that is the dashboard's own address" as
+the whole page: no layout, no title, no way back. It was one of 39
+`return status(4xx, "…")` calls in `src/routes/app.ts`, which Elysia 1.4
+answers as `text/plain`. The two CSRF refusals (`app.ts`'s global guard and
+`/logout`) were the same, and they are the most likely to be seen: any tab
+left open from an earlier sign-in holds a stale token. Every one broke
+"user-facing strings live in templates" and "show the user something useful".
+
+### D37 — a keyed notice for what the UI can cause, a status page for the rest
+
+**Errors a user can reach through the UI redirect back.** A duplicate name, an
+invalid image reference, a missing repository, a bad branch, a bad, taken or
+dashboard-owned domain, an env box that does not parse, and the GitHub
+connect, callback and disconnect failures answer `303` to the page and tab
+the form lives on, with `error=<key>` in the query. `src/routes/errors.ts`
+lists the 15 keys; `src/views/partials/errors.eta` is the only place that
+turns a key into a sentence, and the layout's existing notice shows it — the
+one flash path UI-UX #24 asked for. The GET handlers accept a key only by
+membership in the list, and the partial matches literal strings rather than
+looking the key up in an object, so `__proto__`, markup or free text renders
+nothing and is never echoed. A crafted link can show one of 15 fixed
+sentences; that is accepted, since it carries no text of the sender's and
+triggers nothing. Error redirects carry no `#fragment`, which would scroll the
+notice out of view.
+
+Redirecting loses what was typed into the dialog. Re-rendering the page with
+the values instead would rebuild every page's view model in its POST handler,
+reopen dialogs from script and re-run the git picker's GitHub API calls on
+every failed submit, against an asset budget with about 1 KB left. For a
+single-user tool whose worst case is retyping a dialog, that is out of
+proportion. Where the server's rule fits an HTML `pattern` — the branch and
+the domain fields — the browser now refuses first, so the common mistakes
+never reach the redirect. Both patterns were checked in Chromium 152 against
+the server's `isValidGitRef` and `HOSTNAME_RE` inputs; the browser is
+stricter only on surrounding whitespace, which the server trims.
+
+**Everything else is a real status page in the signed-in layout.** The 16
+"not found" cases, the nine 400s that only a stale tab or a hand-made request
+can reach, and both CSRF refusals render `src/views/pages/status.eta` with
+the real status code, the sidebar and a link back to projects, through
+`statusFor(session, status)` in `src/routes/layout.ts` (where `layout()` moved
+so `auth.ts` can use it). The new 403 page says to go back and reload that
+page: reloading the 403 itself would re-post the stale token. It renders only
+the session's current token, in the layout's sign-out form, never the one
+submitted; the refusal and its `CSRF check failed` warning are unchanged. A
+route that does not exist still gets the signed-out 404 from `handleError`,
+which runs without a session.
+
+**Two folded fixes.** Creating an environment whose name the project already
+has now redirects with `env-name-taken`, instead of hitting
+`UNIQUE(project_id, name)` and answering 500. And an env box that does not
+parse no longer puts the parser's message into the URL: that message quotes
+the rejected line, which is often `KEY=secret`, and it landed in browser
+history and any access log. The redirect now carries only `env-invalid-line`
+or `env-scope-duplicate`; the detailed strings are dropped, not logged. The
+cost is that the notice no longer names the line. Naming it safely (box and
+line number, no value) needs structured errors from `src/env/parse.ts`, a
+tested module, and is a follow-up.
+
+**Left as they were.** The four 404s in `src/routes/sse.ts` (an `EventSource`
+never shows a body), the asset 404, the webhook's answers, the unreachable 401
+guards, `handleError`'s 400 and 413, and the free-text sentences `/settings`
+already carries in its query (`flash`/`msg`), which break the same rule and
+are a follow-up.
+
+### Verified
+
+`scripts/check-error-pages.ts` reproduces it against a compiled binary on a
+scratch data directory, with Docker pointed at a socket that does not exist:
+
+    bun run build
+    bun scripts/check-error-pages.ts dist/musdash 18433
+
+It exercises every row: each keyed redirect's exact `Location`, the notice on
+the page it leads to, every table row unchanged, all 15 keys covered, a
+sentinel typed into every refused field absent from every `Location`, page
+and log line, garbage keys and the old `envError` parameter echoing nothing,
+all 16 404s and the 400s as signed-in HTML, both 403s, and the signed-out 404. What no form can create — a connected GitHub installation, and an image
+resource with no image — is seeded into the scratch database while the binary
+is stopped, so musdash stays its only writer while it runs. The run's data
+directory is removed; its log is kept in `$TMPDIR` for reading. Result on
+macOS: 72 checks, all pass. `bun run ci` and
+`bun test` (179) pass; `public/app.css` and `public/app.js` are unchanged.
+Not yet run on the VPS.

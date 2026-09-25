@@ -19,6 +19,7 @@ import resourceSrc from "./pages/resource.eta" with { type: "text" }
 import settingsSrc from "./pages/settings.eta" with { type: "text" }
 import setupSrc from "./pages/setup.eta" with { type: "text" }
 import statusSrc from "./pages/status.eta" with { type: "text" }
+import errorsPartialSrc from "./partials/errors.eta" with { type: "text" }
 import statusPartialSrc from "./partials/status.eta" with { type: "text" }
 import appCss from "../../public/app.css" with { type: "text" }
 import appJs from "../../public/app.js" with { type: "text" }
@@ -28,6 +29,7 @@ const eta = new Eta({ autoEscape: true, cache: true })
 // Registered by name so pages can `include("@status", …)`. An "@" name never
 // reaches Eta's file loader, which is what keeps it working in the binary.
 eta.loadTemplate("@status", statusPartialSrc)
+eta.loadTemplate("@errors", errorsPartialSrc)
 
 const PAGES = {
   setup: setupSrc,
@@ -75,6 +77,8 @@ export interface LayoutData {
   user?: { email: string } | null
   csrf?: string
   flash?: { kind: "ok" | "error"; text: string } | null
+  /** Shown as an error notice, over `flash`. Words for it live in @errors. */
+  errorKey?: string | null
   wide?: boolean
   nav?: NavProjectView[]
   activeProjectId?: string
@@ -91,11 +95,17 @@ export function renderPage(
   layout: LayoutData,
 ): string {
   const body = eta.renderString(PAGES[page], data)
+  // An unknown key renders nothing, so it falls through to the ordinary flash.
+  const errorText = layout.errorKey
+    ? eta.render("@errors", { key: layout.errorKey }).trim()
+    : ""
   return eta.renderString(layoutSrc, {
     ...layout,
     user: layout.user ?? null,
     csrf: layout.csrf ?? "",
-    flash: layout.flash ?? null,
+    flash: errorText
+      ? { kind: "error", text: errorText }
+      : (layout.flash ?? null),
     wide: layout.wide ?? false,
     nav: layout.nav ?? [],
     // Empty string rather than undefined: an id comparison in the template can

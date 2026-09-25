@@ -15,6 +15,7 @@ import type { User } from "../db/schema.ts"
 import { logger } from "../log.ts"
 import { GateBusyError } from "../password.ts"
 import { renderPage } from "../views/render.ts"
+import { statusFor } from "./layout.ts"
 
 const credentials = t.Object({
   email: t.String({ format: "email", maxLength: 254 }),
@@ -116,7 +117,7 @@ export const authRoutes = new Elysia()
 
   .post(
     "/logout",
-    ({ body, cookie, session, redirect, status }) => {
+    ({ body, cookie, session, redirect }) => {
       // Logout is state-changing but lives in authRoutes, outside appRoutes'
       // global CSRF gate, so the check has to be explicit here. Without it any
       // origin can log the user out with a hidden auto-submitting form.
@@ -126,7 +127,7 @@ export const authRoutes = new Elysia()
       // should land quietly on /login rather than 403.
       if (session && !verifyCsrf(session, body.csrf)) {
         logger.warn({ path: "/logout" }, "CSRF check failed")
-        return status(403, "invalid CSRF token")
+        return statusFor(session, 403)
       }
       const id = cookie[SESSION_COOKIE]?.value
       // Deleting the row is what makes logout real; clearing the cookie alone

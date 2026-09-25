@@ -2,7 +2,7 @@ import { bindHostname, config } from "./config.ts"
 import { docker } from "./docker/impl.ts"
 import { WEBHOOK_PATH } from "./github/webhook.ts"
 import { logger } from "./log.ts"
-import { renderForbidden, renderPage } from "./views/render.ts"
+import { type LayoutData, renderForbidden, renderPage } from "./views/render.ts"
 
 /**
  * Process-wide HTTP hooks, kept out of src/index.ts so the entry point stays a
@@ -132,15 +132,22 @@ export async function refreshTrustedSubnets(): Promise<void> {
 
 let subnetReadFailing = false
 
-/** A status page. The words live in the template, not here. */
-function statusPage(
-  status: 400 | 404 | 413 | 500,
+/**
+ * A status page. The words live in the template, not here.
+ *
+ * The default frame is the signed-out one, which is right for everything this
+ * module answers: those run before (or without) a session lookup. A router
+ * that has a session passes its own frame — see statusFor in routes/layout.ts.
+ */
+export function statusPage(
+  status: 400 | 403 | 404 | 413 | 500,
   extra?: Record<string, unknown>,
+  layout: LayoutData = { title: String(status) },
 ): Response {
-  return new Response(
-    renderPage("status", { ...extra, status }, { title: String(status) }),
-    { status, headers: HTML },
-  )
+  return new Response(renderPage("status", { ...extra, status }, layout), {
+    status,
+    headers: HTML,
+  })
 }
 
 const HTML = { "content-type": "text/html; charset=utf-8" }

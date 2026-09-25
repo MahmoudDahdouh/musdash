@@ -1,0 +1,41 @@
+<%
+  /*
+   * The one place an error key from a redirect becomes words. Plain text, no
+   * markup: the layout escapes it into the notice.
+   *
+   * An if-chain on literals rather than an object lookup, because the key
+   * comes from the query string — `__proto__` or `constructor` must match
+   * nothing, and an unknown key must print nothing, so no notice renders.
+   */
+%>
+<% if (it.key === "image-invalid") { %>
+That is not a valid image reference. Use a name like nginx:alpine or ghcr.io/owner/app:1.2.
+<% } else if (it.key === "resource-name-taken") { %>
+A resource with that name already exists in this environment. Choose another name.
+<% } else if (it.key === "repo-required") { %>
+Choose a repository, or enter a local path, before creating the resource.
+<% } else if (it.key === "branch-invalid") { %>
+That is not a valid branch name. Branch names cannot contain spaces, "..", or any of ~ ^ : ? * [ \
+<% } else if (it.key === "env-name-taken") { %>
+This project already has an environment with that name. Choose another name.
+<% } else if (it.key === "domain-invalid") { %>
+That does not look like a hostname. Enter a name such as app.example.com, without https:// or a path.
+<% } else if (it.key === "domain-taken") { %>
+That domain is already attached to a resource. Remove it there first, or choose another name.
+<% } else if (it.key === "domain-dashboard") { %>
+That is the dashboard's own address, so a resource cannot use it. Choose another name, or change the dashboard address under Settings.
+<% } else if (it.key === "env-invalid-line") { %>
+Nothing was saved. Every line must be NAME=value, and each name must use letters, digits and underscores, not start with a digit, and appear once per box. Fix the line and paste the variables again.
+<% } else if (it.key === "env-scope-duplicate") { %>
+Nothing was saved. A name appears in more than one box. Keep it only in the box where it is needed and paste the variables again.
+<% } else if (it.key === "github-no-domain") { %>
+GitHub needs a public HTTPS address for this dashboard. Set one under Dashboard address, then connect GitHub.
+<% } else if (it.key === "github-no-flow") { %>
+There is no GitHub connection in progress. Press Connect GitHub to start again.
+<% } else if (it.key === "github-state-mismatch") { %>
+That GitHub callback did not come from a connection started here. Press Connect GitHub to start again.
+<% } else if (it.key === "github-no-code") { %>
+GitHub did not return a registration code. Press Connect GitHub to start again.
+<% } else if (it.key === "github-confirm") { %>
+GitHub was not disconnected, because the request was not confirmed. Press Disconnect GitHub and confirm.
+<% } %>

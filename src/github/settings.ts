@@ -40,9 +40,9 @@ export interface SettingsView {
  * Turns `?flash=ok&msg=...` into a flash, or null.
  *
  * The core handlers redirect with those two params (see flashUrl in
- * routes/app.ts), matching the envError convention rather than adding a
- * server-side flash store. Anything other than "ok" or "error" is dropped: the
- * value reaches a CSS class name in the template.
+ * routes/app.ts) rather than using a server-side flash store. Anything other
+ * than "ok" or "error" is dropped: the value reaches a CSS class name in the
+ * template.
  */
 export function flashFromQuery(
   flash: unknown,

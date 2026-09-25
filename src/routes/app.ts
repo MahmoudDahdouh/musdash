@@ -1,10 +1,5 @@
 import { Elysia, t } from "elysia"
-import {
-  resolveSession,
-  SESSION_COOKIE,
-  verifyCsrf,
-  type SessionUser,
-} from "../auth.ts"
+import { resolveSession, SESSION_COOKIE, verifyCsrf } from "../auth.ts"
 import { autoDomainFor, isValidHostname } from "../caddy/client.ts"
 import { config } from "../config.ts"
 import { randomToken, safeEqual } from "../crypto.ts"
@@ -34,7 +29,6 @@ import {
   listProjects,
   listResources,
   listSharedEnvKeys,
-  navTree,
   resolveEnvKeys,
   resourceImage,
   setAutoDeploy,
@@ -47,7 +41,7 @@ import {
 } from "../db/queries.ts"
 import { parseEnvText } from "../env/parse.ts"
 import { deployLogTail } from "../events.ts"
-import { buildManifest } from "../github/manifest.ts"
+import { buildManifest, ManifestError } from "../github/manifest.ts"
 import {
   convertManifestCode,
   replaceGithubApp,
@@ -77,7 +71,9 @@ import {
   SETTING_GITHUB_MANIFEST_STATE,
   setDashboardHost,
 } from "../settings.ts"
-import { type LayoutData, renderPage } from "../views/render.ts"
+import { renderPage } from "../views/render.ts"
+import { errorKeyFromQuery, withError } from "./errors.ts"
+import { layout, statusFor } from "./layout.ts"
 
 const html = (body: string) =>
   new Response(body, {
@@ -103,9 +99,10 @@ function escapeHtml(value: string): string {
 /**
  * A redirect target for /settings carrying a one-shot message.
  *
- * In the query string rather than a server-side flash store, matching the
- * envError convention the env tab already uses: no per-session state to hold,
- * and nothing to clean up if the user never follows the redirect.
+ * In the query string rather than a server-side flash store: no per-session
+ * state to hold, and nothing to clean up if the user never follows the
+ * redirect. Free text, unlike the keyed errors of D37 — moving these to keys
+ * is a recorded follow-up.
  */
 function flashUrl(kind: "ok" | "error", text: string): string {
   return `/settings?flash=${kind}&msg=${encodeURIComponent(text)}`
@@ -144,28 +141,42 @@ const envBody = t.Object({
  * boxes are one logical set split by presentation, so the same key in two of
  * them means the user believes they are two different variables. Silently
  * keeping one is how a build gets a value nobody can account for.
+ *
+ * The result is a key, not parseEnvText's messages: those quote the rejected
+ * line, and a rejected line is usually a secret. They must never reach a URL,
+ * a page or a log, so they are dropped here rather than filtered later. A bad
+ * line wins over a cross-box duplicate — it is the one to fix first.
  */
 function parseScopedEnv(body: {
   runtime?: string
   build?: string
   both?: string
-}): { vars: EnvVarInput[]; errors: string[] } {
+}): {
+  vars: EnvVarInput[]
+  error: "env-invalid-line" | "env-scope-duplicate" | null
+} {
   const vars: EnvVarInput[] = []
-  const errors: string[] = []
+  let invalidLine = false
+  let duplicate = false
   const seen = new Set<string>()
   for (const scope of ["runtime", "build", "both"] as const) {
     const parsed = parseEnvText(body[scope] ?? "")
-    for (const e of parsed.errors) errors.push(`${scope}: ${e}`)
+    if (parsed.errors.length > 0) invalidLine = true
     for (const [key, value] of Object.entries(parsed.vars)) {
       if (seen.has(key)) {
-        errors.push(`"${key}" appears in more than one scope box; pick one`)
+        duplicate = true
         continue
       }
       seen.add(key)
       vars.push({ key, value, scope })
     }
   }
-  return { vars, errors }
+  const error = invalidLine
+    ? "env-invalid-line"
+    : duplicate
+      ? "env-scope-duplicate"
+      : null
+  return { vars, error }
 }
 
 /**
@@ -199,7 +210,7 @@ export const appRoutes = new Elysia()
     const token = (body as { csrf?: unknown } | undefined)?.csrf
     if (!verifyCsrf(session, token)) {
       logger.warn({ path }, "CSRF check failed")
-      return new Response("invalid CSRF token", { status: 403 })
+      return statusFor(session, 403)
     }
   })
 
@@ -238,9 +249,9 @@ export const appRoutes = new Elysia()
     },
   )
 
-  .get("/p/:projectId", async ({ params, query, session, status }) => {
+  .get("/p/:projectId", async ({ params, query, session }) => {
     const project = getProject(params.projectId)
-    if (!project) return status(404, "project not found")
+    if (!project) return statusFor(session, 404)
 
     const tab = ["resources", "env"].includes(String(query.tab))
       ? String(query.tab)
@@ -269,7 +280,6 @@ export const appRoutes = new Elysia()
           project,
           environments,
           tab,
-          envError: query.envError ? String(query.envError) : null,
           projectEnv: listSharedEnvKeys({ projectId: project.id }),
           csrf: session?.csrfToken,
           defaultMemoryMb: config.defaultMemoryMb,
@@ -280,17 +290,28 @@ export const appRoutes = new Elysia()
               ? await gitPicker()
               : { connected: false, installations: [] },
         },
-        layout(session, project.name, { activeProjectId: project.id }),
+        layout(session, project.name, {
+          activeProjectId: project.id,
+          errorKey: errorKeyFromQuery(query.error),
+        }),
       ),
     )
   })
 
   .post(
     "/p/:projectId/environments",
-    ({ params, body, redirect, status }) => {
-      if (!getProject(params.projectId)) return status(404, "project not found")
-      if (!isValidResourceName(body.name)) {
-        return status(400, "environment names must match [a-z0-9-]{1,32}")
+    ({ params, body, redirect, session }) => {
+      if (!getProject(params.projectId)) return statusFor(session, 404)
+      if (!isValidResourceName(body.name)) return statusFor(session, 400)
+      // Checked before the insert: (project_id, name) is UNIQUE, and letting
+      // the constraint refuse it surfaced as a 500.
+      if (
+        listEnvironments(params.projectId).some((e) => e.name === body.name)
+      ) {
+        return redirect(
+          withError(`/p/${params.projectId}`, "env-name-taken"),
+          303,
+        )
       }
       createEnvironment(params.projectId, body.name)
       return redirect(`/p/${params.projectId}`, 303)
@@ -302,19 +323,20 @@ export const appRoutes = new Elysia()
 
   .post(
     "/e/:environmentId/resources",
-    ({ params, body, redirect, status }) => {
+    ({ params, body, redirect, session }) => {
       const environment = getEnvironment(params.environmentId)
-      if (!environment) return status(404, "environment not found")
+      if (!environment) return statusFor(session, 404)
 
       // Names become container names and DNS labels; images can reach a shell.
-      if (!isValidResourceName(body.name)) {
-        return status(400, "resource names must match [a-z0-9-]{1,32}")
-      }
+      // The name field's pattern already refuses a bad name, so reaching this
+      // is a hand-made request: a status page, not a notice.
+      if (!isValidResourceName(body.name)) return statusFor(session, 400)
+      const back = `/p/${environment.projectId}`
       if (!isValidImageRef(body.image)) {
-        return status(400, "that does not look like a valid image reference")
+        return redirect(withError(back, "image-invalid"), 303)
       }
       if (findResourceByNameInEnv(environment.id, body.name)) {
-        return status(409, "a resource with that name already exists here")
+        return redirect(withError(back, "resource-name-taken"), 303)
       }
 
       const resource = createResource({
@@ -358,41 +380,38 @@ export const appRoutes = new Elysia()
    */
   .post(
     "/e/:environmentId/resources/git",
-    ({ params, body, redirect, status }) => {
+    ({ params, body, redirect, session }) => {
       const environment = getEnvironment(params.environmentId)
-      if (!environment) return status(404, "environment not found")
+      if (!environment) return statusFor(session, 404)
 
-      if (!isValidResourceName(body.name)) {
-        return status(400, "resource names must match [a-z0-9-]{1,32}")
-      }
+      if (!isValidResourceName(body.name)) return statusFor(session, 400)
+      const back = `/p/${environment.projectId}`
       if (findResourceByNameInEnv(environment.id, body.name)) {
-        return status(409, "a resource with that name already exists here")
+        return redirect(withError(back, "resource-name-taken"), 303)
       }
       const repo = body.repo.trim()
       const branch = body.branch.trim() || "main"
-      if (!repo) return status(400, "a repository is required")
+      // The repo input is hidden and filled by the picker, so it cannot be
+      // `required` — this is the check the form cannot make.
+      if (!repo) return redirect(withError(back, "repo-required"), 303)
 
       const installationId = body.installationId?.trim() || null
       if (installationId !== null) {
         // Stored as GitHub's integer in DECIMAL STRING form, because
         // tarball.ts:139 does Number() on it and throws if the result is not
         // finite. Anything else here fails at deploy time, not now.
-        if (!/^\d+$/.test(installationId)) {
-          return status(400, "that is not a valid installation")
-        }
+        if (!/^\d+$/.test(installationId)) return statusFor(session, 400)
         // Checked against installationId (GitHub's number), never against the
         // ULID row id — they are different values and the row id would never
         // match.
         const known = listGithubInstallations().some(
           (i) => String(i.installationId) === installationId,
         )
-        if (!known) return status(400, "that installation is not connected")
+        if (!known) return statusFor(session, 400)
 
-        if (!isValidRepoRef(repo)) {
-          return status(400, "a repository must look like owner/name")
-        }
+        if (!isValidRepoRef(repo)) return statusFor(session, 400)
         if (!isValidGitRef(branch)) {
-          return status(400, "that is not a valid branch name")
+          return redirect(withError(back, "branch-invalid"), 303)
         }
       }
 
@@ -436,9 +455,9 @@ export const appRoutes = new Elysia()
     },
   )
 
-  .get("/r/:resourceId", ({ params, query, session, status }) => {
+  .get("/r/:resourceId", ({ params, query, session }) => {
     const ctx = getResourceContext(params.resourceId)
-    if (!ctx) return status(404, "resource not found")
+    if (!ctx) return statusFor(session, 404)
     const { resource, environment, project } = ctx
 
     const tab = ["overview", "logs", "env", "domains", "settings"].includes(
@@ -468,13 +487,13 @@ export const appRoutes = new Elysia()
           // Keys, origins and scopes — never values. resolveEnvKeys does not
           // decrypt, so no plaintext can reach the template.
           resolvedEnv: resolveEnvKeys(resource.id),
-          envError: query.envError ? String(query.envError) : null,
           logs: tail(resource.id, 300),
           csrf: session?.csrfToken,
         },
         layout(session, resource.name, {
           activeProjectId: project.id,
           activeEnvironmentId: environment.id,
+          errorKey: errorKeyFromQuery(query.error),
         }),
       ),
     )
@@ -482,18 +501,16 @@ export const appRoutes = new Elysia()
 
   .post(
     "/r/:resourceId/deploy",
-    ({ params, redirect, status }) => {
+    ({ params, redirect, session }) => {
       const ctx = getResourceContext(params.resourceId)
-      if (!ctx) return status(404, "resource not found")
+      if (!ctx) return statusFor(session, 404)
 
       // A git resource has no image until it has built one, and requiring it
       // here would make the very first deploy impossible. The job resolves the
       // real tag when it builds; this placeholder only labels the row until
       // then.
       const image = resourceImage(ctx.resource)
-      if (!image && ctx.resource.kind !== "git") {
-        return status(400, "this resource has no image set")
-      }
+      if (!image && ctx.resource.kind !== "git") return statusFor(session, 400)
 
       // Enqueue and redirect immediately — never await Docker in a handler.
       const deploymentId = enqueueDeploy(
@@ -508,12 +525,11 @@ export const appRoutes = new Elysia()
 
   .post(
     "/r/:resourceId/rollback",
-    ({ params, redirect, status }) => {
+    ({ params, redirect, session }) => {
       const ctx = getResourceContext(params.resourceId)
-      if (!ctx) return status(404, "resource not found")
+      if (!ctx) return statusFor(session, 404)
       const previous = ctx.resource.previousImage
-      if (!previous)
-        return status(400, "there is no previous image to roll back to")
+      if (!previous) return statusFor(session, 400)
 
       const deploymentId = enqueueDeploy(ctx.resource.id, previous, "rollback")
       return redirect(`/d/${deploymentId}`, 303)
@@ -523,9 +539,9 @@ export const appRoutes = new Elysia()
 
   .post(
     "/r/:resourceId/stop",
-    ({ params, redirect, status }) => {
+    ({ params, redirect, session }) => {
       const ctx = getResourceContext(params.resourceId)
-      if (!ctx) return status(404, "resource not found")
+      if (!ctx) return statusFor(session, 404)
       enqueue("stop", { resourceId: ctx.resource.id })
       return redirect(`/r/${ctx.resource.id}`, 303)
     },
@@ -534,14 +550,16 @@ export const appRoutes = new Elysia()
 
   .post(
     "/r/:resourceId/env",
-    ({ params, body, redirect, status }) => {
+    ({ params, body, redirect, session }) => {
       const ctx = getResourceContext(params.resourceId)
-      if (!ctx) return status(404, "resource not found")
+      if (!ctx) return statusFor(session, 404)
 
       const parsed = parseScopedEnv(body)
-      if (parsed.errors.length > 0) {
-        const msg = encodeURIComponent(parsed.errors.join("; "))
-        return redirect(`/r/${ctx.resource.id}?tab=env&envError=${msg}`, 303)
+      if (parsed.error) {
+        return redirect(
+          withError(`/r/${ctx.resource.id}?tab=env`, parsed.error),
+          303,
+        )
       }
       setEnvVars(ctx.resource.id, parsed.vars)
       return redirect(`/r/${ctx.resource.id}?tab=env`, 303)
@@ -551,13 +569,15 @@ export const appRoutes = new Elysia()
 
   .post(
     "/p/:projectId/env",
-    ({ params, body, redirect, status }) => {
-      if (!getProject(params.projectId)) return status(404, "project not found")
+    ({ params, body, redirect, session }) => {
+      if (!getProject(params.projectId)) return statusFor(session, 404)
 
       const parsed = parseScopedEnv(body)
-      if (parsed.errors.length > 0) {
-        const msg = encodeURIComponent(parsed.errors.join("; "))
-        return redirect(`/p/${params.projectId}?tab=env&envError=${msg}`, 303)
+      if (parsed.error) {
+        return redirect(
+          withError(`/p/${params.projectId}?tab=env`, parsed.error),
+          303,
+        )
       }
       setSharedEnvVars({ projectId: params.projectId }, parsed.vars)
       return redirect(`/p/${params.projectId}?tab=env`, 303)
@@ -571,19 +591,17 @@ export const appRoutes = new Elysia()
   // nothing to gain.
   .post(
     "/e/:environmentId/env",
-    ({ params, body, redirect, status }) => {
+    ({ params, body, redirect, session }) => {
       const environment = getEnvironment(params.environmentId)
-      if (!environment) return status(404, "environment not found")
+      if (!environment) return statusFor(session, 404)
 
       const parsed = parseScopedEnv(body)
       // Back to the project page, which is where these are edited — /e/:id has
-      // no page of its own. The fragment matches the per-environment card so
-      // the user lands where they were.
+      // no page of its own. On success the fragment matches the
+      // per-environment card so the user lands where they were; an error
+      // carries none, because the notice is at the top of the page.
       const back = `/p/${environment.projectId}?tab=env`
-      if (parsed.errors.length > 0) {
-        const msg = encodeURIComponent(parsed.errors.join("; "))
-        return redirect(`${back}&envError=${msg}#env-${environment.id}`, 303)
-      }
+      if (parsed.error) return redirect(withError(back, parsed.error), 303)
       setSharedEnvVars({ environmentId: environment.id }, parsed.vars)
       return redirect(`${back}#env-${environment.id}`, 303)
     },
@@ -592,21 +610,23 @@ export const appRoutes = new Elysia()
 
   .post(
     "/r/:resourceId/domains",
-    ({ params, body, redirect, status }) => {
+    ({ params, body, redirect, session }) => {
       const ctx = getResourceContext(params.resourceId)
-      if (!ctx) return status(404, "resource not found")
+      if (!ctx) return statusFor(session, 404)
 
+      const back = `/r/${ctx.resource.id}?tab=domains`
       const host = body.host.trim().toLowerCase()
       if (!isValidHostname(host)) {
-        return status(400, "that does not look like a hostname")
+        return redirect(withError(back, "domain-invalid"), 303)
       }
-      if (domainExists(host))
-        return status(409, "that domain is already in use")
+      if (domainExists(host)) {
+        return redirect(withError(back, "domain-taken"), 303)
+      }
       // The reverse of the dashboard form's check. Resource routes sit ahead of
       // the dashboard's, so this would hand the dashboard's name — and every
       // login typed through it — to the app (N-3). routeHosts filters it too.
       if (host === getDashboardHost()) {
-        return status(409, "that is the dashboard's own address")
+        return redirect(withError(back, "domain-dashboard"), 303)
       }
 
       addDomain(ctx.resource.id, host, false)
@@ -630,9 +650,9 @@ export const appRoutes = new Elysia()
 
   .post(
     "/r/:resourceId/settings",
-    ({ params, body, redirect, status }) => {
+    ({ params, body, redirect, session }) => {
       const ctx = getResourceContext(params.resourceId)
-      if (!ctx) return status(404, "resource not found")
+      if (!ctx) return statusFor(session, 404)
 
       // The image field belongs to an image resource. A git resource builds its
       // own, so accepting one here would overwrite the repository spec and stop
@@ -640,7 +660,10 @@ export const appRoutes = new Elysia()
       // into a useful message rather than a 500.
       if (ctx.resource.kind === "image") {
         if (!isValidImageRef(body.image)) {
-          return status(400, "that does not look like a valid image reference")
+          return redirect(
+            withError(`/r/${ctx.resource.id}?tab=settings`, "image-invalid"),
+            303,
+          )
         }
         setResourceImage(ctx.resource.id, body.image)
       }
@@ -675,12 +698,10 @@ export const appRoutes = new Elysia()
    */
   .post(
     "/r/:resourceId/auto-deploy",
-    ({ params, body, redirect, status }) => {
+    ({ params, body, redirect, session }) => {
       const ctx = getResourceContext(params.resourceId)
-      if (!ctx) return status(404, "resource not found")
-      if (ctx.resource.kind !== "git") {
-        return status(400, "only a repository resource deploys on push")
-      }
+      if (!ctx) return statusFor(session, 404)
+      if (ctx.resource.kind !== "git") return statusFor(session, 400)
       setAutoDeploy(ctx.resource.id, body.enabled === "on")
       return redirect(`/r/${ctx.resource.id}?tab=settings`, 303)
     },
@@ -694,9 +715,9 @@ export const appRoutes = new Elysia()
 
   .post(
     "/r/:resourceId/delete",
-    ({ params, redirect, status }) => {
+    ({ params, redirect, session }) => {
       const ctx = getResourceContext(params.resourceId)
-      if (!ctx) return status(404, "resource not found")
+      if (!ctx) return statusFor(session, 404)
       const projectId = ctx.project.id
       // Cleanup ordering lives in the job: container, route, volumes, then row.
       enqueue("remove", { resourceId: ctx.resource.id, deleteRow: true })
@@ -705,12 +726,12 @@ export const appRoutes = new Elysia()
     { body: t.Object({ csrf: t.String() }) },
   )
 
-  .get("/d/:deploymentId", ({ params, session, status }) => {
+  .get("/d/:deploymentId", ({ params, session }) => {
     const deployment = getDeployment(params.deploymentId)
     // The page has no context of its own: the breadcrumb and the sidebar
     // highlight both come from the resource it belongs to.
     const ctx = deployment && getResourceContext(deployment.resourceId)
-    if (!deployment || !ctx) return status(404, "deployment not found")
+    if (!deployment || !ctx) return statusFor(session, 404)
     return html(
       renderPage(
         "deployment",
@@ -766,7 +787,10 @@ export const appRoutes = new Elysia()
         // The layout renders the flash, above the page head. Settings is the
         // first route to hand it one; the page no longer renders its own.
         {
-          ...layout(session, "Settings", { activeSettings: true }),
+          ...layout(session, "Settings", {
+            activeSettings: true,
+            errorKey: errorKeyFromQuery(query.error),
+          }),
           flash: view.flash,
         },
       ),
@@ -868,7 +892,7 @@ export const appRoutes = new Elysia()
    */
   .post(
     "/settings/github/connect",
-    ({ status }) => {
+    ({ redirect }) => {
       // The nonce lives in `settings`, not a module-level Map: one long-running
       // process is an invariant, but a restart mid-flow must not strand the
       // user at a callback that can no longer be validated.
@@ -884,13 +908,15 @@ export const appRoutes = new Elysia()
       try {
         manifest = JSON.stringify(buildManifest(getPublicUrl(), name))
       } catch (err) {
-        // The only expected failure is having no dashboard domain yet, whose
-        // message is written to be read by a user.
+        // The only expected failure is having no dashboard domain yet. Anything
+        // else is a bug, and goes to handleError as one rather than being
+        // reported to the user as a missing domain.
+        if (!(err instanceof ManifestError)) throw err
         logger.warn(
-          { err: (err as Error).message },
+          { err: err.message },
           "GitHub App manifest could not be built",
         )
-        return status(400, (err as Error).message)
+        return redirect(withError("/settings", "github-no-domain"), 303)
       }
 
       const action = `https://github.com/settings/apps/new?state=${encodeURIComponent(state)}`
@@ -911,21 +937,21 @@ export const appRoutes = new Elysia()
    * This is a GET, so it carries no CSRF token — the `state` nonce is what
    * proves the callback belongs to a flow this instance started.
    */
-  .get("/settings/github/callback", async ({ query, redirect, status }) => {
+  .get("/settings/github/callback", async ({ query, redirect }) => {
     const expected = getSetting(SETTING_GITHUB_MANIFEST_STATE)
     if (!expected) {
-      return status(400, "there is no GitHub connection in progress")
+      return redirect(withError("/settings", "github-no-flow"), 303)
     }
     if (!safeEqual(expected, String(query.state ?? ""))) {
       logger.warn({}, "GitHub callback state did not match")
-      return status(400, "that GitHub callback did not match this session")
+      return redirect(withError("/settings", "github-state-mismatch"), 303)
     }
     // Consumed BEFORE anything else can fail, so a replayed callback cannot
     // re-enter the exchange with the same nonce.
     deleteSetting(SETTING_GITHUB_MANIFEST_STATE)
 
     const code = String(query.code ?? "")
-    if (!code) return status(400, "GitHub did not return a registration code")
+    if (!code) return redirect(withError("/settings", "github-no-code"), 303)
 
     try {
       // NEVER log the result or any field of it. client_secret and
@@ -994,9 +1020,9 @@ export const appRoutes = new Elysia()
    */
   .post(
     "/settings/github/disconnect",
-    ({ body, redirect, status }) => {
+    ({ body, redirect }) => {
       if (body.confirm !== "disconnect") {
-        return status(400, "type disconnect to confirm")
+        return redirect(withError("/settings", "github-confirm"), 303)
       }
       const app = getGithubApp()
       if (!app)
@@ -1090,39 +1116,6 @@ async function gitPicker(): Promise<GitPicker> {
   )
 
   return { connected: true, installations: resolved }
-}
-
-interface LayoutOptions {
-  activeProjectId?: string
-  activeEnvironmentId?: string
-  activeSettings?: boolean
-  wide?: boolean
-}
-
-function layout(
-  session: SessionUser | null,
-  title: string,
-  options: LayoutOptions = {},
-): LayoutData {
-  return {
-    title,
-    user: session ? { email: session.email } : null,
-    csrf: session?.csrfToken ?? "",
-    // Built per request and never retained — see navTree()'s comment. Guarded
-    // on the session because the layout only draws the sidebar for a signed-in
-    // user, so an anonymous render would query for nothing.
-    nav: session ? navTree() : [],
-    activeProjectId: options.activeProjectId,
-    activeEnvironmentId: options.activeEnvironmentId,
-    activeSettings: options.activeSettings,
-    wide: options.wide,
-    // Read fresh on every render and never stored: the sidebar instrument is a
-    // spot reading, and a cached one would report a number that is not true.
-    // MiB, the unit scripts/measure-rss.ts gates on, so the two never disagree.
-    rssMb: session
-      ? Math.round(process.memoryUsage.rss() / 1048576)
-      : undefined,
-  }
 }
 
 function formatDuration(

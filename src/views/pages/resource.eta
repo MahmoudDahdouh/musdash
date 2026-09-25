@@ -215,12 +215,6 @@
     <code>$</code>. Values are encrypted at rest and never shown again after
     saving.
   </p>
-  <% if (it.envError) { %>
-  <div class="notice notice-error" role="alert">
-    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
-    <div><%= it.envError %></div>
-  </div>
-  <% } %>
   <form
     method="post"
     action="/r/<%= it.resource.id %>/env"
@@ -294,13 +288,16 @@
     <div class="field">
       <label class="label" for="res-domain">Custom domain</label>
       <div class="row gap">
-        <input id="res-domain" name="host" placeholder="app.example.com" required autocapitalize="none" spellcheck="false" aria-describedby="res-domain-hint" />
+        <%/* HOSTNAME_RE (src/caddy/client.ts) plus its 253 limit, with capitals
+             allowed because the server lowercases before checking. */%>
+        <input id="res-domain" name="host" placeholder="app.example.com" required pattern="(?=.{1,253}$)[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)+" autocapitalize="none" spellcheck="false" aria-describedby="res-domain-hint" />
         <button class="btn" type="submit">
           <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
           Add domain
         </button>
       </div>
       <p class="hint" id="res-domain-hint">An A or AAAA record for it must point at this server.</p>
+      <p class="error">Enter a bare hostname such as app.example.com, without https:// or a path.</p>
     </div>
   </form>
 </div>
