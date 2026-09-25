@@ -2800,3 +2800,41 @@ the unseen lines for `skip` of 0, 2, 5, 6, `abc`, `-3`, `1.5`, empty and
 huge values. `bun run ci` passes with `app.js` at 14.9 of 16 KB; `bun test`
 185 pass. Not yet verified in a browser: the reloads themselves, and a
 finished deployment's page loading exactly once.
+
+## One Bun version, everywhere (T-2, 2026-09-25)
+
+CI installed `bun-version: latest`, and `install.sh` installed whatever
+`bun.sh/install` served that day, while development ran Bun 1.4.2. So the
+binary the RAM gate measured, the binary a user's host compiled, and the one
+tested locally could each come from a different Bun — and CLAUDE.md's "pin to
+installed versions" had nothing to pin against. A Bun release that raised
+idle RSS would have reached users' hosts without the gate ever seeing it.
+
+### D41 — `.bun-version` is the pin; CI and the installer both read it
+
+`.bun-version` at the repository root holds the one version (1.4.2). Both CI
+jobs install it with setup-bun's `bun-version-file`. The installer now
+installs Bun after it fetches the source, reads the checkout's
+`.bun-version`, and installs that exact release (`bun.sh/install` with
+`bun-v<version>`) when `$BUN_INSTALL/bin/bun` (`/usr/local/bin/bun` by
+default, where the installer always put it) is missing or reports a different
+version; a re-run with the pin unchanged is a no-op. A Bun elsewhere on `PATH`
+is no longer used for the build. The file must hold a bare version such as
+`1.4.2`, not a range or `latest`. Moving to a new Bun is
+therefore one commit that changes `.bun-version`: CI tests and measures it,
+and every host picks it up on its next upgrade. Without the file (an old
+checkout via `MUSDASH_SRC`), an existing Bun at that path is kept and a
+missing one is installed at latest. Follow-up: the `@types/bun` and
+`bun-types` dev dependencies still float separately from the runtime pin.
+
+Verified on the 1GB host with the installer's Bun step run on its own against
+a scratch `BUN_INSTALL`: a fresh install gets 1.4.2, a re-run installs
+nothing, moving the pin to 1.4.1 installs 1.4.1, and removing the file keeps
+the installed Bun. `shellcheck -S warning` is clean. The CI side runs on the
+next push.
+
+The same pass fixed T-1: `.prettierignore`'s bare `build` also matched
+`src/build/`, so Prettier had never checked those files, and five had
+drifted. The output-directory patterns are now anchored to the root
+(`/build`, `/dist`, `/out`, `/coverage`, `/.next`), and the five files are
+formatted.

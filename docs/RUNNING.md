@@ -114,8 +114,11 @@ WSL distro without systemd this is needed after every Windows reboot.
 
 ### A3. Install Bun
 
+Install the version in `.bun-version` (1.4.2) — the one CI tests and the RAM
+gate measures (D41):
+
 ```bash
-curl -fsSL https://bun.sh/install | bash
+curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.2"
 exec $SHELL -l
 bun --version
 ```

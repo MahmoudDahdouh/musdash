@@ -219,20 +219,7 @@ docker volume create musdash-caddy-data >/dev/null
 docker volume create musdash-caddy-config >/dev/null
 log "Caddy volumes ready; musdash starts Caddy on first boot"
 
-# -------------------------------------------------------------- toolchain
-# Bun compiles the binary. Installed to /usr/local so root and the service user
-# see the same one; the upstream script honours BUN_INSTALL for exactly this.
-if ! command -v bun >/dev/null 2>&1; then
-  log "Installing Bun"
-  command -v unzip >/dev/null 2>&1 || {
-    apt-get update -qq && apt-get install -y -qq unzip >/dev/null
-  }
-  curl -fsSL https://bun.sh/install | BUN_INSTALL="$BUN_INSTALL" bash >/dev/null
-fi
-BUN_BIN="$(command -v bun || echo "$BUN_INSTALL/bin/bun")"
-[ -x "$BUN_BIN" ] || die "bun was installed but is not executable at $BUN_BIN"
-log "Bun ready: $($BUN_BIN --version)"
-
+# -------------------------------------------------------------------- git
 command -v git >/dev/null 2>&1 || {
   log "Installing git"
   apt-get update -qq && apt-get install -y -qq git >/dev/null
@@ -253,6 +240,26 @@ else
   rm -rf "$SRC_DIR"
   git clone --depth=1 --branch "$MUSDASH_REF" "$MUSDASH_REPO" "$SRC_DIR" 2>/dev/null     || die "could not clone $MUSDASH_REPO. If it is private, clone it yourself and re-run this script from inside the checkout."
 fi
+
+# -------------------------------------------------------------------- Bun
+# Bun compiles the binary. Installed to /usr/local so root and the service user
+# see the same one; the upstream script honours BUN_INSTALL for exactly this.
+# The version is the checkout's .bun-version — the one CI tests with and the RAM
+# gate measures (T-2) — so the binary built here is the binary that was
+# measured, and an upgrade that moves the pin moves this host's Bun with it.
+BUN_VERSION=$({ tr -d '[:space:]' <"$SRC_DIR/.bun-version"; } 2>/dev/null || true)
+BUN_BIN="$BUN_INSTALL/bin/bun"
+if [ ! -x "$BUN_BIN" ] ||
+  { [ -n "$BUN_VERSION" ] && [ "$("$BUN_BIN" --version 2>/dev/null)" != "$BUN_VERSION" ]; }; then
+  log "Installing Bun ${BUN_VERSION:-(latest)}"
+  command -v unzip >/dev/null 2>&1 || {
+    apt-get update -qq && apt-get install -y -qq unzip >/dev/null
+  }
+  curl -fsSL https://bun.sh/install |
+    BUN_INSTALL="$BUN_INSTALL" bash -s ${BUN_VERSION:+"bun-v$BUN_VERSION"} >/dev/null
+fi
+[ -x "$BUN_BIN" ] || die "bun was installed but is not executable at $BUN_BIN"
+log "Bun ready: $("$BUN_BIN" --version)"
 
 # ----------------------------------------------------------------- binary
 # Compiled here rather than shipped as a release artifact: it needs no published
