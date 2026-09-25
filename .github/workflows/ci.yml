@@ -29,4 +29,7 @@ jobs:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - name: Build, boot, idle 60s, measure RSS
-        run: bun run gate:rss
+        # --with-docker keeps the real socket, so the idle includes the
+        # sidecar bootstrap and the reconciler's Docker calls (D42). Safe on
+        # a runner: it has no musdash containers to remove.
+        run: bun run build && bun run rss -- --with-docker

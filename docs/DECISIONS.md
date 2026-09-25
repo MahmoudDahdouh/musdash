@@ -265,7 +265,8 @@ Fails open on a malformed payload — a broken guard must not block all work.
 `bun run gate:rss` builds the binary, boots it, idles, measures RSS, and exits
 non-zero above 100MB. `scripts/measure-rss.ts` replaces the `ps`/`pgrep`
 one-liner sketched in `PHASES.md`, which does not run on Windows and measures
-whatever process it happens to find rather than booting one.
+whatever process it happens to find rather than booting one. Since D42 the
+booted copy is isolated from the caller's environment.
 
 **Baseline: 55.7MB idle** — hello-world Elysia, compiled with
 `--compile --minify --sourcemap`, measured 2026-08-23. That leaves roughly 44MB
@@ -2838,3 +2839,36 @@ The same pass fixed T-1: `.prettierignore`'s bare `build` also matched
 drifted. The output-directory patterns are now anchored to the root
 (`/build`, `/dist`, `/out`, `/coverage`, `/.next`), and the five files are
 formatted.
+
+## The RAM gate runs isolated (R-3, 2026-09-26)
+
+`scripts/measure-rss.ts` spawned the binary with the caller's environment:
+port 8000, `./data` and the real Docker socket. On a host running musdash that
+is a second instance with an empty database, and its reconciler removes every
+`musdash.*` container as an orphan — which happened on the 1 GB host when the
+binary was started by hand, and the live reconciler redeployed both apps
+within ~25 s. A separate data directory alone would not help: the socket is
+what does the damage.
+
+### D42 — the gate drops `MUSDASH_*`, and Docker is opt-in and guarded
+
+The child gets the caller's environment minus every `MUSDASH_*` variable,
+plus `NODE_ENV=production`, a free port, a fresh temporary data directory
+(removed afterwards, also on Ctrl-C or a cancelled job, with SIGKILL if SIGTERM
+is ignored for 5 s) and a Docker socket path that does not exist. That run is
+safe beside a live service, and leaves the sidecar bootstrap and the
+reconciler's Docker calls out of the idle figure: 52.9 MB on the 1 GB host
+next to a live musdash at 63 MB.
+
+CI must keep measuring the conservative number, so it passes
+`--with-docker`: the real default socket, with the worker pulling and starting
+Caddy and BuildKit during the idle, as before. The flag first lists
+containers labelled `musdash.managed` with the docker CLI and refuses when any
+exist or the list fails, so it cannot be the host it would damage. The
+closing line now quotes the measured sidecar figures (Caddy ~50–70 MB,
+BuildKit idle ~66 MB) that CLAUDE.md does.
+
+Verified on the 1 GB host beside the live service: a 5 s and a 60 s run
+passed, the same seven containers ran before and after, no `./data` or
+temporary directory was left, and `--with-docker` refused. The CI side runs on
+the next push.

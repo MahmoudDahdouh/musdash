@@ -581,7 +581,12 @@ On the 1 GB test host the whole idle stack — the OS, dockerd and containerd
 swapped out do not count as RSS, so RSS alone can read lower than the process
 really is.
 
-Verify the control plane yourself with `bun run gate:rss`.
+Verify the control plane yourself with `bun run gate:rss`. It boots a separate
+copy on its own port and temporary data directory, with no Docker socket, so
+it is safe beside the live service; it reads about 10 MB below the live
+figure above (52.9 MB on the same host), because the live process also talks
+to Docker and has served sign-ins and deploys. `--with-docker` is for CI and
+refuses to run where musdash containers exist.
 
 ---
 

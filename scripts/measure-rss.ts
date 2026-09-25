@@ -26,10 +26,28 @@
  * which the kernel can reclaim — and only the rest is musdash's own heap. The
  * gate still judges the total, which is the conservative number.
  *
+ * The binary runs isolated: every inherited MUSDASH_* variable is dropped, and
+ * it gets a free port and a fresh temporary data directory. A second musdash
+ * with an empty database and the real Docker socket treats every app container
+ * on the host as an orphan and removes it (R-3), so by default it also gets a
+ * socket path that does not exist and the gate is safe on a live server. That
+ * idle figure leaves out Docker work: the sidecar bootstrap jobs and the
+ * reconciler's calls fail fast instead.
+ *
+ * CI passes --with-docker, so the gated figure keeps the real socket: the
+ * worker pulls and starts Caddy and BuildKit and the reconciler talks to Docker
+ * during the idle, the conservative number. It refuses to run where any
+ * musdash-managed container exists, which is exactly the host it would damage.
+ *
  *   bun run gate:rss                 build, then measure
  *   bun run rss -- --idle 5          shorter idle while iterating
  *   bun run rss -- --ceiling 120     temporary ceiling (must be justified)
+ *   bun run rss -- --with-docker     real Docker socket; refused beside musdash
  */
+
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 const CEILING_MB = 100
 const IDLE_SEC = 60
@@ -43,12 +61,44 @@ function arg(flag: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback
 }
 
+/** A port nothing is listening on right now, chosen by the kernel. */
+function freePort(): number {
+  const server = Bun.listen({
+    // The address the binary binds (src/config.ts), so a port another
+    // interface already holds is not handed out.
+    hostname: "0.0.0.0",
+    port: 0,
+    socket: { data() {} },
+  })
+  const { port } = server
+  server.stop(true)
+  return port
+}
+
 const ceiling = arg("--ceiling", CEILING_MB)
 const idle = arg("--idle", IDLE_SEC)
+const withDocker = process.argv.includes("--with-docker")
 
 if (!(await Bun.file(BINARY).exists())) {
   console.error(`No binary at ${BINARY}. Run \`bun run build\` first.`)
   process.exit(1)
+}
+
+if (withDocker) {
+  // Asks the same daemon the binary will reach through its default socket.
+  const ps = Bun.spawn(
+    ["docker", "ps", "-aq", "--filter", "label=musdash.managed"],
+    { stdout: "pipe", stderr: "ignore" },
+  )
+  const ids = (await new Response(ps.stdout).text()).trim()
+  if ((await ps.exited) !== 0 || ids !== "") {
+    console.error(
+      ids === ""
+        ? "--with-docker: could not list containers with the docker CLI."
+        : "--with-docker: this host runs musdash containers, which the gate's empty database would remove as orphans. Run without --with-docker.",
+    )
+    process.exit(1)
+  }
 }
 
 /** Resident set size in MB for a live pid, or null if it cannot be read. */
@@ -108,42 +158,80 @@ async function rssSplitMb(
 
 console.log(`Booting ${BINARY}, idling ${idle}s, ceiling ${ceiling}MB...`)
 
-const proc = Bun.spawn([BINARY], {
-  stdout: "ignore",
-  stderr: "pipe",
-  env: { ...process.env, NODE_ENV: "production" },
+const dataDir = await mkdtemp(join(tmpdir(), "musdash-rss-"))
+const env: Record<string, string | undefined> = {}
+for (const [key, value] of Object.entries(process.env)) {
+  if (!key.startsWith("MUSDASH_")) env[key] = value
+}
+Object.assign(env, {
+  NODE_ENV: "production",
+  MUSDASH_DATA_DIR: dataDir,
+  ...(withDocker
+    ? {}
+    : { MUSDASH_DOCKER_SOCKET: join(dataDir, "no-docker.sock") }),
 })
 
-let failed = false
-try {
+// stdin and stdout ignored, stderr piped: what the spawn below passes.
+type Child = Bun.Subprocess<"ignore", "ignore", "pipe">
+let proc: Child | undefined
+
+/** Stops the binary and removes its data directory. Never throws. */
+async function cleanUp(): Promise<void> {
+  if (proc !== undefined && proc.exitCode === null) {
+    proc.kill()
+    // Wait for the exit before deleting the directory the process writes to.
+    await Promise.race([proc.exited, Bun.sleep(5000)])
+    if (proc.exitCode === null) {
+      proc.kill("SIGKILL")
+      await Promise.race([proc.exited, Bun.sleep(2000)])
+    }
+  }
+  await rm(dataDir, { recursive: true, force: true }).catch((err: unknown) => {
+    console.warn(`Could not remove ${dataDir}: ${String(err)}`)
+  })
+}
+
+// Ctrl-C or a cancelled CI job would otherwise skip the finally below.
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    void cleanUp().then(() => process.exit(1))
+  })
+}
+
+/**
+ * Idles the running binary and judges its RSS. Returns instead of calling
+ * process.exit, so the caller's finally still kills it and removes its data
+ * directory.
+ */
+async function measure(child: Child): Promise<boolean> {
   // Let the process finish starting before the clock starts.
   await Bun.sleep(2000)
-  if (proc.exitCode !== null) {
-    const err = (await new Response(proc.stderr).text()).trim()
-    console.error(`Binary exited immediately (code ${proc.exitCode}).`)
+  if (child.exitCode !== null) {
+    const err = (await new Response(child.stderr).text()).trim()
+    console.error(`Binary exited immediately (code ${child.exitCode}).`)
     if (err) console.error(err)
-    process.exit(1)
+    return false
   }
 
   await Bun.sleep(idle * 1000)
 
-  const mb = await rssMb(proc.pid)
+  const mb = await rssMb(child.pid)
   if (mb === null) {
     console.error(
       "Could not read RSS — process gone, or ps/powershell unavailable.",
     )
-    process.exit(1)
+    return false
   }
 
   const rounded = mb.toFixed(1)
-  const peak = await peakRssMb(proc.pid)
+  const peak = await peakRssMb(child.pid)
   if (peak !== null) {
     console.log(
       `INFO  peak RSS since start ${peak.toFixed(1)}MB — boot and idle only, not gated. ` +
         'Sign-in and deploys raise it; every deploy logs the lifetime peak as peakRssMb ("deploy finished").',
     )
   }
-  const split = await rssSplitMb(proc.pid)
+  const split = await rssSplitMb(child.pid)
   if (split !== null) {
     console.log(
       `INFO  idle RSS is ${split.anon.toFixed(1)}MB anonymous + ${split.file.toFixed(1)}MB file-backed ` +
@@ -157,18 +245,30 @@ try {
     console.error(
       "The ceiling does not move to accommodate a new component without an explicit, justified decision recorded in docs/DECISIONS.md.",
     )
-    failed = true
-  } else {
-    console.log(`PASS  idle RSS ${rounded}MB (ceiling ${ceiling}MB).`)
-    console.log(
-      // BuildKit's figure is measured, not the ~30MB estimated in PHASES §30:
-      // moby/buildkit v0.27.0 idles at 12MB with a warm cache volume. It grows
-      // during a build, which is transient and outside this idle number.
-      "Sidecars are extra and reported separately: Caddy ~50MB, BuildKit idle ~12MB.",
-    )
+    return false
   }
-} finally {
-  proc.kill()
+  console.log(`PASS  idle RSS ${rounded}MB (ceiling ${ceiling}MB).`)
+  console.log(
+    // Measured on the 1 GB RamNode host (docs/RUNNING.md, host size), the
+    // same figures CLAUDE.md quotes. BuildKit grows during a build, up to
+    // its cap, which is transient and outside this idle number.
+    "Sidecars are extra and reported separately: Caddy ~50–70MB, BuildKit idle ~66MB.",
+  )
+  return true
 }
 
-process.exit(failed ? 1 : 0)
+let passed = false
+try {
+  env.MUSDASH_PORT = String(freePort())
+  proc = Bun.spawn([BINARY], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "pipe",
+    env,
+  })
+  passed = await measure(proc)
+} finally {
+  await cleanUp()
+}
+
+process.exit(passed ? 0 : 1)

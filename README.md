@@ -15,7 +15,8 @@ apps in Docker containers, each reachable at an HTTPS URL.
 Measured on Ubuntu 24.04 (kernel 5.15, x86_64) with Bun 1.4.0: compiled with
 `bun build --compile --minify`, booted, idled 60 seconds, RSS read from
 `/proc`. Reproduce it yourself with `bun run gate:rss` — the build fails if the
-number exceeds 100 MB.
+number exceeds 100 MB. The gate boots its own isolated copy with no Docker, so
+it is safe to run on a live server; CI runs it with `--with-docker`.
 
 **Sidecars are extra and reported honestly**, because you will actually be
 running them: Caddy adds roughly 50–70 MB, and BuildKit about 66 MB. Every app
