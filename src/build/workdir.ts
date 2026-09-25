@@ -23,7 +23,9 @@ import { logger } from "../log.ts"
  */
 export function buildDir(deploymentId: string): string {
   if (!/^[0-9A-Za-z]{1,64}$/.test(deploymentId)) {
-    throw new Error(`unsafe deployment id for a build directory: ${deploymentId}`)
+    throw new Error(
+      `unsafe deployment id for a build directory: ${deploymentId}`,
+    )
   }
   return resolve(config.buildsDir, deploymentId)
 }

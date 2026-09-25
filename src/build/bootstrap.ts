@@ -215,7 +215,10 @@ export async function ensureBuildkit(): Promise<void> {
     }
 
     if (!(await docker.imageExists(BUILDKIT_IMAGE))) {
-      logger.info({ image: BUILDKIT_IMAGE }, "buildkit: pulling the build image")
+      logger.info(
+        { image: BUILDKIT_IMAGE },
+        "buildkit: pulling the build image",
+      )
       const pullDeadline = Date.now() + PULL_TIMEOUT_MS
       await docker.pullImage(BUILDKIT_IMAGE, () => {
         // Throwing from the progress callback is the only cancellation point

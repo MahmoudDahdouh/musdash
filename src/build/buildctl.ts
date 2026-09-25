@@ -65,4 +65,3 @@ export async function buildWithDockerfile(ctx: BuildContext): Promise<void> {
   ctx.onLog(`Loading image ${ctx.tag} into Docker`)
   await docker.loadImage(tar.stream())
 }
-

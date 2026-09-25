@@ -114,7 +114,9 @@ function walk(
 ): { bytes: number; unreadable: boolean } {
   let total = 0
   let unreadable = false
-  const stack: Array<{ path: string; depth: number }> = [{ path: dir, depth: 0 }]
+  const stack: Array<{ path: string; depth: number }> = [
+    { path: dir, depth: 0 },
+  ]
 
   while (stack.length > 0) {
     const { path, depth } = stack.pop() as { path: string; depth: number }

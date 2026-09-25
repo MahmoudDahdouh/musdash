@@ -94,7 +94,11 @@ describe("sweepBuildCache", () => {
     makeCacheDir("aaaaaaaa", 1024, Date.now())
     makeCacheDir("bbbbbbbb", 1024, Date.now() - 60_000)
 
-    const result = sweepBuildCache(root, new Set(["aaaaaaaa", "bbbbbbbb"]), CAP_GB)
+    const result = sweepBuildCache(
+      root,
+      new Set(["aaaaaaaa", "bbbbbbbb"]),
+      CAP_GB,
+    )
 
     expect(result.evicted).toBe(0)
     expect(remaining()).toEqual(["aaaaaaaa", "bbbbbbbb"])
