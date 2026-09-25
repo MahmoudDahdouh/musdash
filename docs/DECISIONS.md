@@ -2942,3 +2942,46 @@ one already queued, so an image that fails every time queues a deploy per tick.
 Verified on the 1 GB host: the runaway build failed once (`attempts 1` of 1,
 `retrying: false`), the deployment stayed failed, and the app's previous
 container kept serving.
+
+## The Variables boxes show what is saved (R-5, 2026-09-26)
+
+Saved values were never shown again, so the three boxes on a resource's
+Variables tab, the project's and each environment card's were always empty
+even when variables existed — and saving replaces all three boxes of that
+level, so adding one variable deleted every other. The confirmation dialog said
+so; the empty boxes invited exactly that mistake.
+
+### D45 — each level's own boxes are prefilled with its saved text
+
+On the env tab only, the page decrypts that level's own rows (`getEnvText`,
+`getSharedEnvText`), groups them by scope in the order they were saved, and
+fills each box with `KEY=value` text from `formatEnvText`. Saving is then a true
+edit of what is shown, and the replace semantics stand as the deliberate
+reading of PHASES.md's "Upsert": the form edits the whole set. This reverses
+the UI plan's "values never reach the page" for the edit boxes only; the
+Resolved environment table and the key chips stay names-only, and no other
+tab decrypts anything.
+
+The rule in CLAUDE.md is that decrypted values are never logged; showing them
+to the one signed-in user is a different exposure, the one every PaaS makes
+on its variables page. What changes is that script running in an
+authenticated page could now read them, where before it could only overwrite
+them; Eta's autoescape and the no-attacker-text-in-JS rule are the defence.
+Encryption at rest, which protects the database file and its backups, is
+unchanged. To keep the values out of caches and stale pages, the two env-tab
+responses send `Cache-Control: no-store`, the three forms carry
+`autocomplete="off"`, and a page restored from the back/forward cache with an
+env form reloads, so Back after a save cannot show and re-post the old
+values.
+
+`formatEnvText` now escapes only what the parser reverses (`\\`, `\"`, `\n`,
+`\r`, `\t`) and writes everything else raw inside double quotes; the
+`JSON.stringify` it used wrote `\u001b`-style escapes that the parser keeps
+literally, so a prefilled save would have changed such a value. Comments in
+the boxes are not kept (the parser drops them), and a NUL in a value, which
+only a hand-built request can store, becomes U+FFFD in a browser.
+
+Verified with an isolated local instance over HTTP: the boxes are prefilled on
+all three forms, an unchanged save keeps every variable, adding one keeps the
+rest, `</textarea><b>x`, `${A}` and `$$` survive, `no-store` appears only on the
+env tab, and no value reaches the log.

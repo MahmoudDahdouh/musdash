@@ -1,6 +1,7 @@
 import { and, desc, eq, sql } from "drizzle-orm"
 import { decrypt, encrypt } from "../crypto.ts"
 import { interpolate } from "../env/interpolate.ts"
+import { formatEnvText } from "../env/parse.ts"
 import type { ResourceState } from "../events.ts"
 import { nowIso, ulid } from "../ids.ts"
 import { resourceState, worstState } from "../resource-state.ts"
@@ -640,6 +641,84 @@ export function listSharedEnvKeys(
     .where(ownerWhere(owner))
     .orderBy(sharedEnvVars.key)
     .all()
+}
+
+/** One level's own variables as the text of its three edit boxes. */
+export interface EnvText {
+  runtime: string
+  build: string
+  both: string
+}
+
+/**
+ * Groups one level's rows by scope and formats each group for its textarea.
+ *
+ * An unrecognised scope (the column has no CHECK) lands in "both", matching
+ * resolveEnvVars, which delivers anything that is neither 'runtime' nor
+ * 'build' to both. Dropping it instead would delete it on the next save.
+ */
+function formatLevel(
+  rows: Array<{ key: string; valueEncrypted: Buffer; scope: EnvScope }>,
+): EnvText {
+  const groups: Record<keyof EnvText, [string, string][]> = {
+    runtime: [],
+    build: [],
+    both: [],
+  }
+  for (const row of rows) {
+    const group =
+      row.scope === "runtime" || row.scope === "build" ? row.scope : "both"
+    groups[group].push([row.key, decrypt(row.valueEncrypted)])
+  }
+  return {
+    runtime: formatEnvText(Object.fromEntries(groups.runtime)),
+    build: formatEnvText(Object.fromEntries(groups.build)),
+    both: formatEnvText(Object.fromEntries(groups.both)),
+  }
+}
+
+/**
+ * A resource's OWN variables, decrypted and formatted for its Variables tab.
+ * Returns plaintext. Never log the return value.
+ *
+ * Ordered by rowid: setEnvVars inserts the whole set in one transaction in the
+ * order it was typed, so rowid is that order. The ULID id is not — two rows
+ * created in the same millisecond sort randomly.
+ */
+export function getEnvText(resourceId: string): EnvText {
+  return formatLevel(
+    orm
+      .select({
+        key: envVars.key,
+        valueEncrypted: envVars.valueEncrypted,
+        scope: envVars.scope,
+      })
+      .from(envVars)
+      .where(eq(envVars.resourceId, resourceId))
+      .orderBy(sql`rowid`)
+      .all(),
+  )
+}
+
+/**
+ * A project's or environment's OWN shared variables, decrypted and formatted
+ * for its edit boxes. Returns plaintext. Never log the return value.
+ *
+ * Ordered by rowid for the same reason as getEnvText.
+ */
+export function getSharedEnvText(owner: SharedEnvOwner): EnvText {
+  return formatLevel(
+    orm
+      .select({
+        key: sharedEnvVars.key,
+        valueEncrypted: sharedEnvVars.valueEncrypted,
+        scope: sharedEnvVars.scope,
+      })
+      .from(sharedEnvVars)
+      .where(ownerWhere(owner))
+      .orderBy(sql`rowid`)
+      .all(),
+  )
 }
 
 /** The three levels in precedence order, lowest first. */

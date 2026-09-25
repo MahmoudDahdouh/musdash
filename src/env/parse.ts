@@ -111,13 +111,53 @@ function unescapeDouble(s: string): string {
   })
 }
 
-/** Renders vars back into textarea form, for the edit view. */
+/**
+ * Renders vars back into textarea form, for the edit view.
+ *
+ * The contract is `parseEnvText(formatEnvText(v)).vars` equals `v` for every
+ * value the parser can produce, because the edit boxes are saved back with
+ * replace semantics: a value that does not survive the trip is silently
+ * changed on the next save of an unrelated variable.
+ *
+ * Not JSON.stringify: it emits `\u001b`, `\b` and `\f`, which unescapeDouble
+ * does not understand and keeps literally, so an ESC in a value would come back
+ * as six printable characters. Only the escapes the parser reverses are used;
+ * everything else goes inside the quotes raw.
+ */
 export function formatEnvText(vars: Record<string, string>): string {
   return Object.entries(vars)
-    .map(([k, v]) => `${k}=${needsQuoting(v) ? JSON.stringify(v) : v}`)
+    .map(([k, v]) => `${k}=${needsQuoting(v) ? `"${escapeDouble(v)}"` : v}`)
     .join("\n")
 }
 
+const DOUBLE_ESCAPES: Record<string, string> = {
+  "\\": "\\\\",
+  '"': '\\"',
+  "\n": "\\n",
+  "\r": "\\r",
+  "\t": "\\t",
+}
+
+/** The exact inverse of unescapeDouble. */
+function escapeDouble(v: string): string {
+  return v.replace(/[\\"\n\r\t]/g, (ch) => DOUBLE_ESCAPES[ch] ?? ch)
+}
+
+/**
+ * Whether a value must be double-quoted to survive parseEnvText.
+ *
+ * Whitespace because the parser trims (and `\s` matches exactly what trim
+ * strips); quotes because a leading one would be taken as quoting; `#` because
+ * ` #` starts a comment; `\` for symmetry with the escaped form. C0 controls
+ * and DEL would survive unquoted, but quoting them keeps an invisible byte
+ * from sitting bare at the end of a line.
+ */
 function needsQuoting(v: string): boolean {
-  return v === "" ? false : /[\s"'#\\]/.test(v)
+  if (v === "") return false
+  if (/[\s"'#\\]/.test(v)) return true
+  for (let i = 0; i < v.length; i++) {
+    const c = v.charCodeAt(i)
+    if (c < 0x20 || c === 0x7f) return true
+  }
+  return false
 }

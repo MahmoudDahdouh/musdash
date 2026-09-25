@@ -212,31 +212,33 @@
     Runtime variables reach the container; build variables reach the build and
     are baked into the image. Reference another variable with
     <code>${OTHER}</code>, and write <code>$$</code> for a literal
-    <code>$</code>. Values are encrypted at rest and never shown again after
-    saving.
+    <code>$</code>. Values are encrypted at rest and shown only here. The boxes
+    show what is saved, and saving replaces it with what they hold.
   </p>
   <form
     method="post"
     action="/r/<%= it.resource.id %>/env"
     class="stack"
+    autocomplete="off"
+    data-env-form
     data-confirm
-    data-confirm-title="Replace this resource's variables?"
-    data-confirm-body="Saving replaces all three boxes at once — any key not in one of them is deleted. Inherited project and environment variables are untouched. The change takes effect on the next deploy."
+    data-confirm-title="Save these variables?"
+    data-confirm-body="A variable you removed from the boxes is deleted; if the project or environment also sets it, that value applies again. Changes take effect on the next deploy."
     data-confirm-label="Save variables"
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <div class="scope-boxes">
       <div class="field">
         <label class="label" for="res-vars-runtime">Runtime only</label>
-        <textarea id="res-vars-runtime" name="runtime" rows="8" spellcheck="false" placeholder="DATABASE_URL=postgres://..."></textarea>
+        <textarea id="res-vars-runtime" name="runtime" rows="8" spellcheck="false" placeholder="DATABASE_URL=postgres://..."><%= it.envText ? it.envText.runtime : '' %></textarea>
       </div>
       <div class="field">
         <label class="label" for="res-vars-build">Build only</label>
-        <textarea id="res-vars-build" name="build" rows="8" spellcheck="false" placeholder="NPM_TOKEN=..."></textarea>
+        <textarea id="res-vars-build" name="build" rows="8" spellcheck="false" placeholder="NPM_TOKEN=..."><%= it.envText ? it.envText.build : '' %></textarea>
       </div>
       <div class="field">
         <label class="label" for="res-vars-both">Both</label>
-        <textarea id="res-vars-both" name="both" rows="8" spellcheck="false" placeholder="NODE_ENV=production"></textarea>
+        <textarea id="res-vars-both" name="both" rows="8" spellcheck="false" placeholder="NODE_ENV=production"><%= it.envText ? it.envText.both : '' %></textarea>
       </div>
     </div>
     <div class="row end">

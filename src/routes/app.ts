@@ -20,8 +20,10 @@ import {
   getEnvironment,
   getGithubApp,
   getProject,
+  getEnvText,
   getResourceContext,
   getSetting,
+  getSharedEnvText,
   listDeployments,
   listDomains,
   listEnvironments,
@@ -75,10 +77,17 @@ import { renderPage } from "../views/render.ts"
 import { errorKeyFromQuery, withError } from "./errors.ts"
 import { layout, statusFor } from "./layout.ts"
 
-const html = (body: string) =>
+const html = (body: string, headers?: Record<string, string>) =>
   new Response(body, {
-    headers: { "content-type": "text/html; charset=utf-8" },
+    headers: { "content-type": "text/html; charset=utf-8", ...headers },
   })
+
+/**
+ * For the two pages whose Variables tab renders decrypted values into the
+ * edit boxes: keeps that HTML out of the browser's disk cache. Every other
+ * page is value-free and keeps the default.
+ */
+const NO_STORE = { "cache-control": "no-store" }
 
 /**
  * Escapes text for an HTML attribute.
@@ -257,9 +266,15 @@ export const appRoutes = new Elysia()
       ? String(query.tab)
       : "resources"
 
+    // Decrypted only on the env tab, the one place the values render.
+    const showEnv = tab === "env"
+
     const environments = listEnvironments(project.id).map((environment) => ({
       environment,
       sharedEnv: listSharedEnvKeys({ environmentId: environment.id }),
+      envText: showEnv
+        ? getSharedEnvText({ environmentId: environment.id })
+        : undefined,
       resources: listResources(environment.id).map((resource) => ({
         resource,
         image: resourceImage(resource),
@@ -281,6 +296,9 @@ export const appRoutes = new Elysia()
           environments,
           tab,
           projectEnv: listSharedEnvKeys({ projectId: project.id }),
+          envText: showEnv
+            ? getSharedEnvText({ projectId: project.id })
+            : undefined,
           csrf: session?.csrfToken,
           defaultMemoryMb: config.defaultMemoryMb,
           // Only on the resources tab: gitPicker makes one GitHub API call per
@@ -295,6 +313,7 @@ export const appRoutes = new Elysia()
           errorKey: errorKeyFromQuery(query.error),
         }),
       ),
+      showEnv ? NO_STORE : undefined,
     )
   })
 
@@ -485,8 +504,13 @@ export const appRoutes = new Elysia()
           domains: listDomains(resource.id),
           autoDomain: autoDomainFor(resource.name, environment.name),
           // Keys, origins and scopes — never values. resolveEnvKeys does not
-          // decrypt, so no plaintext can reach the template.
+          // decrypt, so the Resolved table carries no plaintext; the edit
+          // boxes below are the one place values render.
           resolvedEnv: resolveEnvKeys(resource.id),
+          // This level's own saved variables, decrypted for the edit boxes
+          // (D45). Only on the env tab, so every other tab's HTML
+          // stays value-free and cacheable.
+          envText: tab === "env" ? getEnvText(resource.id) : undefined,
           logs: tail(resource.id, 300),
           csrf: session?.csrfToken,
         },
@@ -496,6 +520,7 @@ export const appRoutes = new Elysia()
           errorKey: errorKeyFromQuery(query.error),
         }),
       ),
+      tab === "env" ? NO_STORE : undefined,
     )
   })
 

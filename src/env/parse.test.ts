@@ -148,6 +148,57 @@ describe("formatEnvText", () => {
   test("round-trips an empty value", () => {
     expect(vars(formatEnvText({ E: "" }))).toEqual({ E: "" })
   })
+
+  // The edit boxes are saved back with replace semantics, so anything that
+  // does not survive format → parse is silently changed by an unrelated save.
+  const reparse = (v: Record<string, string>) => parseEnvText(formatEnvText(v))
+
+  test("round-trips control characters without JSON escapes", () => {
+    const v = { ESC: "\u001b[31mred\u001b[0m", FF: "a\fb", DEL: "x\u007fy" }
+    expect(reparse(v)).toEqual({ vars: v, errors: [] })
+    // JSON.stringify would have written \u001b, which the parser keeps literally.
+    expect(formatEnvText(v)).not.toContain("\\u")
+  })
+
+  test("round-trips backslashes mixed with quotes", () => {
+    const v = {
+      MIX: 'C:\\path\\"quoted"\\',
+      TRAIL: "ends with \\",
+      LITERAL_N: "not a newline: \\n",
+      SINGLE: "it's",
+    }
+    expect(reparse(v)).toEqual({ vars: v, errors: [] })
+  })
+
+  test("leaves interpolation references and $$ untouched", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: ${VAR} in a plain string is the subject under test.
+    const v = { REF: "${OTHER}/x", DOLLARS: "$$", BOTH: "a$$b${C}" }
+    expect(reparse(v)).toEqual({ vars: v, errors: [] })
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: as above.
+    expect(formatEnvText(v)).toBe("REF=${OTHER}/x\nDOLLARS=$$\nBOTH=a$$b${C}")
+  })
+
+  test("round-trips a multi-line PEM", () => {
+    const v = {
+      KEY: "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nAbCd+/==\n-----END PRIVATE KEY-----\n",
+      CRLF: "one\r\ntwo\ttab",
+    }
+    expect(reparse(v)).toEqual({ vars: v, errors: [] })
+  })
+
+  test("round-trips leading and trailing spaces", () => {
+    const v = { PAD: "  spaced  ", LEAD: " x", TRAIL: "x ", NBSP: "\u00a0x" }
+    expect(reparse(v)).toEqual({ vars: v, errors: [] })
+  })
+
+  test("round-trips a value containing </textarea>", () => {
+    const v = { HTML: "</textarea><b>x", NOSPACE: "</textarea>" }
+    expect(reparse(v)).toEqual({ vars: v, errors: [] })
+  })
+
+  test("keeps insertion order", () => {
+    expect(formatEnvText({ B: "1", A: "2", C: "3" })).toBe("B=1\nA=2\nC=3")
+  })
 })
 
 describe("no errors on valid input", () => {

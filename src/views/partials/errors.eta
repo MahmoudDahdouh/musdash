@@ -25,9 +25,9 @@ That domain is already attached to a resource. Remove it there first, or choose 
 <% } else if (it.key === "domain-dashboard") { %>
 That is the dashboard's own address, so a resource cannot use it. Choose another name, or change the dashboard address under Settings.
 <% } else if (it.key === "env-invalid-line") { %>
-Nothing was saved. Every line must be NAME=value, and each name must use letters, digits and underscores, not start with a digit, and appear once per box. Fix the line and paste the variables again.
+Nothing was saved, so make your change again; the boxes show what is saved. Every line must be NAME=value, and each name must use letters, digits and underscores, not start with a digit, and appear once per box.
 <% } else if (it.key === "env-scope-duplicate") { %>
-Nothing was saved. A name appears in more than one box. Keep it only in the box where it is needed and paste the variables again.
+Nothing was saved, so make your change again; the boxes show what is saved. A name appeared in more than one box; keep it only in the box where it is needed.
 <% } else if (it.key === "github-no-domain") { %>
 GitHub needs a public HTTPS address for this dashboard. Set one under Dashboard address, then connect GitHub.
 <% } else if (it.key === "github-no-flow") { %>

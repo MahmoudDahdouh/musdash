@@ -371,7 +371,13 @@ document.addEventListener("submit", (event) => {
 })
 
 // The back/forward cache restores a page as it was left, busy buttons too.
-window.addEventListener("pageshow", () => {
+// A restored Variables box would show values from before a save, and saving
+// them would undo it, so an env form page is fetched again instead.
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted && document.querySelector("[data-env-form]")) {
+    location.reload()
+    return
+  }
   for (const button of document.querySelectorAll('[aria-busy="true"]')) {
     button.removeAttribute("aria-busy")
     button.disabled = false
