@@ -2,6 +2,7 @@ import { promises as dns } from "node:dns"
 import { networkInterfaces } from "node:os"
 import { caddy, ensureDashboardRoutes } from "../caddy/client.ts"
 import { config } from "../config.ts"
+import { syncResourceRoutes } from "./routes.ts"
 import { logger } from "../log.ts"
 import {
   type DashboardCheck,
@@ -30,6 +31,9 @@ export async function runApplyDashboardHost(): Promise<void> {
   // Order matters: the route change is the operation the operator asked for, so
   // it happens first and is allowed to fail the job. Everything below is
   // diagnostics and must never turn a successful configuration into a retry.
+  // First, so no resource route keeps a name that is now the dashboard's:
+  // resource routes sit ahead of the dashboard's and would win it (N-3).
+  await syncResourceRoutes()
   await ensureDashboardRoutes(host)
 
   // Makes an existing MUSDASH_ACME_STAGING / MUSDASH_ACME_EMAIL actually take
@@ -113,6 +117,17 @@ async function checkReachable(): Promise<
     })
     const body = await res.text().catch(() => "")
     if (res.ok && body.trim() === "ok") return { reachable: true }
+    // The dashboard refused the proxy's own address as a public peer. Not a
+    // firewall problem at all — it means the musdash network allocates from a
+    // range musdash did not recognise (D31, N-9) — so it must not read as one.
+    if (res.status === 403) {
+      return {
+        reachable: false,
+        reachError:
+          "the dashboard refused the proxy's address as a public peer — the musdash Docker network uses " +
+          "a non-private range it has not read yet; this clears within 30 seconds, and a restart forces it",
+      }
+    }
     return {
       reachable: false,
       reachError: `the proxy answered ${res.status} on port 80`,
@@ -141,7 +156,8 @@ export async function probeDashboardReachable(): Promise<void> {
   if (!check.reachable) {
     logger.warn(
       { err: check.reachError, port: config.port },
-      "the proxy cannot reach the dashboard — check that the host firewall allows the docker bridge to reach this port",
+      "the proxy cannot reach the dashboard — unless the error says otherwise, check that the host firewall " +
+        "allows the docker bridge to reach this port",
     )
   }
 }

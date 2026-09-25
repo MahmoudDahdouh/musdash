@@ -19,6 +19,7 @@ import { dropBuffer } from "../logs/buffer.ts"
 import { removeLogFiles } from "../logs/file.ts"
 import { stopLogStream } from "../logs/stream.ts"
 import { type DeployPayload, runDeploy } from "./deploy.ts"
+import { syncResourceRoutes } from "./routes.ts"
 import { installSourceFetcher } from "../github/tarball.ts"
 
 export interface StopPayload {
@@ -42,6 +43,15 @@ async function runStop(payload: StopPayload): Promise<void> {
   if (resource.containerId) {
     await docker.stopContainer(resource.containerId, 10).catch(() => {})
   }
+  // A stopped resource has no route. Leaving it would point its domains at a
+  // dead address until the next deploy; syncResourceRoutes would remove it at
+  // the next bootstrap anyway, and the queue is where the proxy is changed.
+  await caddy.deleteRoute(routeIdFor(resource.id)).catch((err: unknown) => {
+    logger.warn(
+      { resourceId: resource.id, err: (err as Error).message },
+      "could not delete the Caddy route",
+    )
+  })
   updateResource(resource.id, { desiredState: "stopped" })
   publishStatus({ resourceId: resource.id, state: "stopped" })
 }
@@ -152,4 +162,6 @@ export const handlers: Record<string, JobHandler> = {
   // queued before the operator changed it must not run against the old value.
   apply_dashboard_host: async () => runApplyDashboardHost(),
   ensure_buildkit: () => ensureBuildkit(),
+  // No payload: the routes come from the database as it is when this runs.
+  sync_routes: () => syncResourceRoutes(),
 }

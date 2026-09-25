@@ -18,6 +18,9 @@ import { logger } from "../log.ts"
 
 const SERVER = "srv0"
 
+/** Every route id musdash writes starts with this; routeIdFor adds the rest. */
+export const ROUTE_ID_PREFIX = "musdash-"
+
 /**
  * Where the proxy creates its admin socket, INSIDE the container. The host
  * directory config.caddyAdminDir is bind-mounted here, so the same socket is
@@ -214,8 +217,8 @@ export class CaddyClient {
     const res = await this.request("/config/")
     const existing: unknown = res.ok ? await res.json().catch(() => null) : null
 
-    // Deliberately NOT "any apps key exists". Every upsertRoute POSTs to
-    // /config/apps/http/servers/srv0/routes/, so a config resumed from an
+    // Deliberately NOT "any apps key exists". Every route musdash writes lives
+    // under /config/apps/http/servers/srv0/routes, so a config resumed from an
     // autosave that carries an http app under a different server name leaves
     // musdash unable to add a single route while this reported nothing to do.
     // The only condition that makes the rest of this client work is that srv0
@@ -304,6 +307,18 @@ export class CaddyClient {
   }
 
   /**
+   * The upstream a stored route dials, or null when there is no such route (or
+   * it is not shaped the way routeBody writes one).
+   */
+  async getRouteUpstream(id: string): Promise<string | null> {
+    const route = (await this.getRoute(id)) as {
+      handle?: { upstreams?: { dial?: unknown }[] }[]
+    } | null
+    const dial = route?.handle?.[0]?.upstreams?.[0]?.dial
+    return typeof dial === "string" ? dial : null
+  }
+
+  /**
    * upsertRoute, but only when the stored route differs from `spec`.
    *
    * For reconciling rather than deploying: every admin write reloads the whole
@@ -327,6 +342,24 @@ export class CaddyClient {
     await this.expectOk(`/config/apps/http/servers/${SERVER}/routes/`, {
       method: "POST",
       ...this.json(routeBody(spec)),
+    })
+  }
+
+  /**
+   * The `@id` of every route on srv0, in order. Routes without one — nothing
+   * musdash writes, but a hand edit could add one — are skipped.
+   */
+  async listRouteIds(): Promise<string[]> {
+    const res = await this.request(`/config/apps/http/servers/${SERVER}/routes`)
+    if (!res.ok) {
+      const body = await res.text().catch(() => "")
+      throw new CaddyError(`caddy list routes -> ${res.status} ${body}`.trim())
+    }
+    const routes: unknown = await res.json().catch(() => null)
+    if (!Array.isArray(routes)) return []
+    return routes.flatMap((r: unknown) => {
+      const id = (r as { "@id"?: unknown } | null)?.["@id"]
+      return typeof id === "string" ? [id] : []
     })
   }
 
@@ -393,7 +426,7 @@ function issuerConfig(): Record<string, unknown> {
 export const caddy = new CaddyClient()
 
 export function routeIdFor(resourceId: string): string {
-  return `musdash-${resourceId}`
+  return `${ROUTE_ID_PREFIX}${resourceId}`
 }
 
 /** `<resource>-<environment>.<wildcard>` (§10). */

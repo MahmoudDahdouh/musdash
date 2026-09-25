@@ -69,6 +69,7 @@ import {
 } from "../restart.ts"
 import { dashboardHostView } from "../settings-view.ts"
 import {
+  getDashboardHost,
   getPublicUrl,
   SETTING_GITHUB_MANIFEST_STATE,
   setDashboardHost,
@@ -594,8 +595,17 @@ export const appRoutes = new Elysia()
       }
       if (domainExists(host))
         return status(409, "that domain is already in use")
+      // The reverse of the dashboard form's check. Resource routes sit ahead of
+      // the dashboard's, so this would hand the dashboard's name — and every
+      // login typed through it — to the app (N-3). routeHosts filters it too.
+      if (host === getDashboardHost()) {
+        return status(409, "that is the dashboard's own address")
+      }
 
       addDomain(ctx.resource.id, host, false)
+      // Applied now rather than at the next deploy: the route is the proxy's
+      // business, so the queue does it and this handler only redirects.
+      enqueue("sync_routes", {})
       return redirect(`/r/${ctx.resource.id}?tab=domains`, 303)
     },
     { body: t.Object({ host: t.String(), csrf: t.String() }) },
@@ -605,6 +615,7 @@ export const appRoutes = new Elysia()
     "/r/:resourceId/domains/:domainId/delete",
     ({ params, redirect }) => {
       deleteDomain(params.domainId)
+      enqueue("sync_routes", {})
       return redirect(`/r/${params.resourceId}?tab=domains`, 303)
     },
     { body: t.Object({ csrf: t.String() }) },
@@ -631,6 +642,10 @@ export const appRoutes = new Elysia()
         healthPath: body.healthPath?.trim() || null,
         memoryLimitMb: body.memoryLimitMb ?? config.defaultMemoryMb,
       })
+      // A cleared port means no route, applied now by the queue. A CHANGED
+      // port is not applied here: the sync keeps the port a live route already
+      // dials, and the next deploy moves it after its health gate.
+      enqueue("sync_routes", {})
       return redirect(`/r/${ctx.resource.id}?tab=settings`, 303)
     },
     {
@@ -730,7 +745,15 @@ export const appRoutes = new Elysia()
         // The dashboard data is a SIBLING key, never a widening of SettingsView:
         // that shape carries the rule about never spreading the github_apps row,
         // and nothing on this path should be able to reach it.
-        { ...view, host: dashboardHostView(), restarting },
+        {
+          ...view,
+          host: dashboardHostView(),
+          restarting,
+          // Set only by the hostname save's own redirect, whose flash already
+          // says "applying" — so the page does not say it twice (M-3), while an
+          // unrelated flash no longer hides the note (N-11).
+          hostJustSaved: query.saved === "host",
+        },
         layout(session, "Settings", { activeSettings: true }),
       ),
     )
@@ -774,12 +797,12 @@ export const appRoutes = new Elysia()
       setDashboardHost(host)
       enqueue("apply_dashboard_host", {})
       return redirect(
-        flashUrl(
+        `${flashUrl(
           "ok",
           host === ""
             ? "Cleared. The dashboard answers on this server's address again."
             : `Saved. Applying ${host} to the proxy — a certificate follows within a few seconds.`,
-        ),
+        )}&saved=host`,
         303,
       )
     },

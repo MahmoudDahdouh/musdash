@@ -228,6 +228,7 @@ export type JobType =
   | "ensure_caddy"
   | "ensure_buildkit"
   | "apply_dashboard_host"
+  | "sync_routes"
 
 export const jobs = sqliteTable(
   "jobs",
