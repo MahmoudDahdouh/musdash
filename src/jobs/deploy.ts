@@ -1,6 +1,8 @@
+import { isIP } from "node:net"
 import { caddy, routeIdFor } from "../caddy/client.ts"
 import { CADDY_CONTAINER } from "../caddy/bootstrap.ts"
 import { MIGRATE_LABEL } from "../caddy/kernel.ts"
+import { CERT_WAIT_MS, waitForCertificate } from "../caddy/tls-probe.ts"
 import { buildFromSource } from "./build.ts"
 import { config } from "../config.ts"
 import { LABEL_RESOURCE, LABEL_ROLE, managedLabels } from "../docker/client.ts"
@@ -238,6 +240,9 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
 
     // 8a. switch the route BEFORE touching the old container
     const hosts = routeHosts(resourceId, resource.name, environment.name)
+    // Hosts this deploy puts on the route for the first time. Stays empty when
+    // no route is written, so the certificate wait below never runs then.
+    let newHosts: string[] = []
 
     if (hosts.length > 0 && resource.containerPort) {
       const state = await docker.inspectContainer(newContainerId)
@@ -261,11 +266,24 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
             "the instant of the switch may fail. See RUNNING.md.",
         )
       }
-      await caddy.upsertRoute({
+      // Only names new to the route get a certificate wait. The previous hosts
+      // come from the GET upsertRoute already makes to choose PATCH or PUT, so
+      // knowing them costs no admin request (every admin call reloads the whole
+      // proxy, D30). A name already on the route has either been issued or is
+      // being retried by Caddy on its own; waiting on it again on every
+      // redeploy would add up to 30s per deploy for nothing.
+      const previousHosts = await caddy.upsertRoute({
         id: routeIdFor(resourceId),
         hosts,
         upstream,
       })
+      // An IP literal cannot be sent as SNI, so there is nothing to probe;
+      // waiting on one would only burn the whole 30s.
+      newHosts = hosts.filter(
+        (h) =>
+          isIP(h) === 0 &&
+          !previousHosts.some((p) => p.toLowerCase() === h.toLowerCase()),
+      )
       emit(`Route switched to ${upstream} for ${hosts.join(", ")}`)
     } else {
       if (hosts.length > 0) {
@@ -285,6 +303,24 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     // Only reached if nothing above threw; a failure propagates to the outer
     // catch, which knows to keep the healthy container rather than remove it.
     routeSwitched = true
+    // The instant traffic moved, taken once for both branches. The drain below
+    // counts from here, not from whenever the certificate wait ends.
+    const switchedAt = Date.now()
+
+    // 8a-ii. wait for a first certificate on names new to the route.
+    //
+    // After the switch, because it cannot come earlier: Caddy runs automatic
+    // HTTPS, and issuance for a name starts only once a route's host matcher
+    // carries it — which is the write just made. Before 8c, because "Deploy
+    // succeeded" reads as "the URL works now", and on a first deploy it did
+    // not: the handshake failed until issuance finished.
+    //
+    // Bounded, and never fatal. A name whose DNS does not point here yet can
+    // never be issued, and the deploy itself is fine — traffic has moved to a
+    // healthy container. So a miss is reported and the deploy still succeeds.
+    if (newHosts.length > 0) {
+      await awaitCertificates(resourceId, newHosts, emit)
+    }
 
     // 8b. only now is the old container expendable.
     //
@@ -293,8 +329,17 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     // at it is the exact outage the zero-downtime guarantee exists to prevent,
     // and an unreachable Caddy is precisely when that mistake would be made.
     if (routeSwitched && oldContainerId && oldContainerId !== newContainerId) {
-      emit(`Draining old container for ${DRAIN_MS / 1000}s...`)
-      await Bun.sleep(DRAIN_MS)
+      // The drain protects requests the OLD container was already serving, and
+      // every one of those started before the switch — nothing new reaches it
+      // after. So it is counted from the switch: the certificate wait above
+      // already gave them that time, and only the remainder is slept. The stop
+      // still lands at least DRAIN_MS after the switch; a wait longer than the
+      // drain just means no sleep, never a skipped stop.
+      const drainLeft = Math.max(0, DRAIN_MS - (Date.now() - switchedAt))
+      if (drainLeft > 0) {
+        emit(`Draining old container for ${Math.ceil(drainLeft / 1000)}s...`)
+        await Bun.sleep(drainLeft)
+      }
       stopLogStream(resourceId)
       await docker.stopContainer(oldContainerId, 10).catch(() => {})
       await docker.removeContainer(oldContainerId, true).catch(() => {})
@@ -463,6 +508,59 @@ async function currentImageOf(
   if (!containerId) return null
   const containers = await docker.listManagedContainers().catch(() => [])
   return containers.find((c) => c.id === containerId)?.image ?? null
+}
+
+/**
+ * Waits, under one shared deadline, for the proxy to present a certificate for
+ * each of `hosts`, and says per host in the deploy log whether it did.
+ *
+ * Must never throw. It runs after the route switch, and the outer catch in
+ * runDeploy treats any throw past routeSwitchAttempted as a FAILED switch: it
+ * would mark a deploy failed whose traffic already moved to a healthy
+ * container, and leave the resource row pointing at the old one. So the whole
+ * body is caught here and logged, and the deploy carries on.
+ *
+ * Socket and TLS error text goes to pino only; the deploy log gets the fixed
+ * sentences below, through emit, like every other line.
+ */
+async function awaitCertificates(
+  resourceId: string,
+  hosts: string[],
+  emit: (s: string) => void,
+): Promise<void> {
+  try {
+    emit(`Waiting for a certificate for ${hosts.join(", ")}...`)
+    const deadline = Date.now() + CERT_WAIT_MS
+    await Promise.all(
+      hosts.map((host) =>
+        waitForCertificate(host, deadline).then((result) => {
+          if (result.ready) {
+            emit(
+              `Certificate ready for ${host} (${Math.ceil(result.elapsedMs / 1000)}s)`,
+            )
+            return
+          }
+          const { reason, detail } = result.last.ok
+            ? { reason: undefined, detail: undefined }
+            : result.last
+          logger.warn(
+            { resourceId, host, reason, detail },
+            "no certificate for a new host before the deadline",
+          )
+          emit(
+            `No certificate for ${host} after ${CERT_WAIT_MS / 1000}s. Caddy keeps retrying; ` +
+              `check that ${host} points at this server and ports 80 and 443 are open.`,
+          )
+        }),
+      ),
+    )
+  } catch (err) {
+    // The name only: this path skips the deploy's redaction, so no message.
+    logger.warn(
+      { resourceId, errorName: err instanceof Error ? err.name : typeof err },
+      "certificate wait failed; continuing the deploy",
+    )
+  }
 }
 
 /**

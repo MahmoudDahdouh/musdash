@@ -116,6 +116,26 @@ function hasServer(cfg: unknown, name: string): boolean {
   return name in (servers as Record<string, unknown>)
 }
 
+/**
+ * The hosts a stored route matches, as routeBody writes them: the `host` list
+ * of its first matcher.
+ *
+ * Narrowed from `unknown` and never throws — this feeds only the deploy's
+ * certificate wait, and a route of an unexpected shape (hand-edited, or from an
+ * older musdash) must degrade to "no hosts known", which just means every host
+ * is waited on. It must not fail a route switch that already succeeded.
+ */
+function routeHostsOf(route: unknown): string[] {
+  if (route === null || typeof route !== "object") return []
+  const match = (route as { match?: unknown }).match
+  if (!Array.isArray(match)) return []
+  const first: unknown = match[0]
+  if (first === null || typeof first !== "object") return []
+  const host = (first as { host?: unknown }).host
+  if (!Array.isArray(host)) return []
+  return host.filter((h): h is string => typeof h === "string")
+}
+
 function routeBody(spec: RouteSpec): unknown {
   return {
     "@id": spec.id,
@@ -291,19 +311,26 @@ export class CaddyClient {
    * install (D20, VPS test C-1). PUT on an array index inserts; POST appends.
    * Relative order among resource routes does not matter, because no two of
    * them match the same host.
+   *
+   * Returns the hosts the route matched BEFORE this write — [] when it is new.
+   * They come from the GET this already makes to choose PATCH or PUT, so the
+   * deploy learns which names are new to Caddy, and need a first certificate,
+   * without a single extra admin request.
    */
-  async upsertRoute(spec: RouteSpec): Promise<void> {
-    if ((await this.getRoute(spec.id)) !== null) {
+  async upsertRoute(spec: RouteSpec): Promise<string[]> {
+    const existing = await this.getRoute(spec.id)
+    if (existing !== null) {
       await this.expectOk(`/id/${encodeURIComponent(spec.id)}`, {
         method: "PATCH",
         ...this.json(routeBody(spec)),
       })
-      return
+      return routeHostsOf(existing)
     }
     await this.expectOk(`/config/apps/http/servers/${SERVER}/routes/0`, {
       method: "PUT",
       ...this.json(routeBody(spec)),
     })
+    return []
   }
 
   /**

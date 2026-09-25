@@ -2675,3 +2675,82 @@ logs that swap will not survive a reboot and exits 0. `shellcheck -S warning`
 (0.9.0) is clean on `install.sh`. Not yet verified: swap surviving a reboot, a
 full fresh install on the swap host, the skip paths (container, cgroup v1,
 filesystem, disk), and 512MB with swap.
+
+## A deploy waits for a new name's certificate (V-6, 2026-09-25)
+
+On the 1GB re-test, `web2`'s first HTTPS request, sent the moment its first
+deploy said "Deploy succeeded", failed with a TLS internal error; Caddy had
+its certificate about 8 seconds later. The report called it on-demand
+issuance, and RUNNING.md said the same. It is not: musdash configures
+automatic HTTPS (one automation policy, no `on_demand`), so Caddy starts
+obtaining a certificate the moment a route's host matcher carries the name —
+at deploy step 8a — and in the background. A first deploy has no old
+container to drain, so "Deploy succeeded" followed the route write by
+milliseconds, and the resource page reloaded to a link that did not work yet.
+
+### D39 — after the switch, wait up to 30s for hosts new to the route
+
+**What happens.** After the route switch and before the deployment is marked
+succeeded, the deploy job waits for a certificate for every host that was not
+on the route before this write, sharing one 30s deadline. The deploy log says
+`Waiting for a certificate for …`, then per host `Certificate ready for <host>
+(Ns)`, or `No certificate for <host> after 30s. Caddy keeps retrying; check
+that <host> points at this server and ports 80 and 443 are open.` The
+deployment is marked succeeded either way: the container is serving, and a
+missing certificate is DNS or ACME, which a failed deploy would not fix.
+
+**Which hosts are "new".** `upsertRoute` already reads the stored route before
+it writes it; it now returns that route's hosts, so the job knows which names
+are new at no extra admin request (every admin write reloads the proxy, D30).
+A redeploy with unchanged hosts probes nothing and behaves exactly as before.
+An IP-literal domain is never waited on: it cannot be sent as SNI.
+The cost is accepted: a name already on the route that never got a
+certificate is not waited on again, and a domain added to a running resource
+goes on the route through `sync_routes`, not a deploy, so it is not waited on
+either. The Domains tab now says a new name's first certificate takes seconds
+to a minute.
+
+**How it is observed.** A TLS handshake from the host to the proxy's published
+443 on `127.0.0.1`, with the name as SNI, the chain not verified, and ready
+meaning the handshake completed and a SAN covers the name
+(`src/caddy/tls-probe.ts`). It sends no request into the app. Not verifying
+the chain is deliberate: D4 makes Let's Encrypt staging the default, whose
+certificates no client trusts, and the question is only whether Caddy has one
+for the name yet. Caddy's admin API has nothing that reports the state of an
+ACME certificate, its storage is not reachable through `DockerClient`, and
+its events need a module the stock image lacks. The probe does not trigger
+issuance — automatic HTTPS already started it — so it costs nothing against
+rate limits; a name that never points here costs up to 30 handshake failures
+in Caddy's log on its first deploy. The dial address is one constant, for
+Phase 5's remote servers.
+
+**The drain counts from the switch.** The old container still stops only after
+the health gate and the route switch, and at least 10s after the switch; the
+drain now subtracts the time the wait already took, because the requests it
+protects were all started before the switch. A redeploy that adds a name pays
+at most the 30s wait, not the wait plus 10s.
+
+**It must never throw.** `runDeploy`'s catch treats any error after the route
+switch as a failed switch: it would mark a live deploy failed while traffic is
+already on the new container. The probe settles exactly once on every path —
+refused, silent peer, TLS alert, synchronous throw from `tls.connect` — clears
+its timer and destroys its socket, and the step that calls it has its own
+catch. That is why `src/caddy/tls-probe.test.ts` widens the test policy by one
+file, for the same reason as N-14, D34 and D36: a regression that looks fine
+until the day a deploy is marked failed for no visible reason. It runs against
+real loopback sockets — a closed port, a listener that never answers, a TLS
+server with a static test certificate (SAN match, wildcard, mismatch), and one
+that answers a name it has no certificate for with an internal-error alert,
+which is what Caddy does.
+
+**Measured.** On Bun 1.4.2, `node:tls` reports SANs as `DNS:a, DNS:b` and the
+alert as `ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`. Loading it at boot left idle
+RSS within noise (`gate:rss` 36.6MB before, 35.3MB after, macOS). `bun test`
+185 pass; the probe file passed five runs in a row. Not verified yet: the VPS
+criteria — a first deploy on a fresh name showing `Certificate ready` before
+`Deploy succeeded`, a redeploy showing no wait, and an unpointed name timing
+out after 30s with the deploy still succeeding.
+
+Follow-ups: move `checkReachable()` and `probeHttpPort()` onto the same dial
+constant; Caddy is published on IPv4 only while the Domains hint mentions
+AAAA records.

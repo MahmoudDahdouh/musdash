@@ -443,7 +443,11 @@ Private repos work through the GitHub App connect flow under **Settings**.
   > the container only — which also means runtime secrets are no longer baked
   > into image history.
 
-- **Custom domains** — add one and Caddy issues a certificate on demand.
+- **Custom domains** — add one and Caddy starts obtaining its certificate as
+  soon as the resource's route carries the name, which takes seconds to a
+  minute. A deploy that puts a new name on the route waits up to 30s for its
+  certificate before it reports success, and says in the deploy log if none
+  arrived (D39).
 - **Rollback** — one click, back to the previous image. It reuses the existing
   image and never rebuilds.
 - **Stop / restart / delete** — delete removes the container, the route, and the

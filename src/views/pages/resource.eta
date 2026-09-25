@@ -296,7 +296,7 @@
           Add domain
         </button>
       </div>
-      <p class="hint" id="res-domain-hint">An A or AAAA record for it must point at this server.</p>
+      <p class="hint" id="res-domain-hint">An A or AAAA record for it must point at this server. Its first certificate takes a few seconds to a minute after the name is added or deployed.</p>
       <p class="error">Enter a bare hostname such as app.example.com, without https:// or a path.</p>
     </div>
   </form>
