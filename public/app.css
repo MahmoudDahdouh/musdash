@@ -656,8 +656,53 @@ dialog {
   padding: 20px;
   width: min(460px, 92vw);
 }
+
+/* Fade up on open, fade down on close — pure CSS, no animation library.
+   @starting-style gives the "from" state a dialog has no computed style for
+   while it is display:none; allow-discrete on display and overlay keeps it in
+   the top layer until the exit transition finishes. Browsers without support
+   show the dialog instantly, which is the old behaviour. */
+dialog {
+  opacity: 0;
+  translate: 0 12px;
+  transition:
+    opacity 0.18s ease-out,
+    translate 0.18s ease-out,
+    overlay 0.18s allow-discrete,
+    display 0.18s allow-discrete;
+}
+dialog[open] {
+  opacity: 1;
+  translate: 0 0;
+}
+@starting-style {
+  dialog[open] {
+    opacity: 0;
+    translate: 0 12px;
+  }
+}
+
 dialog::backdrop {
+  background: rgb(0 0 0 / 0);
+  transition:
+    background-color 0.18s ease-out,
+    overlay 0.18s allow-discrete,
+    display 0.18s allow-discrete;
+}
+dialog[open]::backdrop {
   background: rgb(0 0 0 / 0.45);
+}
+@starting-style {
+  dialog[open]::backdrop {
+    background: rgb(0 0 0 / 0);
+  }
+}
+/* Must follow the rules above: same specificity, so source order decides. */
+@media (prefers-reduced-motion: reduce) {
+  dialog,
+  dialog::backdrop {
+    transition: none;
+  }
 }
 
 dialog.confirm {
