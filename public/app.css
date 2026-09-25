@@ -920,12 +920,22 @@ textarea {
 .empty h2 {
   margin-bottom: var(--s-2);
 }
+.empty > .icon {
+  display: block;
+  width: var(--s-7);
+  height: var(--s-7);
+  margin: 0 auto var(--s-3);
+  color: var(--text-2);
+}
 .empty p {
-  max-width: 460px;
+  max-width: var(--prose-w);
   margin: 0 auto var(--s-4);
 }
 .empty-sm {
   padding: var(--s-3);
+}
+.empty-sm p {
+  margin-bottom: 0;
 }
 
 .env {
@@ -1060,6 +1070,14 @@ dialog.confirm p {
   margin: 0;
   overflow-wrap: anywhere;
 }
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 
 /* A label, its control and a hint as siblings: a hint inside the <label>
    became part of the field's accessible name. The hint is tied back with
@@ -1161,12 +1179,22 @@ dialog.confirm p {
   overflow-x: auto;
 }
 
+/* Three boxes side by side only when the form itself has room: auto-fit gave
+   a lopsided 2+1 at mid widths, and the viewport is the wrong measure. */
+form:has(> .scope-boxes) {
+  container: scope / inline-size;
+}
 .scope-boxes {
   display: grid;
   gap: var(--s-3);
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
-.scope-boxes label {
+@container scope (width >= 640px) {
+  .scope-boxes {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+/* The resource page's editor, until slice 5 moves it to .field. */
+.scope-boxes > label {
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
