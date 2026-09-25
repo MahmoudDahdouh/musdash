@@ -7,6 +7,7 @@ import {
   type ContainerState,
   DockerError,
   type DockerClient,
+  type EngineInfo,
   type HealthState,
   LABEL_MANAGED,
   LABEL_ROLE,
@@ -127,6 +128,32 @@ export class DockerHttpClient implements DockerClient {
       "/version",
     )
     return { version: v.Version, apiVersion: v.ApiVersion }
+  }
+
+  /**
+   * `MemTotal` is an int64 of bytes in v1.44's `SystemInfo`. It is checked
+   * rather than trusted because it becomes a memory limit: a missing or
+   * malformed value must stop the caller, not turn into a NaN cap or one sized
+   * as though the host had kilobytes.
+   */
+  async info(): Promise<EngineInfo> {
+    const raw = await this.json<unknown>("/info")
+    const memTotal =
+      typeof raw === "object" && raw !== null && "MemTotal" in raw
+        ? raw.MemTotal
+        : undefined
+    if (
+      typeof memTotal !== "number" ||
+      !Number.isInteger(memTotal) ||
+      memTotal <= 0
+    ) {
+      throw new DockerError(
+        `the Docker daemon reported no usable host memory (/info MemTotal: ${
+          typeof memTotal === "number" ? memTotal : typeof memTotal
+        })`,
+      )
+    }
+    return { memTotalBytes: memTotal }
   }
 
   // ----------------------------------------------------------------- images

@@ -75,6 +75,15 @@ const schema = z.object({
   // the build daemon listens on a unix socket derived from the data directory,
   // never on TCP. A stale line in musdash.env is ignored.
   MUSDASH_BUILD_CACHE_GB: z.coerce.number().int().positive().default(10),
+  // Overrides BuildKit's memory cap, which is otherwise sized from the Docker
+  // host's memory (D33). It exists because the formula cannot see swap or
+  // programs outside Docker, and it lowers the cap on 1–2GB hosts — without it
+  // the only remedy for a build that no longer fits is a bigger VPS. The same
+  // 192 MiB floor as the formula: below it buildkitd cannot build at all. The
+  // upper bound, below the host's memory, needs the daemon to know, so it is
+  // checked by the bootstrap. Absent means the formula (verified against zod
+  // 4.4.3: an unset key parses to undefined; an empty value is rejected).
+  MUSDASH_BUILDKIT_MEMORY_MB: z.coerce.number().int().min(192).optional(),
 
   // Verification only. A cached build proves nothing about what reaches the
   // build log, so DoD item 9 — build-time secrets never appear in build output
@@ -144,6 +153,7 @@ export const config = Object.freeze({
   buildkitAddr: `unix://${resolve(dataDir, "buildkit", "buildkitd.sock")}`,
   buildkitSocket: resolve(dataDir, "buildkit", "buildkitd.sock"),
   buildCacheGb: env.MUSDASH_BUILD_CACHE_GB,
+  buildkitMemoryMb: env.MUSDASH_BUILDKIT_MEMORY_MB,
   buildNoCache: env.MUSDASH_BUILD_NO_CACHE,
   railpackBin: env.MUSDASH_RAILPACK_BIN,
   buildctlBin: env.MUSDASH_BUILDCTL_BIN,

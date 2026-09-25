@@ -7,6 +7,7 @@ import {
 } from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
 import { logger } from "../log.ts"
+import { buildkitMemoryCap } from "./memory.ts"
 
 /**
  * Brings the build daemon up and keeps it up.
@@ -41,13 +42,7 @@ const BUILDKIT_IMAGE = "moby/buildkit:v0.27.0"
  */
 const CACHE_VOLUME = "musdash-buildkit-cache"
 
-/**
- * Deliberately not config.defaultMemoryMb, for the same reason Caddy's is not:
- * that setting caps user applications, and lowering it to fit more apps on a
- * small box must not also throttle the component every one of those apps is
- * built by. Image assembly is memory-hungry in bursts.
- */
-const BUILDKIT_MEMORY_BYTES = 1024 * 1024 * 1024
+const MIB = 1024 * 1024
 
 /**
  * The daemon's own cache ceiling, for --oci-worker-gc-keepstorage.
@@ -95,9 +90,14 @@ const SOCKET_DIR_IN_CONTAINER = "/run/musdash-buildkit"
  * app on the `musdash` network, unauthenticated, on a privileged container —
  * to a unix socket (D32). A daemon without this label is replaced; the cache
  * volume is kept, so the only cost is one daemon restart.
+ *
+ * Generation 3 sized the memory cap from the Docker host instead of fixing it
+ * at 1 GiB, which on a 1GB host limited nothing (D33).
  */
 const SPEC_LABEL = "musdash.builder_spec"
-const SPEC_VERSION = "2"
+const SPEC_VERSION = "3"
+/** The generation before D33: correct in every respect but its memory cap. */
+const PREVIOUS_SPEC_VERSION = "2"
 
 /**
  * The gid the socket was created for, fixed into the daemon's `--group` at
@@ -106,6 +106,18 @@ const SPEC_VERSION = "2"
  */
 const GID_LABEL = "musdash.builder_gid"
 const GID = String(process.getgid?.() ?? 0)
+
+/**
+ * The memory cap, in MiB, the daemon was created with.
+ *
+ * The generation bump alone would size the cap once and never again, and
+ * RUNNING.md's remedy for builds that do not fit is a bigger host: a 1GB box
+ * resized to 2GB would keep its 384 MiB daemon forever and the remedy would do
+ * nothing. Comparing the cap itself also makes an override change, or its
+ * removal, take effect on the next boot. The limit is fixed at create time and
+ * adoption never recreates, so this label is the only way to notice.
+ */
+const MEMORY_LABEL = "musdash.builder_memory_mb"
 
 /** How long to wait for the daemon to answer after starting the container. */
 const READY_TIMEOUT_SEC = 30
@@ -118,6 +130,11 @@ const PROBE_TIMEOUT_MS = 2000
 const PULL_TIMEOUT_MS = 10 * 60 * 1000
 
 export async function ensureBuildkit(): Promise<void> {
+  // First, before anything is looked up or removed: the cap decides whether the
+  // existing daemon is current, and a rejected override or an unreachable
+  // /info must fail this job with the running daemon left exactly as it was.
+  const memory = await resolveMemoryCap()
+
   await docker.ensureNetwork(config.network)
   await docker.createVolume(CACHE_VOLUME)
 
@@ -128,42 +145,75 @@ export async function ensureBuildkit(): Promise<void> {
   // managed=true filter, so a label lookup would conclude nothing is there and
   // try to create a second daemon under the same name.
   const found = (await docker.findContainersByName(BUILDKIT_CONTAINER))[0]
-  // An outdated daemon is replaced, not adopted: its TCP listener is the hole
-  // D32 closes, and a listen address cannot be changed on a running container.
-  // Unlike the proxy's replacement this costs nothing a user can see — no
-  // traffic flows through a build daemon, the job queue guarantees no build is
-  // running right now, and CACHE_VOLUME survives the removal.
+  // An outdated daemon is replaced, not adopted: a listen address, a --group
+  // and a memory limit are all fixed when a container is created. Unlike the
+  // proxy's replacement this costs nothing a user can see — no traffic flows
+  // through a build daemon, the job queue guarantees no build is running right
+  // now, and CACHE_VOLUME survives the removal.
   const current =
     found !== undefined &&
     found.labels[SPEC_LABEL] === SPEC_VERSION &&
-    found.labels[GID_LABEL] === GID
+    found.labels[GID_LABEL] === GID &&
+    found.labels[MEMORY_LABEL] === String(memory.mb)
   if (found && !current) {
+    const stale = staleReason(found.labels, memory.mb)
+    const oldMemory = found.labels[MEMORY_LABEL]
     logger.warn(
-      { container: BUILDKIT_CONTAINER, id: found.id },
-      "replacing the build daemon: its API was reachable from every app on the musdash network. The build cache is kept",
+      {
+        container: BUILDKIT_CONTAINER,
+        id: found.id,
+        reason: stale.reason,
+        oldMemoryMb: oldMemory === undefined ? null : Number(oldMemory),
+        newMemoryMb: memory.mb,
+      },
+      `replacing the build daemon: ${stale.message}. The build cache is kept`,
     )
     await docker.removeContainer(found.id, true)
   }
   const existing = current ? found : undefined
   const adopted = existing !== undefined
 
+  // On every bootstrap, adopting or creating — unlike the floor warning. The
+  // label only records what the daemon was created with, so an override that
+  // was reasonable on a larger host is adopted unchanged after the host
+  // shrinks, and this is then the only line that says the cap is now too big.
+  if (memory.fromOverride && memory.mb > memory.computedMb) {
+    logger.warn(
+      {
+        hostMemoryMb: memory.hostMb,
+        memoryMb: memory.mb,
+        computedMemoryMb: memory.computedMb,
+      },
+      `MUSDASH_BUILDKIT_MEMORY_MB=${memory.mb} is above the ${memory.computedMb} MiB sized from this host; ` +
+        "builds may now exhaust the host's memory and take the dashboard and apps with it",
+    )
+  }
+
   let id: string
   if (existing) {
     id = existing.id
-    // The cache ceiling is applied when the container is created, and adoption
-    // deliberately does not recreate — that would discard the cache volume that
-    // makes redeploys fast. So a daemon from before the cap keeps collecting
-    // without one, and nothing else would ever say so: the flag is not
-    // observable through ManagedContainer, and widening the Docker interface to
-    // read a command line for one log line is not worth the surface. Logged at
-    // debug rather than warn because it is correct and expected on every boot
-    // of an install that predates the cap, and a warning every boot for a
-    // condition the operator may have chosen is noise.
+    // Every daemon that passes the check above was created by this generation,
+    // so it has a cache ceiling — but the ceiling from MUSDASH_BUILD_CACHE_GB
+    // as it was THEN. Unlike the memory cap it carries no label: the flag is
+    // not observable through ManagedContainer, and replacing the daemon for a
+    // disk setting is not this check's job. Logged at debug because it is
+    // correct and expected on every boot.
     logger.debug(
       { container: BUILDKIT_CONTAINER, capGb: config.buildCacheGb },
-      "adopted an existing build daemon; if it predates the cache cap, `docker rm -f musdash-buildkit` recreates it capped",
+      "adopted an existing build daemon with the cache ceiling it was created with; after changing MUSDASH_BUILD_CACHE_GB, `docker rm -f musdash-buildkit` recreates it",
     )
   } else {
+    // Only on create, not on every adopting boot: the warning is about the
+    // daemon about to exist, and the info line below carries the numbers on
+    // every boot regardless.
+    if (memory.floored) {
+      logger.warn(
+        { hostMemoryMb: memory.hostMb, memoryMb: memory.mb },
+        `the Docker host has ${memory.hostMb} MiB of memory, too little for the build daemon's sizing; ` +
+          `its cap is the ${memory.mb} MiB floor, and builds may still exhaust the host`,
+      )
+    }
+
     if (!(await docker.imageExists(BUILDKIT_IMAGE))) {
       logger.info({ image: BUILDKIT_IMAGE }, "buildkit: pulling the build image")
       const pullDeadline = Date.now() + PULL_TIMEOUT_MS
@@ -189,6 +239,7 @@ export async function ensureBuildkit(): Promise<void> {
         ...sidecarLabels("builder"),
         [SPEC_LABEL]: SPEC_VERSION,
         [GID_LABEL]: GID,
+        [MEMORY_LABEL]: String(memory.mb),
       },
       networks: [config.network],
       volumes: [{ name: CACHE_VOLUME, mountPath: "/var/lib/buildkit" }],
@@ -199,7 +250,7 @@ export async function ensureBuildkit(): Promise<void> {
       hostMounts: [
         { hostPath: config.buildkitDir, mountPath: SOCKET_DIR_IN_CONTAINER },
       ],
-      memoryLimitBytes: BUILDKIT_MEMORY_BYTES,
+      memoryLimitBytes: memory.bytes,
       restartPolicy: "unless-stopped",
       // BuildKit needs mount and namespace operations to assemble images.
       // Rootless would avoid this, but it needs a different image, different
@@ -252,11 +303,11 @@ export async function ensureBuildkit(): Promise<void> {
     if (!adopted) {
       const initial = await docker.inspectContainer(id)
       if (!initial.running || initial.restartCount > 0) {
-        throw new DockerError(exitedMessage(initial))
+        throw new DockerError(exitedMessage(initial, memory.fromOverride))
       }
     }
 
-    await waitForDaemon(id, adopted)
+    await waitForDaemon(id, adopted, memory.fromOverride)
   } catch (err) {
     // Removed rather than left for the next bootstrap to adopt: it carries the
     // current labels, so it would be adopted, broken, forever (N-2's lesson).
@@ -273,9 +324,129 @@ export async function ensureBuildkit(): Promise<void> {
   }
 
   logger.info(
-    { container: BUILDKIT_CONTAINER, id, adopted },
+    {
+      container: BUILDKIT_CONTAINER,
+      id,
+      adopted,
+      memoryMb: memory.mb,
+      hostMemoryMb: memory.hostMb,
+    },
     adopted ? "adopted the existing BuildKit container" : "started BuildKit",
   )
+}
+
+interface ResolvedMemoryCap {
+  /** The cap the daemon is (to be) created with. A whole number of MiB. */
+  bytes: number
+  mb: number
+  /** What the formula gives for this host, whether or not it is in use. */
+  computedMb: number
+  /** MemTotal as the daemon reports it, rounded down to whole MiB. */
+  hostMb: number
+  /** The formula hit its floor. Never true for an override. */
+  floored: boolean
+  fromOverride: boolean
+}
+
+/**
+ * The build daemon's memory cap: from the Docker host's memory (D33), or from
+ * MUSDASH_BUILDKIT_MEMORY_MB when the operator set one.
+ *
+ * Deliberately not config.defaultMemoryMb, for the same reason Caddy's is not:
+ * that setting caps user applications, and lowering it to fit more apps on a
+ * small box must not also throttle the component every one of those apps is
+ * built by. Image assembly is memory-hungry in bursts.
+ *
+ * The host is the DAEMON's, asked through DockerClient.info(), never this
+ * process's /proc: once the daemon is remote they are different machines.
+ */
+async function resolveMemoryCap(): Promise<ResolvedMemoryCap> {
+  const { memTotalBytes } = await docker.info()
+  const hostMb = Math.floor(memTotalBytes / MIB)
+  const computed = buildkitMemoryCap(memTotalBytes)
+  const computedMb = computed.bytes / MIB
+  const override = config.buildkitMemoryMb
+
+  if (override === undefined) {
+    return {
+      bytes: computed.bytes,
+      mb: computedMb,
+      computedMb,
+      hostMb,
+      floored: computed.floored,
+      fromOverride: false,
+    }
+  }
+
+  // An explicit setting is never silently replaced by the computed value, so a
+  // degenerate one fails loudly instead of being clamped. This only rejects
+  // the cap that cannot limit anything; one just below the host's memory is
+  // allowed and brings V-1 back in practice, which is why the create path
+  // warns about any override above the computed cap.
+  const bytes = override * MIB
+  if (bytes >= memTotalBytes) {
+    throw new DockerError(
+      `MUSDASH_BUILDKIT_MEMORY_MB is ${override} MiB, at or above the Docker host's ${hostMb} MiB of memory; ` +
+        `a cap that large limits nothing. Set it below ${hostMb}, or remove it to size the cap from the host (${computedMb} MiB).`,
+    )
+  }
+  return {
+    bytes,
+    mb: override,
+    computedMb,
+    hostMb,
+    floored: false,
+    fromOverride: true,
+  }
+}
+
+type StaleReason = "d32" | "gen2" | "gid" | "memory" | "gid+memory"
+
+/**
+ * Why a daemon that failed the adopt check is being replaced, so the one
+ * warning an operator sees names the actual cause. First match wins; called
+ * only when at least one of the three labels differs.
+ */
+function staleReason(
+  labels: Record<string, string>,
+  capMb: number,
+): { reason: StaleReason; message: string } {
+  const spec = labels[SPEC_LABEL]
+  // No label means generation 1, which listened on TCP. A value NEWER than
+  // this build's — seen after a downgrade — lands here too; the wording is
+  // then imprecise, but replacing a definition this build does not know is
+  // still right.
+  if (spec !== PREVIOUS_SPEC_VERSION && spec !== SPEC_VERSION) {
+    return {
+      reason: "d32",
+      message: "its API was reachable from every app on the musdash network",
+    }
+  }
+  if (spec === PREVIOUS_SPEC_VERSION) {
+    return {
+      reason: "gen2",
+      message:
+        "it was created before the memory cap was sized from the host (D33)",
+    }
+  }
+
+  const oldMemory = labels[MEMORY_LABEL]
+  const memoryChange =
+    oldMemory === undefined
+      ? `memory cap was unset, now ${capMb} MiB`
+      : `memory cap changed from ${oldMemory} MiB to ${capMb} MiB`
+  const memoryDiffers = labels[MEMORY_LABEL] !== String(capMb)
+  const oldGid = labels[GID_LABEL] ?? "unset"
+  if (oldGid !== GID) {
+    const gidChange = `its socket was created for gid ${oldGid} and musdash now runs as gid ${GID}`
+    return memoryDiffers
+      ? {
+          reason: "gid+memory",
+          message: `${gidChange}; and its ${memoryChange}`,
+        }
+      : { reason: "gid", message: gidChange }
+  }
+  return { reason: "memory", message: `its ${memoryChange}` }
 }
 
 /**
@@ -298,11 +469,20 @@ function prepareSocketDir(): void {
 }
 
 /** Names the cause an exited build daemon usually has, and how to see it. */
-function exitedMessage(state: ContainerState): string {
+function exitedMessage(
+  state: ContainerState,
+  memoryFromOverride: boolean,
+): string {
   return (
     `the ${BUILDKIT_CONTAINER} container is not running (exit code ${state.exitCode}, ` +
     `${state.restartCount} restarts). BuildKit exits when it cannot create its socket or when the ` +
-    `daemon lacks the privileges to set up its snapshotter — see 'docker logs ${BUILDKIT_CONTAINER}'.`
+    `daemon lacks the privileges to set up its snapshotter — see 'docker logs ${BUILDKIT_CONTAINER}'.` +
+    // The formula never goes below the floor buildkitd idles within; an
+    // override can sit just above it and still be too small in practice, and
+    // an operator who set one should be pointed at it first.
+    (memoryFromOverride
+      ? " Its memory cap came from MUSDASH_BUILDKIT_MEMORY_MB, which may be too low."
+      : "")
   )
 }
 
@@ -321,7 +501,11 @@ function exitedMessage(state: ContainerState): string {
  *
  * The published-port gate this used to have is gone with the port (D32).
  */
-async function waitForDaemon(id: string, adopted: boolean): Promise<void> {
+async function waitForDaemon(
+  id: string,
+  adopted: boolean,
+  memoryFromOverride: boolean,
+): Promise<void> {
   const deadline = Date.now() + READY_TIMEOUT_SEC * 1000
   let lastReason = "the daemon did not answer"
 
@@ -342,7 +526,11 @@ async function waitForDaemon(id: string, adopted: boolean): Promise<void> {
     if (state && !state.running) {
       // An exited daemon is not going to start answering, and the exit code is
       // the fact that explains it. Fail now rather than burning the full 30s.
-      throw new DockerError(exitedMessage(state))
+      // Only a daemon created in this run can blame the override: an adopted
+      // one was running before, under whatever it was created with.
+      throw new DockerError(
+        exitedMessage(state, memoryFromOverride && !adopted),
+      )
     }
     if (state && state.restartCount > 0) {
       lastReason = `the container has restarted ${state.restartCount} times`

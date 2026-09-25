@@ -2013,3 +2013,179 @@ suite including the 33 new tests, and the idle RSS gate.
 its `--group` permissions, the proxy preflight, `sync_routes` removing a stale
 route, and the trusted-subnet refresh. They join the list in the VPS report's
 "Needs a real Docker daemon or VPS" section.
+
+## BuildKit's memory cap is sized from the host (V-1, 2026-09-25)
+
+The 1GB re-test (`docs/VPS-TEST-2026-09-25.md`, V-1) found BuildKit capped at a
+fixed 1 GiB on a host with 961 MiB: `docker stats` showed the limit as the whole
+host, so the invariant "every container has a hard memory limit" held on paper
+and limited nothing.
+
+### D33 — the cap is computed from the Docker host's memory
+
+**The premise was tested before the fix.** On the 1GB VPS (cgroup v2, kernel
+6.8.0-51) the running daemon was capped by hand at 384 MiB and a build step
+allocated 50 MiB a second. The kernel killed that step inside the
+`musdash-buildkit` container's cgroup (`CONSTRAINT_MEMCG`, not a global OOM),
+buildkitd stayed up, the host bottomed out at 166 MiB available and recovered,
+and the dashboard and an app answered throughout. Build steps are charged to
+the daemon's container, so a cap smaller than the host contains a runaway
+build. Recorded in the VPS report as "V-1 premise test (before the fix)".
+**Proven on cgroup v2 only; not verified on cgroup v1.**
+
+**The formula** (`src/build/memory.ts`, all MiB):
+
+```
+raw     = min(MemTotal − 576, floor(MemTotal / 2))
+stepped = floor(raw / 32) × 32
+cap     = clamp(stepped, 192, 8192)          floored = stepped < 192
+```
+
+The terms cross at MemTotal = 1152: below it the fixed reserve binds, above it
+the half-of-host rule does.
+
+| Host  | MemTotal used      | − 576 | ÷ 2   | 32-step of min | **Cap**            |
+| ----- | ------------------ | ----- | ----- | -------------- | ------------------ |
+| 512MB | ~470 (est.)        | −106  | 235   | −128           | **192** (floor)    |
+| 512MB | 512 (nominal)      | −64   | 256   | −64            | **192** (floor)    |
+| 1GB   | **961 (measured)** | 385   | 480   | 384            | **384**            |
+| 1GB   | 1024 (nominal)     | 448   | 512   | 448            | **448**            |
+| 2GB   | ~1950 (est.)       | 1374  | 975   | 960            | **960**            |
+| 2GB   | 2048 (nominal)     | 1472  | 1024  | 1024           | **1024**           |
+| 4GB   | ~3900 (est.)       | 3324  | 1950  | 1920           | **1920**           |
+| 4GB   | 4096 (nominal)     | 3520  | 2048  | 2048           | **2048**           |
+| 8GB   | ~7900 (est.)       | 7324  | 3950  | 3936           | **3936**           |
+| 8GB   | 8192 (nominal)     | 7616  | 4096  | 4096           | **4096**           |
+| 16GB+ | ≥16384             | —     | ≥8192 | —              | **8192** (ceiling) |
+
+Only the 1GB row rests on a measurement. The table is reproduced by the
+command in the slice's criterion 5, which evaluates the module directly.
+
+**MemTotal comes from the daemon**, through a new read-only
+`DockerClient.info()` (`GET /v1.44/info` → `MemTotal`, int64 bytes), never from
+musdash's own `/proc`. Once the daemon is remote (Phase 5) the two are different
+machines, and a cap sized from the wrong one limits nothing. `info()` throws a
+`DockerError` unless `MemTotal` is a positive integer, so a malformed answer
+fails the bootstrap instead of becoming a NaN limit.
+
+**The reserve is 576 MiB: what must survive while a build runs.** Recorded on
+the 1GB host at idle with two nginx apps, 2026-09-25 16:54 UTC:
+
+- `free -m` available: 510, 535 and 536 MiB in three readings;
+- musdash 63, Caddy 67, BuildKit 66–69 (its cgroup `memory.current`), the two
+  apps ~14 together — 210 MiB in musdash and its containers;
+- so OS + dockerd + containerd ≈ 961 − 535 − 210 ≈ **216 MiB**.
+
+The reserve then counts musdash at its deploy peak rather than idle (128, V-3),
+Caddy 67 and the apps 14: 216 + 128 + 67 + 14 = **425 MiB measured**. The rest,
+~150 MiB, is margin that has not been measured: the `railpack` and `buildctl`
+client processes and dockerd/containerd's spike while `/images/load` imports
+the built image — all host processes, outside BuildKit's cap — and the file
+pages the kernel must keep resident to avoid C-3's eviction loop. ≈ 575 → 576.
+On the 1GB host, 425 + 384 = 809 MiB leaves ~150.
+
+With the 510 reading instead of 535, the measured part is 450 and the total
+≈ 600, above 576. The number does not rest on choosing 535: the premise test
+observed the margin directly — with BuildKit at its 384 MiB cap the host still
+had 166 MiB available.
+
+- **The reserve covers the measured workload only** — two idle nginx apps.
+  Every further running app, up to its own 512 MiB cap, eats into what is left.
+  A host running many apps and building on the same box can still run out; the
+  cap bounds the build, not the sum.
+- **It must be revisited if V-3 moves.** musdash's 128 MB deploy peak is one of
+  its terms.
+
+**Half above the crossover.** A resource's old container keeps serving through
+its own rebuild — the zero-downtime guarantee — so a build must not be able to
+push out what is serving: half to the build, half to everything else. It also
+reproduces the old 1 GiB on a 2GB host, the size RUNNING.md recommends for
+building.
+
+**The floor is 192 MiB.** buildkitd idles at ~66 MiB on the 1GB VPS; 192 leaves
+~125 for one small step. Below that the daemon's first build is killed in its
+own cgroup. It does **not** make a 512MB host safe to build on, and no cap in
+buildkitd's working range can: that host had 181 MB available at idle after
+install, and 126 MB of BuildKit growth plus musdash's +65 MB deploy peak uses
+all of it. What to do about 512MB hosts is C-3's decision; this slice only
+makes the floor visible with a warning when a daemon is created on it.
+
+**The ceiling is 8 GiB.** It binds only at 16 GiB and up. It is a judgement
+against a leaking build on a big host, not a measurement.
+
+**The 32 MiB step** keeps the number round. 32 rather than 64 so a "1GB" host a
+few MiB smaller than 961 does not lose a whole 64 MiB step. Any step makes the
+cap boundary-sensitive: two hosts a few MiB apart can get caps 32 MiB apart
+(961 → 384, 993 → 416). The cap and the host's memory are therefore logged on
+every boot (`memoryMb`, `hostMemoryMb` on the "started" and "adopted" lines),
+which also guards the one silent failure mode — a unit error such as reading
+MemTotal as kilobytes would put every host on the ceiling.
+
+**The override, `MUSDASH_BUILDKIT_MEMORY_MB`.** The formula cannot see swap
+(`/info` does not report it, and swap is the likely fix for C-3) or memory used
+outside Docker. It also **lowers** the cap on 1GB and ~2GB hosts, so a build
+that passed before the upgrade may run out of memory after it, and without an
+override the only remedy would be a bigger VPS. `MUSDASH_BUILD_CACHE_GB` is the
+precedent for disk.
+
+- Validated by zod as an integer ≥ 192, the formula's own floor; below that, or
+  not a number, musdash refuses to start with "Invalid configuration".
+- At or above MemTotal it **fails the bootstrap** with both numbers — a cap
+  that large limits nothing — before any container is looked up or removed, so
+  the running daemon is untouched. It is never clamped: an explicit setting is
+  not silently replaced by the computed value.
+- **The upper bound alone does not prevent V-1.** An override just under
+  MemTotal brings it back in practice, so every bootstrap with an override
+  above the computed cap — creating or adopting — logs a warning naming both
+  numbers. Adopting matters: after the host shrinks, the label still matches.
+- If a daemon created with an override exits while starting, the error says the
+  cap came from `MUSDASH_BUILDKIT_MEMORY_MB` and may be too low.
+
+**The label bump.** `musdash.builder_spec` goes from `2` to `3`, and a new
+`musdash.builder_memory_mb` records the cap the daemon was created with. The
+adopt-or-replace check requires spec, gid and memory to match. The memory label
+is needed on top of the generation bump because a memory limit is fixed at
+create time and adoption never recreates: without it, a 1GB host resized to
+2GB would keep its 384 MiB daemon forever and RUNNING.md's remedy would do
+nothing. An override change, or its removal, takes effect the same way. A
+replacement costs one daemon restart — no traffic flows through BuildKit, the
+queue guarantees no build is running, and `musdash-buildkit-cache` survives.
+
+The replacement warning names the actual reason, first match wins, with a
+`reason` field (`d32` | `gen2` | `gid` | `memory` | `gid+memory`) plus
+`oldMemoryMb` and `newMemoryMb`:
+
+1. no spec label, or one other than `2`/`3` → D32's "API was reachable" wording
+   (a newer value after a downgrade lands here too; imprecise, but still right
+   to replace);
+2. spec `2` → created before the cap was sized from the host (D33);
+3. spec `3`, gid differs → names the old and new gid, and adds the memory
+   change in the same line when that differs too. Before this slice a gid
+   change was wrongly reported with the D32 wording;
+4. spec `3`, memory differs → "memory cap changed from <old> MiB to <new> MiB".
+
+**Why Caddy's fixed 512 MiB cap is not in this slice.** On a 512MB host it has
+the same shape — the cap is at or above MemTotal (~470), so it limits nothing —
+while on 1GB it does limit Caddy. It stays out: the invariant's threat is user
+code, and Caddy runs none; D7 recorded the fixed value deliberately; and
+changing the proxy's definition bumps `musdash.proxy_spec`, which runs the
+preflight and a **visible proxy restart on every install** — an outage BuildKit's
+replacement does not have. Whether 512MB is supported at all is C-3's decision.
+A follow-up gated on C-3 can reuse `DockerClient.info()`.
+
+Out of scope and still open: swap in `install.sh` or a minimum host size (C-3,
+I-3), counting swap in the formula, V-3 itself, a CPU cap for BuildKit, and
+turning a build step's exit 137 into an "out of memory" line in the deploy log.
+
+### Verified, and not verified
+
+Verified locally (macOS, no Docker daemon): `bun run ci`, the unchanged test
+suite, the formula against every row of the table above, and the override's
+parsing (unset → the formula; `64`, `191` and `abc` → "Invalid
+configuration"). Before building: `MemTotal` is `SystemInfo`'s int64 of bytes
+in the Engine API v1.44 spec.
+
+**Not verified against a real Docker daemon or VPS:** `info()` against a live
+Engine, the gen-2 → gen-3 replacement keeping the cache, the override replace
+and reject paths, and a runaway build under the computed 384 MiB cap through a
+real deploy. The premise test above used a hand-set cap, not this code.

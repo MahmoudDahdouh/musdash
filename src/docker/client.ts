@@ -135,9 +135,23 @@ export interface LogOpts {
   signal?: AbortSignal
 }
 
+/** What the Engine reports about the host it runs on — not this process's host. */
+export interface EngineInfo {
+  /** Physical memory of the DAEMON's host, in bytes (Engine `GET /info` → `MemTotal`). */
+  memTotalBytes: number
+}
+
 export interface DockerClient {
   ping(): Promise<boolean>
   version(): Promise<{ version: string; apiVersion: string }>
+  /**
+   * Read-only. Safe outside the queue; used by the BuildKit bootstrap to size its cap.
+   *
+   * Asked of the daemon rather than read from this process's `/proc` because
+   * the two are different machines once the daemon is remote, and a cap sized
+   * from the wrong host limits nothing.
+   */
+  info(): Promise<EngineInfo>
 
   pullImage(ref: string, onProgress: (line: string) => void): Promise<void>
   imageExists(ref: string): Promise<boolean>

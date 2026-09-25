@@ -366,12 +366,12 @@ restarts. Migrations run at startup and `musdash.env` is never overwritten.
 they hold your certificates, and losing them means re-issuing everything and
 burning the Let's Encrypt rate limit (50 per domain per week).
 
-An install predating the build-cache cap keeps an unbounded daemon cache until
-you retire the container once:
-
-```bash
-docker rm -f musdash-buildkit   # recreated, capped, on the next deploy
-```
+The first start after upgrading from a release before D33 replaces the build
+daemon once, with a warning saying why: its memory cap is now sized from the
+host. The build cache is kept (`musdash-buildkit-cache` survives), and the new
+daemon carries the build-cache cap too, so nothing needs removing by hand. The
+same one-off replacement happens after you resize the VPS or change
+`MUSDASH_BUILDKIT_MEMORY_MB`.
 
 ---
 
@@ -453,6 +453,7 @@ any of these requires a restart.
 | `MUSDASH_PUBLIC_URL`         | derived from the host  | Fallback only; for a tunnel or private-network LB fronting musdash    |
 | `MUSDASH_ACME_STAGING`       | `true`                 | Safe default — set `false` deliberately, on real DNS                  |
 | `MUSDASH_BUILD_CACHE_GB`     | `10`                   | Layer cache ceiling, on disk and in the build daemon                  |
+| `MUSDASH_BUILDKIT_MEMORY_MB` | sized from host memory | BuildKit memory cap; ≥ 192, below the host's memory (D33)             |
 | `MUSDASH_RAILPACK_BIN`       | `railpack`             | Shelled out to, not linked                                            |
 | `MUSDASH_BUILDCTL_BIN`       | `buildctl`             | Shelled out to, not linked                                            |
 | `MUSDASH_NETWORK`            | `musdash`              | Must be user-defined                                                  |
@@ -527,8 +528,13 @@ when its build ends, with a daily sweep for anything a crash left behind.
 | --------------------- | --------------------- |
 | musdash control plane | ~50–80 MB (gate: 100) |
 | Caddy sidecar         | ~50 MB                |
-| BuildKit sidecar      | ~11–30 MB             |
+| BuildKit sidecar      | ~66 MB                |
 | Each app container    | capped at 512 MB      |
+
+BuildKit idles at ~66 MB and may grow during a build up to a cap sized from the
+host's memory — 384 MiB on a 1GB host, about 1 GiB on 2GB, at most 8 GiB (D33).
+A build step that exceeds it is killed inside BuildKit's container instead of
+starving the host; `MUSDASH_BUILDKIT_MEMORY_MB` overrides it.
 
 Verify the control plane yourself with `bun run gate:rss`.
 
