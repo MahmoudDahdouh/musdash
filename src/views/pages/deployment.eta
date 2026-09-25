@@ -55,7 +55,8 @@
 </div>
 <% } %>
 
-<div class="card stack" x-data="logPanel('/d/<%= d.id %>/logs')">
+<%/* The stream starts after the lines drawn below, so none shows twice. */%>
+<div class="card stack" x-data="logPanel('/d/<%= d.id %>/logs?skip=<%= it.lines.length %>')">
   <h2 class="card-title">Deploy log</h2>
   <%/* The empty-state message sits flush against <pre>: pre-wrap would show any
        template whitespace. CSS hides it once a line arrives. */%>

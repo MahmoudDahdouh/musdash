@@ -162,12 +162,20 @@ document.addEventListener("alpine:init", () => {
     },
   }))
 
+  /** A deployment's status. Started, Duration and the error are
+   *  server-rendered, so any change of status reloads the page rather than
+   *  mirroring them. Only a change: the stream opens with the current status,
+   *  and reloading on a final one would loop forever on a finished deploy. */
   Alpine.data("deploymentStatus", (deploymentId, initial) => ({
     state: initial,
     init() {
       const es = new EventSource(`/d/${deploymentId}/events`)
+      let reloading = false
       es.addEventListener("deployment", (e) => {
         this.state = JSON.parse(e.data).status
+        if (this.state === initial || reloading) return
+        reloading = true
+        setTimeout(() => window.location.reload(), 600)
       })
       window.addEventListener("beforeunload", () => es.close())
     },

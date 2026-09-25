@@ -124,14 +124,20 @@ export const sseRoutes = new Elysia()
   })
 
   /** Build/deploy log for one deployment. */
-  .get("/d/:deploymentId/logs", ({ params, status }) => {
+  .get("/d/:deploymentId/logs", ({ params, query, status }) => {
     const deployment = getDeployment(params.deploymentId)
     if (!deployment) return status(404, "deployment not found")
+    // `skip` is how many stored lines the page already rendered; replaying
+    // them would show each one twice. Anything but a plain count means none.
+    const raw = String(query.skip)
+    const skip = /^\d+$/.test(raw) ? Number(raw) : 0
 
     return eventStream((send) => {
-      // Replay what already happened, then follow — a page opened mid-deploy
-      // must not start from a blank panel.
-      for (const line of deployLogTail(deployment.id)) {
+      // Replay what happened after the page was drawn, then follow — a page
+      // opened mid-deploy must not start from a blank panel. `skip` indexes the
+      // buffer as the page saw it, so if the 2000-line cap evicted lines since,
+      // as many are missed. Only a deploy still writing can evict.
+      for (const line of deployLogTail(deployment.id).slice(skip)) {
         send(frame("line", { text: line }))
       }
       return subscribeDeployLogs(deployment.id, (text: string) => {

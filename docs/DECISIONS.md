@@ -2754,3 +2754,49 @@ out after 30s with the deploy still succeeding.
 Follow-ups: move `checkReachable()` and `probeHttpPort()` onto the same dial
 constant; Caddy is published on IPv4 only while the Domains hint mentions
 AAAA records.
+
+## The deployment page catches up when its status changes (V-5, 2026-09-25)
+
+Watching a deploy on the 1GB re-test, the page switched to "Succeeded" but
+still read "Started: Not started" and "Duration: —" until a reload. Deploy
+and rollback redirect to `/d/:id` while the deployment is still queued, and
+the page's live component changed only the status label; Started, Duration,
+the error notice, the image line and the empty-log text were drawn once.
+
+### D40 — reload when the status differs from the drawn one; replay only unseen lines
+
+**The page reloads**, 600 ms after an event brings a status different from
+the one it was drawn with — the pattern the resource page already uses, so
+no timestamp, format or wording is copied into `app.js`. It compares against
+the drawn status rather than reloading on a final status, because
+`/d/:id/events` sends the current status on connect: a finished deployment's
+page would otherwise reload forever. It reloads on every change — queued to
+running (Started appears), running to succeeded or failed, and each step of a
+retry — and schedules at most one reload per page.
+
+**The log no longer doubles.** The page renders the stored lines and then
+opened a stream that replayed all of them again, so after any reload every
+line showed twice. The stream URL now carries `?skip=<lines rendered>`, and
+the replay starts after them. `deployLogTail` returns the whole buffer the
+replay walks, and the route renders it in one synchronous pass, so the count
+is exact; the replay and the subscription are set up in one synchronous step,
+so nothing falls between them. A non-numeric `skip` counts as 0.
+
+**Accepted gaps.** The reader's scroll position in the log is lost at the
+reload when a deploy ends, as on the resource page. If the 2000-line buffer
+evicts lines between render and connect, that many lines are skipped — only
+possible while a very long deploy is still writing. When the browser
+reconnects a dropped stream by itself, it reuses the page's `skip`, so lines
+already received live since page load show twice (before, the whole log
+did). Follow-ups: a retry leaves the previous attempt's `finishedAt` and
+error in place while it runs (`src/jobs/deploy.ts`), so the reloaded page
+shows "0s" and the old error until it ends; `dropDeployLogs` is never
+called.
+
+**Verified** against a compiled binary with no Docker, where a deploy runs
+queued, running, failed, running, failed, running, failed: the rendered
+`skip` equals the lines drawn at each stage, and `/d/:id/logs` sends exactly
+the unseen lines for `skip` of 0, 2, 5, 6, `abc`, `-3`, `1.5`, empty and
+huge values. `bun run ci` passes with `app.js` at 14.9 of 16 KB; `bun test`
+185 pass. Not yet verified in a browser: the reloads themselves, and a
+finished deployment's page loading exactly once.
