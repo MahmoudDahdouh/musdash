@@ -21,6 +21,7 @@ import {
   deleteSetting,
   domainExists,
   findResourceByNameInEnv,
+  getDeployment,
   getEnvironment,
   getGithubApp,
   getProject,
@@ -45,6 +46,7 @@ import {
   type EnvVarInput,
 } from "../db/queries.ts"
 import { parseEnvText } from "../env/parse.ts"
+import { deployLogTail } from "../events.ts"
 import { buildManifest } from "../github/manifest.ts"
 import {
   convertManifestCode,
@@ -447,7 +449,6 @@ export const appRoutes = new Elysia()
     const deployments = listDeployments(resource.id).map((d) => ({
       ...d,
       duration: formatDuration(d.startedAt, d.finishedAt),
-      pill: d.status,
     }))
 
     return html(
@@ -690,23 +691,25 @@ export const appRoutes = new Elysia()
   )
 
   .get("/d/:deploymentId", ({ params, session, status }) => {
-    const deployment = deploymentWithResource(params.deploymentId)
-    if (!deployment) return status(404, "deployment not found")
-    // This page has no project context of its own; resolve it from the
-    // resource so the sidebar highlights the branch the user came from.
-    const ctx = getResourceContext(deployment.resource.id)
+    const deployment = getDeployment(params.deploymentId)
+    // The page has no context of its own: the breadcrumb and the sidebar
+    // highlight both come from the resource it belongs to.
+    const ctx = deployment && getResourceContext(deployment.resourceId)
+    if (!deployment || !ctx) return status(404, "deployment not found")
     return html(
       renderPage(
         "deployment",
         {
-          deployment: deployment.deployment,
-          resource: deployment.resource,
-          pill: deployment.deployment.status,
-          lines: deployLines(params.deploymentId),
+          deployment,
+          resource: ctx.resource,
+          environment: ctx.environment,
+          project: ctx.project,
+          duration: formatDuration(deployment.startedAt, deployment.finishedAt),
+          lines: deployLogTail(params.deploymentId),
         },
         layout(session, "Deployment", {
-          activeProjectId: ctx?.project.id,
-          activeEnvironmentId: ctx?.environment.id,
+          activeProjectId: ctx.project.id,
+          activeEnvironmentId: ctx.environment.id,
         }),
       ),
     )
@@ -1105,19 +1108,4 @@ function formatDuration(
     Math.round((end - new Date(startedAt).getTime()) / 1000),
   )
   return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`
-}
-
-import { getDeployment, getResource } from "../db/queries.ts"
-import { deployLogTail } from "../events.ts"
-
-function deploymentWithResource(id: string) {
-  const deployment = getDeployment(id)
-  if (!deployment) return null
-  const resource = getResource(deployment.resourceId)
-  if (!resource) return null
-  return { deployment, resource }
-}
-
-function deployLines(deploymentId: string): string[] {
-  return deployLogTail(deploymentId)
 }

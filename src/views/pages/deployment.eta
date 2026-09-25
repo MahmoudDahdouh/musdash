@@ -2,34 +2,69 @@
   <nav class="crumbs" aria-label="Breadcrumb">
     <ol>
       <li><a class="link-quiet" href="/">Projects</a></li>
+      <li><a class="link-quiet" href="/p/<%= it.project.id %>"><%= it.project.name %></a></li>
+      <li><a class="link-quiet" href="/p/<%= it.project.id %>#env-<%= it.environment.id %>"><%= it.environment.name %></a></li>
       <li><a class="link-quiet" href="/r/<%= it.resource.id %>"><%= it.resource.name %></a></li>
-      <li aria-current="page">deployment</li>
+      <li aria-current="page">Deployment</li>
     </ol>
   </nav>
   <div class="page-title" x-data="deploymentStatus('<%= it.deployment.id %>', '<%= it.deployment.status %>')">
-    <h1 class="mono"><%= it.deployment.image %></h1>
+    <h1>Deployment</h1>
     <%~ include("@status", { state: it.deployment.status, live: true }) %>
+    <p class="mono muted"><%= it.deployment.image %></p>
   </div>
   <div class="actions">
     <a class="btn btn-quiet" href="/r/<%= it.resource.id %>">Back to resource</a>
   </div>
 </div>
 
-<div class="card" x-data="logPanel('/d/<%= it.deployment.id %>/logs')">
-  <div class="row between">
-    <h3 class="card-title">Deploy log</h3>
-    <button class="btn btn-quiet btn-sm" x-show="paused" x-cloak @click="resume()">
+<%
+  /* Timestamps are stored as ISO UTC; shown to the minute, labelled UTC,
+     with the exact value kept in <time datetime>. */
+  var d = it.deployment
+  var emptyLog = {
+    queued: 'Queued. Deploys run one at a time, so this one may be behind another.',
+    running: 'Waiting for the first line.',
+  }[d.status] || 'No log lines to show. Deploy logs are held in memory only, so a restart of musdash clears them.'
+%>
+<dl class="kv-strip">
+  <div>
+    <dt>Started</dt>
+    <dd><% if (d.startedAt) { %><time datetime="<%= d.startedAt %>"><%= d.startedAt.slice(0, 16).replace('T', ' ') %> UTC</time><% } else { %>Not started<% } %></dd>
+  </div>
+  <div>
+    <dt>Duration</dt>
+    <dd><%= it.duration %></dd>
+  </div>
+  <div>
+    <dt>Trigger</dt>
+    <dd><%= d.trigger %></dd>
+  </div>
+  <% if (d.commitSha) { %>
+  <div>
+    <dt>Commit</dt>
+    <dd class="mono" title="<%= d.commitMessage ? d.commitMessage.split('\n')[0] : '' %>"><%= d.commitSha.slice(0, 7) %></dd>
+  </div>
+  <% } %>
+</dl>
+
+<% if (d.error) { %>
+<div class="notice notice-error" role="alert">
+  <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+  <div><%= d.error %></div>
+</div>
+<% } %>
+
+<div class="card stack" x-data="logPanel('/d/<%= d.id %>/logs')">
+  <h2 class="card-title">Deploy log</h2>
+  <%/* The empty-state message sits flush against <pre>: pre-wrap would show any
+       template whitespace. CSS hides it once a line arrives. */%>
+  <div class="logs-wrap">
+    <pre class="logs logs-lg" x-ref="box" @scroll="onScroll()"><% if (it.lines.length === 0) { %><span class="logs-empty"><%= emptyLog %></span><% } %><% it.lines.forEach(function (l) { %><span><%= l %></span>
+<% }) %></pre>
+    <button class="btn btn-sm" x-show="paused" x-cloak @click="resume()">
       <svg class="icon" aria-hidden="true"><use href="#i-arrow-down" /></svg>
       Jump to latest
     </button>
   </div>
-  <pre class="logs" x-ref="box" @scroll="onScroll()"><% it.lines.forEach(function (l) { %><span><%= l %></span>
-<% }) %></pre>
 </div>
-
-<% if (it.deployment.error) { %>
-<div class="notice notice-error" role="alert">
-  <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
-  <div><%= it.deployment.error %></div>
-</div>
-<% } %>

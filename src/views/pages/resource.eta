@@ -74,24 +74,40 @@
 <% if (it.tab === 'overview') { %>
 <div class="cols">
   <div class="card stack">
-    <h3 class="eyebrow">Image</h3>
-    <p class="mono"><%= it.image %></p>
-    <% if (it.resource.previousImage) { %>
-    <p class="muted">Previous: <span class="mono"><%= it.resource.previousImage %></span></p>
-    <% } %>
-    <h3 class="eyebrow">URL</h3>
-    <% if (it.domains.length === 0) { %>
-    <p class="muted">No domain yet. Set a container port and add a domain to expose it.</p>
-    <% } else { %>
-    <ul class="plain">
-      <% it.domains.forEach(function (d) { %>
-      <li><a href="https://<%= d.host %>" target="_blank" rel="noopener"><%= d.host %></a></li>
-      <% }) %>
-    </ul>
-    <% } %>
+    <h2 class="card-title">Details</h2>
+    <dl class="kv">
+      <dt>URL</dt>
+      <dd>
+        <% if (it.domains.length === 0) { %>
+        <span class="muted">No domain yet. Set a container port and add a domain to expose it.</span>
+        <% } else { %>
+        <ul class="plain">
+          <% it.domains.forEach(function (d) { %>
+          <li><a class="mono" href="https://<%= d.host %>" target="_blank" rel="noopener"><%= d.host %></a></li>
+          <% }) %>
+        </ul>
+        <% } %>
+      </dd>
+      <dt>Image</dt>
+      <% if (it.image) { %>
+      <dd class="mono"><%= it.image %></dd>
+      <% } else { %>
+      <dd class="muted">Built on first deploy</dd>
+      <% } %>
+      <% if (it.resource.previousImage) { %>
+      <dt>Previous image</dt>
+      <dd class="mono"><%= it.resource.previousImage %></dd>
+      <% } %>
+      <dt>Port</dt>
+      <dd class="mono"><%= it.resource.containerPort || '—' %></dd>
+      <dt>Health path</dt>
+      <dd class="mono"><%= it.resource.healthPath || '—' %></dd>
+      <dt>Memory</dt>
+      <dd><%= it.resource.memoryLimitMb %> MB</dd>
+    </dl>
   </div>
   <div class="card stack">
-    <h3 class="card-title">Deployments</h3>
+    <h2 class="card-title">Deployments</h2>
     <% if (it.deployments.length === 0) { %>
     <p class="muted">Never deployed. Press Deploy to pull the image and start it.</p>
     <% } else { %>
@@ -134,22 +150,24 @@
 <% } %>
 
 <% if (it.tab === 'logs') { %>
-<div class="card" x-data="logPanel('/r/<%= it.resource.id %>/logs')">
-  <div class="row between">
-    <h3 class="card-title">Container logs</h3>
-    <button class="btn btn-quiet btn-sm" x-show="paused" x-cloak @click="resume()">
+<div class="card stack" x-data="logPanel('/r/<%= it.resource.id %>/logs')">
+  <h2 class="card-title">Container logs</h2>
+  <%/* The empty-state message sits flush against <pre>: pre-wrap would show any
+       template whitespace. CSS hides it once a line arrives. */%>
+  <div class="logs-wrap">
+    <pre class="logs" x-ref="box" @scroll="onScroll()"><% if (it.logs.length === 0) { %><span class="logs-empty">No output yet. What the container writes to stdout and stderr appears here while it runs.</span><% } %><% it.logs.forEach(function (l) { %><span class="<%= l.stream %>"><%= l.text %></span>
+<% }) %></pre>
+    <button class="btn btn-sm" x-show="paused" x-cloak @click="resume()">
       <svg class="icon" aria-hidden="true"><use href="#i-arrow-down" /></svg>
       Jump to latest
     </button>
   </div>
-  <pre class="logs" x-ref="box" @scroll="onScroll()"><% it.logs.forEach(function (l) { %><span class="<%= l.stream %>"><%= l.text %></span>
-<% }) %></pre>
 </div>
 <% } %>
 
 <% if (it.tab === 'env') { %>
 <div class="card stack">
-  <h3 class="card-title">Resolved environment</h3>
+  <h2 class="card-title">Resolved environment</h2>
   <p class="muted">
     What this resource actually gets. Project and environment variables are
     inherited; anything set here wins.
@@ -188,7 +206,7 @@
 </div>
 
 <div class="card stack">
-  <h3 class="card-title">Resource variables</h3>
+  <h2 class="card-title">Resource variables</h2>
   <p class="muted">
     One <code>KEY=value</code> per line, in the box for where it is needed.
     Runtime variables reach the container; build variables reach the build and
@@ -214,23 +232,23 @@
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <div class="scope-boxes">
-      <label>
-        Runtime only
-        <textarea name="runtime" rows="8" spellcheck="false" placeholder="DATABASE_URL=postgres://..."></textarea>
-      </label>
-      <label>
-        Build only
-        <textarea name="build" rows="8" spellcheck="false" placeholder="NPM_TOKEN=..."></textarea>
-      </label>
-      <label>
-        Both
-        <textarea name="both" rows="8" spellcheck="false" placeholder="NODE_ENV=production"></textarea>
-      </label>
+      <div class="field">
+        <label class="label" for="res-vars-runtime">Runtime only</label>
+        <textarea id="res-vars-runtime" name="runtime" rows="8" spellcheck="false" placeholder="DATABASE_URL=postgres://..."></textarea>
+      </div>
+      <div class="field">
+        <label class="label" for="res-vars-build">Build only</label>
+        <textarea id="res-vars-build" name="build" rows="8" spellcheck="false" placeholder="NPM_TOKEN=..."></textarea>
+      </div>
+      <div class="field">
+        <label class="label" for="res-vars-both">Both</label>
+        <textarea id="res-vars-both" name="both" rows="8" spellcheck="false" placeholder="NODE_ENV=production"></textarea>
+      </div>
     </div>
     <div class="row end">
       <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
-        Save
+        Save variables
       </button>
     </div>
   </form>
@@ -239,7 +257,7 @@
 
 <% if (it.tab === 'domains') { %>
 <div class="card stack">
-  <h3 class="card-title">Domains</h3>
+  <h2 class="card-title">Domains</h2>
   <% if (it.autoDomain) { %>
   <p class="muted">Automatic: <span class="mono"><%= it.autoDomain %></span></p>
   <% } else { %>
@@ -271,13 +289,19 @@
     </li>
     <% }) %>
   </ul>
-  <form method="post" action="/r/<%= it.resource.id %>/domains" class="row gap">
+  <form method="post" action="/r/<%= it.resource.id %>/domains" class="stack">
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <input name="host" placeholder="app.example.com" required />
-    <button class="btn" type="submit">
-      <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
-      Add domain
-    </button>
+    <div class="field">
+      <label class="label" for="res-domain">Custom domain</label>
+      <div class="row gap">
+        <input id="res-domain" name="host" placeholder="app.example.com" required autocapitalize="none" spellcheck="false" aria-describedby="res-domain-hint" />
+        <button class="btn" type="submit">
+          <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+          Add domain
+        </button>
+      </div>
+      <p class="hint" id="res-domain-hint">An A or AAAA record for it must point at this server.</p>
+    </div>
   </form>
 </div>
 <% } %>
@@ -285,7 +309,7 @@
 <% if (it.tab === 'settings') { %>
 <% if (it.resource.kind === 'git') { %>
 <div class="card stack">
-  <h3 class="card-title">Source</h3>
+  <h2 class="card-title">Source</h2>
   <dl class="kv">
     <dt>Repository</dt>
     <dd class="mono"><%= it.resource.gitRepo || '—' %></dd>
@@ -328,7 +352,7 @@
 <% } %>
 
 <div class="card stack">
-  <h3 class="card-title">Settings</h3>
+  <h2 class="card-title">Settings</h2>
   <form method="post" action="/r/<%= it.resource.id %>/settings" class="stack">
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <% if (it.resource.kind === 'git') { %>
@@ -373,7 +397,7 @@
 </div>
 
 <div class="card card-danger stack">
-  <h3 class="card-title">Delete resource</h3>
+  <h2 class="card-title">Delete resource</h2>
   <p class="muted">
     Stops and removes the container, its route and its volumes. This cannot be
     undone.

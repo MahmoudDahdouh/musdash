@@ -348,6 +348,12 @@ select:focus-visible {
 }
 
 @media (max-width: 760px) {
+  /* The scrollbar is hidden, so a fade at the end says more tabs are there. */
+  .tabs {
+    padding-inline-end: var(--s-6);
+    scroll-padding-inline-end: var(--s-6);
+    mask-image: linear-gradient(to left, transparent, var(--text) var(--s-6));
+  }
   .shell {
     grid-template-columns: minmax(0, 1fr);
     /* Explicit rows: otherwise min-height: 100vh and the default stretch
@@ -443,15 +449,6 @@ h3 {
   font-size: var(--t-md);
   line-height: 1.4;
 }
-/* The small uppercase label is a class, not a heading level: as an h3 style
-   it capitalised every resource name, and names are DNS labels. */
-.eyebrow {
-  font-size: var(--t-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-2);
-}
 .card-title {
   font-size: var(--t-lg);
   line-height: 1.3;
@@ -486,14 +483,8 @@ p {
 /* Image references can be one unbroken token; block-level mono text breaks
    anywhere so it never widens the page. Not applied to table cells: it would
    shrink their min-content width and let the columns collapse. */
-h1.mono,
 p.mono {
   overflow-wrap: anywhere;
-}
-/* .mono's 13px outranks the bare h1 rule, which shrank the deployment title
-   below body text. */
-h1.mono {
-  font-size: var(--t-2xl);
 }
 code {
   font-family: var(--mono);
@@ -557,6 +548,23 @@ code {
 .page-title h1 {
   overflow-wrap: anywhere;
 }
+.page-title > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+.kv-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3) var(--s-6);
+  margin: 0 0 var(--s-5);
+}
+.kv-strip dt {
+  font-size: var(--t-xs);
+  color: var(--text-2);
+}
+.kv-strip dd {
+  margin: 0;
+}
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -602,9 +610,11 @@ main > .card + .card {
   justify-content: flex-end;
   gap: var(--s-2);
 }
+/* Two columns only when each gets 360px; the fixed minimum also stops a wide
+   table from stretching its track past the page. */
 .cols {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
   gap: var(--s-4);
 }
 .grid {
@@ -622,14 +632,6 @@ main > .card + .card {
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
-}
-
-@media (max-width: 760px) {
-  /* A bare 1fr track has an auto minimum, so a wide table inside it stretches
-     the column past the viewport; minmax(0, 1fr) lets .table-scroll clip. */
-  .cols {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 a.card {
@@ -883,11 +885,32 @@ textarea {
   line-height: 1.55;
   padding: var(--s-3);
   border-radius: var(--r-sm);
-  height: 460px;
+  height: min(60vh, 560px);
   overflow-y: auto;
-  margin: var(--s-3) 0 0;
+  scrollbar-gutter: stable;
+  margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.logs-lg {
+  height: min(70vh, 720px);
+}
+/* In the UI face, so it never reads as a line of output; hidden by the first
+   real line, with no script. */
+.logs-empty {
+  font-family: var(--font);
+  color: color-mix(in oklab, var(--term-fg) 75%, var(--term-bg));
+}
+.logs-empty:not(:only-child) {
+  display: none;
+}
+.logs-wrap {
+  position: relative;
+}
+.logs-wrap > .btn {
+  position: absolute;
+  right: var(--s-5);
+  bottom: var(--s-3);
 }
 .logs span {
   display: block;
@@ -1211,14 +1234,6 @@ form:has(> .scope-boxes) {
   .scope-boxes {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-}
-/* The resource page's editor, until slice 5 moves it to .field. */
-.scope-boxes > label {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-  font-size: var(--t-sm);
-  color: var(--text-2);
 }
 
 /* Pending after submit (app.js): a spinner takes the icon's place. */
