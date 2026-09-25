@@ -172,7 +172,7 @@
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <label>
       Name
-      <input name="name" required pattern="[a-z0-9-]{1,32}" placeholder="web" />
+      <input name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="web" />
       <small class="muted">Lowercase letters, digits and dashes. Becomes a DNS label.</small>
     </label>
     <label>
@@ -217,7 +217,7 @@
 
     <label>
       Name
-      <input name="name" required pattern="[a-z0-9-]{1,32}" placeholder="api" />
+      <input name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="api" />
       <small class="muted">Lowercase letters, digits and dashes. Becomes a DNS label.</small>
     </label>
 
@@ -393,7 +393,7 @@
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <label>
       Name
-      <input name="name" required pattern="[a-z0-9-]{1,32}" placeholder="staging" autofocus />
+      <input name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="staging" autofocus />
     </label>
     <div class="row end">
       <button type="button" onclick="this.closest('dialog').close()">Cancel</button>

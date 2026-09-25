@@ -93,37 +93,39 @@
     <% if (it.deployments.length === 0) { %>
     <p class="muted">Never deployed. Press Deploy to pull the image and start it.</p>
     <% } else { %>
-    <table class="deployments">
-      <thead>
-        <tr>
-          <th>Image</th>
-          <th>Commit</th>
-          <th>Message</th>
-          <th>Author</th>
-          <th>Trigger</th>
-          <th>Duration</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        <% it.deployments.forEach(function (d) { %>
-        <tr>
-          <td class="mono"><a href="/d/<%= d.id %>"><%= d.image %></a></td>
-          <!--
-            An image deploy and a rollback carry no commit metadata at all, so
-            these three render an em dash rather than an empty cell — a blank
-            column reads as a bug, and "null" reads as a worse one.
-          -->
-          <td class="mono"><%= d.commitSha ? d.commitSha.slice(0, 7) : '—' %></td>
-          <td class="commit-message" title="<%= d.commitMessage || '' %>"><%= d.commitMessage ? d.commitMessage.split('\n')[0] : '—' %></td>
-          <td><%= d.commitAuthor || '—' %></td>
-          <td><%= d.trigger %></td>
-          <td><%= d.duration %></td>
-          <td><span class="pill pill-<%= d.pill %>"><%= d.status %></span></td>
-        </tr>
-        <% }) %>
-      </tbody>
-    </table>
+    <div class="table-scroll">
+      <table class="deployments">
+        <thead>
+          <tr>
+            <th>Image</th>
+            <th>Commit</th>
+            <th>Message</th>
+            <th>Author</th>
+            <th>Trigger</th>
+            <th>Duration</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% it.deployments.forEach(function (d) { %>
+          <tr>
+            <td class="mono"><a href="/d/<%= d.id %>"><%= d.image %></a></td>
+            <!--
+              An image deploy and a rollback carry no commit metadata at all, so
+              these three render an em dash rather than an empty cell — a blank
+              column reads as a bug, and "null" reads as a worse one.
+            -->
+            <td class="mono"><%= d.commitSha ? d.commitSha.slice(0, 7) : '—' %></td>
+            <td class="commit-message" title="<%= d.commitMessage || '' %>"><%= d.commitMessage ? d.commitMessage.split('\n')[0] : '—' %></td>
+            <td><%= d.commitAuthor || '—' %></td>
+            <td><%= d.trigger %></td>
+            <td><%= d.duration %></td>
+            <td><span class="pill pill-<%= d.pill %>"><%= d.status %></span></td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
     <% } %>
   </div>
 </div>
