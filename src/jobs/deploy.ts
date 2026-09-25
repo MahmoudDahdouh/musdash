@@ -1,4 +1,6 @@
 import { caddy, routeIdFor } from "../caddy/client.ts"
+import { CADDY_CONTAINER } from "../caddy/bootstrap.ts"
+import { MIGRATE_LABEL } from "../caddy/kernel.ts"
 import { buildFromSource } from "./build.ts"
 import { config } from "../config.ts"
 import { LABEL_RESOURCE, LABEL_ROLE, managedLabels } from "../docker/client.ts"
@@ -42,6 +44,33 @@ export interface DeployPayload {
    * created with. See REUSES_IMAGE.
    */
   useExistingImage?: boolean
+}
+
+/**
+ * Logs the process's peak resident set after a deploy.
+ *
+ * The RAM gate measures idle memory, as specified, and a boot-and-idle run
+ * never deploys — yet a real 512MB VPS measured a 104MB high-water mark after
+ * deploys against 41MB idle (M-4, N-10). That peak is what a small host has to
+ * fit, so it is recorded where it happens, on every deploy. maxRSS is a
+ * lifetime high-water mark in KB, so the first deploy to raise it is the one
+ * whose line shows the jump.
+ */
+function logPeakRss(
+  resourceId: string,
+  deploymentId: string,
+  outcome: "succeeded" | "failed",
+): void {
+  logger.info(
+    {
+      resourceId,
+      deploymentId,
+      outcome,
+      rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      peakRssMb: Math.round(process.resourceUsage().maxRSS / 1024),
+    },
+    "deploy finished",
+  )
 }
 
 /** How long to let the old container finish in-flight requests. */
@@ -216,14 +245,40 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
       // container, so it is still safe to remove. Only once the swap is in play
       // does keeping it become the right cleanup, and the two are opposites.
       routeSwitchAttempted = true
+      // Said at every switch, not only in the bootstrap log nobody reads: a
+      // proxy without the sysctl has a known hole in the zero-downtime
+      // guarantee (D30, N-4). Asked of the RUNNING proxy's label, not of the
+      // kernel — a proxy created before a kernel upgrade still lacks it. A
+      // read-only Docker call, on the queue.
+      const proxy = (
+        await docker.findContainersByName(CADDY_CONTAINER).catch(() => [])
+      )[0]
+      if (proxy?.labels[MIGRATE_LABEL] !== "1") {
+        emit(
+          "Note: the proxy runs without tcp_migrate_req (it needs Linux 5.14+), so a request arriving at " +
+            "the instant of the switch may fail. See RUNNING.md.",
+        )
+      }
       await caddy.upsertRoute({
         id: routeIdFor(resourceId),
         hosts,
         upstream,
       })
       emit(`Route switched to ${upstream} for ${hosts.join(", ")}`)
-    } else if (hosts.length > 0) {
-      emit("No container port set — skipping route (set one to expose it)")
+    } else {
+      if (hosts.length > 0) {
+        emit("No container port set — skipping route (set one to expose it)")
+      }
+      // Nothing to route to, so no route. An earlier deploy's route would
+      // otherwise keep dialling the old container, which 8b is about to
+      // remove. Best-effort: a missing route is the goal, and a Caddy hiccup
+      // here must not fail a deploy whose container is healthy.
+      await caddy.deleteRoute(routeIdFor(resourceId)).catch((err: unknown) => {
+        logger.warn(
+          { resourceId, err: (err as Error).message },
+          "could not delete the Caddy route",
+        )
+      })
     }
     // Only reached if nothing above threw; a failure propagates to the outer
     // catch, which knows to keep the healthy container rather than remove it.
@@ -279,6 +334,7 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
       containerId: newContainerId,
     })
     emit("Deploy succeeded")
+    logPeakRss(resourceId, deploymentId, "succeeded")
 
     startLogStream(resourceId, newContainerId)
   } catch (err) {
@@ -319,6 +375,7 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
       containerId: oldContainerId,
     })
     emit(`Deploy failed: ${message}`)
+    logPeakRss(resourceId, deploymentId, "failed")
     throw err
   }
 }

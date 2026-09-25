@@ -12,10 +12,10 @@
  * PowerShell is used there.
  *
  * On Linux it also prints the PEAK resident set (VmHWM) next to the idle one.
- * Informational, never gated: the ceiling is an idle number by definition, but
- * a 512MB host has to fit the peak too, and a real VPS measured 41MB idle with
- * a 104MB high-water mark after deploys. A number that is never printed is a
- * number nobody notices drifting.
+ * Informational, never gated: the ceiling is an idle number by definition. This
+ * run never deploys, so its peak is the boot peak only; the figure a 512MB host
+ * has to fit — a real VPS measured 104MB after deploys against 41MB idle — is
+ * logged by every deploy as `peakRssMb` on its "deploy finished" line.
  *
  *   bun run gate:rss                 build, then measure
  *   bun run rss -- --idle 5          shorter idle while iterating
@@ -113,7 +113,8 @@ try {
   const peak = await peakRssMb(proc.pid)
   if (peak !== null) {
     console.log(
-      `INFO  peak RSS since start ${peak.toFixed(1)}MB (not gated; deploys raise it further).`,
+      `INFO  peak RSS since start ${peak.toFixed(1)}MB — boot and idle only, not gated. ` +
+        'The deploy peak is logged by every deploy as peakRssMb ("deploy finished").',
     )
   }
   if (mb > ceiling) {
