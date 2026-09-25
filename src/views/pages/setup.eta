@@ -1,25 +1,28 @@
-<div class="narrow">
-  <h1>Welcome to musdash</h1>
-  <p class="muted">
-    Create the administrator account. This is the only account — musdash is
-    single-user by design.
-  </p>
-  <% if (it.error) { %>
-  <div class="notice notice-error" role="alert">
-    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
-    <div><%= it.error %></div>
+<div class="narrow auth">
+  <div class="auth-head">
+    <div class="brand"><svg class="icon" aria-hidden="true"><use href="#i-mark" /></svg>musdash</div>
+    <p class="muted">Your $5 VPS runs your apps, not your dashboard.</p>
   </div>
-  <% } %>
-  <form method="post" action="/setup" class="card stack">
-    <div class="field">
-      <label class="label" for="setup-email">Email</label>
-      <input id="setup-email" type="email" name="email" required autofocus autocomplete="username" autocapitalize="none" spellcheck="false" />
+  <div class="card stack">
+    <h1>Create the administrator account</h1>
+    <p class="muted">This is the only account — musdash is single-user by design.</p>
+    <% if (it.error) { %>
+    <div class="notice notice-error" role="alert">
+      <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+      <div><%= it.error %></div>
     </div>
-    <div class="field">
-      <label class="label" for="setup-password">Password</label>
-      <input id="setup-password" type="password" name="password" required minlength="12" autocomplete="new-password" aria-describedby="setup-password-hint" />
-      <p class="hint" id="setup-password-hint">At least 12 characters.</p>
-    </div>
-    <button type="submit" class="btn btn-primary">Create account</button>
-  </form>
+    <% } %>
+    <form method="post" action="/setup" class="stack">
+      <div class="field">
+        <label class="label" for="setup-email">Email</label>
+        <input id="setup-email" type="email" name="email" required autofocus autocomplete="username" autocapitalize="none" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label class="label" for="setup-password">Password</label>
+        <input id="setup-password" type="password" name="password" required minlength="12" autocomplete="new-password" aria-describedby="setup-password-hint" />
+        <p class="hint" id="setup-password-hint">At least 12 characters.</p>
+      </div>
+      <button type="submit" class="btn btn-primary">Create account</button>
+    </form>
+  </div>
 </div>

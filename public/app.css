@@ -454,10 +454,6 @@ h3 {
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
-h4 {
-  font-size: var(--t-md);
-  font-weight: 600;
-}
 p {
   text-wrap: pretty;
 }
@@ -637,13 +633,25 @@ main > .card + .card {
 a.card {
   text-decoration: none;
   color: inherit;
-  transition:
-    border-color var(--d-fast) var(--ease),
-    box-shadow var(--d-fast) var(--ease);
 }
 a.card:hover {
   border-color: var(--border-2);
   box-shadow: var(--shadow-2);
+}
+/* Motion only for those who have not asked for less: the card hover, and a
+   cross-fade between pages where the browser supports it. */
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition {
+    navigation: auto;
+  }
+  ::view-transition-group(root) {
+    animation-duration: var(--d-page);
+  }
+  a.card {
+    transition:
+      border-color var(--d-fast) var(--ease),
+      box-shadow var(--d-fast) var(--ease);
+  }
 }
 .card .meta {
   display: flex;
@@ -954,6 +962,28 @@ textarea {
 }
 .notice-error {
   --tone: var(--danger);
+}
+
+/* Sign-in and setup: the mark above one card; .narrow stays for other pages.
+   Here, after the type and notice rules, so no selector descends in specificity. */
+.narrow.auth {
+  max-width: 400px;
+}
+.auth-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: var(--s-5);
+  text-align: center;
+}
+.auth .brand,
+.auth h1 {
+  font-size: var(--t-xl);
+}
+.auth p,
+.auth .notice {
+  margin: 0;
 }
 
 .empty {

@@ -1,20 +1,25 @@
-<div class="narrow">
-  <h1>Sign in</h1>
-  <% if (it.error) { %>
-  <div class="notice notice-error" role="alert">
-    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
-    <div><%= it.error %></div>
+<div class="narrow auth">
+  <div class="auth-head">
+    <div class="brand"><svg class="icon" aria-hidden="true"><use href="#i-mark" /></svg>musdash</div>
   </div>
-  <% } %>
-  <form method="post" action="/login" class="card stack">
-    <div class="field">
-      <label class="label" for="login-email">Email</label>
-      <input id="login-email" type="email" name="email" required autofocus autocomplete="username" autocapitalize="none" spellcheck="false" />
+  <div class="card stack">
+    <h1>Sign in</h1>
+    <% if (it.error) { %>
+    <div class="notice notice-error" role="alert">
+      <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+      <div><%= it.error %></div>
     </div>
-    <div class="field">
-      <label class="label" for="login-password">Password</label>
-      <input id="login-password" type="password" name="password" required autocomplete="current-password" />
-    </div>
-    <button type="submit" class="btn btn-primary">Sign in</button>
-  </form>
+    <% } %>
+    <form method="post" action="/login" class="stack">
+      <div class="field">
+        <label class="label" for="login-email">Email</label>
+        <input id="login-email" type="email" name="email" required autofocus autocomplete="username" autocapitalize="none" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label class="label" for="login-password">Password</label>
+        <input id="login-password" type="password" name="password" required autocomplete="current-password" />
+      </div>
+      <button type="submit" class="btn btn-primary">Sign in</button>
+    </form>
+  </div>
 </div>
