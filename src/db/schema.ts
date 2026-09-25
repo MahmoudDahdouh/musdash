@@ -15,12 +15,18 @@ import {
  * migration DSL beyond the basics).
  */
 
-export const users = sqliteTable("users", {
-  id: text("id").primaryKey(),
-  email: text("email").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
-  createdAt: text("created_at").notNull(),
-})
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull().unique(),
+    passwordHash: text("password_hash").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  // At most one row (migrations/0004_single_user.sql, D36): a unique index on
+  // a constant. Mirrors the SQL, which is authoritative.
+  () => [uniqueIndex("idx_users_single").on(sql`(1)`)],
+)
 
 export const sessions = sqliteTable("sessions", {
   id: text("id").primaryKey(),

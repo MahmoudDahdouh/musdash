@@ -1,5 +1,6 @@
 import { Elysia, t } from "elysia"
 import {
+  AccountExistsError,
   createSession,
   createUser,
   destroySession,
@@ -56,6 +57,15 @@ export const authRoutes = new Elysia()
         user = await createUser(body.email, body.password)
       } catch (err) {
         if (err instanceof GateBusyError) return busy("setup", "Set up")
+        // Lost a race or a double-submit to the account that now exists: the
+        // same answer GET /setup gives once there is one. No email in the line.
+        if (err instanceof AccountExistsError) {
+          logger.warn(
+            { path: "/setup" },
+            "setup lost to an existing account; redirected to sign-in",
+          )
+          return redirect("/login", 303)
+        }
         throw err
       }
       const session = createSession(user.id)

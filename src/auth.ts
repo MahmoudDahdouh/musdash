@@ -31,7 +31,24 @@ export function hasAdminUser(): boolean {
   return userCount() > 0
 }
 
-/** May throw GateBusyError (src/password.ts); the route answers 503. */
+/**
+ * An account already exists: `idx_users_single` (migrations/0004, D36) or the
+ * email UNIQUE refused the insert. POST /setup answers 303 /login.
+ */
+export class AccountExistsError extends Error {
+  // Set explicitly: the release binary is minified, so the class name the
+  // runtime would infer is mangled.
+  override readonly name = "AccountExistsError"
+}
+
+/**
+ * May throw GateBusyError (the hash, src/password.ts; the route answers 503) or
+ * AccountExistsError (the insert).
+ *
+ * The hasAdminUser() check in the route runs before the awaited hash, so two
+ * concurrent setups can both pass it. The database is what decides: whichever
+ * insert lands second fails on the single-row index, whatever its email.
+ */
 export async function createUser(
   email: string,
   password: string,
@@ -42,8 +59,45 @@ export async function createUser(
     passwordHash: await hashPassword(password),
     createdAt: nowIso(),
   }
-  orm.insert(users).values(user).run()
+  // The try wraps the insert only, so GateBusyError from the hash above
+  // reaches the route unchanged.
+  try {
+    orm.insert(users).values(user).run()
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw new AccountExistsError("an account already exists")
+    }
+    // The error's name and SQLite code and nothing else, and a fixed-message
+    // rethrow: handleError logs String(error), and a drizzle that wraps this
+    // in DrizzleQueryError would put the params — this row's password_hash —
+    // into that line (D34). Today it is a raw SQLiteError with no params; the
+    // rule has to hold either way.
+    logger.error(
+      {
+        errorName: err instanceof Error ? err.name : typeof err,
+        code: sqliteCode(err),
+      },
+      "account insert failed",
+    )
+    throw new Error("could not create the account")
+  }
   return user
+}
+
+function sqliteCode(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null || !("code" in err)) {
+    return undefined
+  }
+  return typeof err.code === "string" ? err.code : undefined
+}
+
+/** The error itself, or one level of `cause` in case a wrapper appears. */
+function isUniqueViolation(err: unknown): boolean {
+  if (sqliteCode(err) === "SQLITE_CONSTRAINT_UNIQUE") return true
+  if (typeof err !== "object" || err === null || !("cause" in err)) {
+    return false
+  }
+  return sqliteCode(err.cause) === "SQLITE_CONSTRAINT_UNIQUE"
 }
 
 /**

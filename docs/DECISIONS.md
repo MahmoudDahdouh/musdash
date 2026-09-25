@@ -2422,3 +2422,84 @@ Verified locally: everything in the table, `bun run ci`, `bun test`
 in particular whether Caddy relays Bun's 413 for a body over 1 MiB or reports
 a 502 after Bun closes the connection, and a real push delivery's payload
 size.
+
+## Exactly one account, enforced by the database (S-1, 2026-09-25)
+
+Found while planning V-3. `POST /setup` checked `hasAdminUser()`, then awaited
+the password hash, then inserted. Two setups landing inside that gap — two
+tabs, or someone racing the owner at first boot — could both pass the check
+and create two accounts with different emails. A double-submit with the same
+email hit `users.email UNIQUE` and answered with a 500. musdash is single-user
+by design, and a raw 500 must never reach the browser.
+
+### D36 — a unique index on a constant, and nothing is ever deleted
+
+**The guarantee lives in the database.** Migration `0004_single_user` adds
+`CREATE UNIQUE INDEX idx_users_single ON users((1))`: an index on a constant
+expression, so every row has the same key and a second row cannot be written
+by any code path, current or future. Verified on Bun 1.4.2 / SQLite 3.51.0: a
+second insert, with a different or the same email, throws a raw `SQLiteError`
+with `code` `SQLITE_CONSTRAINT_UNIQUE` (drizzle 0.45's `.run()` does not wrap
+it). A re-check just before the insert would also have closed the race — with
+one connection and synchronous `bun:sqlite`, a check and an insert with no
+`await` between them cannot interleave — but it guards one code path, and the
+index guards them all. The check before hashing stays, so argon2 does not run
+once setup is done.
+
+**What the losing request sees.** `createUser` maps the unique violation to a
+typed `AccountExistsError`, and `POST /setup` answers it with `303 /login` —
+what `GET /setup` already does once an account exists. A double-clicking owner
+lands on sign-in with the credentials they just typed. Any other insert error
+is logged as `{ errorName, code }` only and rethrown with a fixed message:
+`handleError` logs `String(error)`, and a future driver that wrapped the error
+with its query parameters would otherwise put the hash in the journal (D34).
+
+**Installs that already have two or more accounts.** Possible today, though
+realistically rare or absent: only the race creates them, and an install that
+has one can no longer hit it, since setup closes once any account exists. The
+one known install, the 1GB VPS, has one. For such an install the migration
+keeps the oldest account (ordered by `created_at`, then `id`) and **moves**
+the others, with their sessions deleted, into `users_removed_0004`, a STRICT
+table with the same columns. Nothing is destroyed; recovery is manual. The
+table is deliberately not in `schema.ts` — nothing reads it. It matters
+because the oldest row is not necessarily the owner's: if someone won a
+first-boot race, theirs is the oldest, and deleting the rest would have
+destroyed the owner's own account. After the migration commits, one error
+line names the kept and moved addresses and the table, and tells the owner to
+reinstall if the kept address is not theirs. A rolled-back migration logs
+nothing.
+
+Rejected: refusing to start (a failed migration takes the dashboard down, and
+the host has no `sqlite3` to fix it by hand); a partial unique index (it still
+admits one new row next to the old ones, keyed on application-written text);
+skipping the index while duplicates exist (the invariant would stay off
+exactly where it is already broken, with both accounts able to sign in).
+
+**The runner moved, unchanged.** The migration list and the runner now live in
+`src/db/migrations.ts`, which opens no database; `src/db/migrate.ts` calls it
+with the real one. Transaction per migration and applied-tracking are as
+before, and migrations are still static text imports (trap 6). A migration may
+carry a `before` hook that runs inside its transaction and returns what to log
+after the commit.
+
+**Tests.** `src/db/single-user.test.ts` widens the test policy by one file, for
+the same reason as N-14 and D34 — a regression one careless edit away that no
+click-through would show. It runs the **full shipped list** of migrations, so
+a later migration that rebuilds `users` and drops the index fails it; removing
+the index line, or adding a throwaway rebuild migration, was checked to fail
+it. It also runs the two-account upgrade with foreign keys on and off, and
+checks the moved row arrives intact.
+
+### Verified, and not verified
+
+Verified locally on the compiled binary: 20 concurrent setups with different
+emails, and 20 with the same email, each left exactly one account — one
+`303 /`, the rest `303 /login` or the gate's 503, zero 500s — with no hash,
+password or `request failed` line in the log. A database given two accounts
+by the pre-D36 binary upgraded to one account plus the other moved
+byte-for-byte into `users_removed_0004`; the kept account signs in, the moved
+one does not. A one-account upgrade kept the existing session working.
+`bun run ci`, `bun test` (179 pass). Not verified: the browser double-click
+(criterion 14) and the upgrade on the 1GB VPS (criterion 18). Noted: the
+argon2 gate's busy warn says "sign-in busy" for setup requests too; the
+wording lives in `src/password.ts`.
