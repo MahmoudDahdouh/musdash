@@ -1,13 +1,20 @@
-import { chmodSync, existsSync, mkdirSync } from "node:fs"
+import { chmodSync, mkdirSync, rmSync } from "node:fs"
 import {
   ADMIN_LISTEN,
   ADMIN_SOCKET_DIR_IN_CONTAINER,
   caddy,
+  CaddyClient,
   CaddyError,
   ensureDashboardRoutes,
 } from "./client.ts"
+import {
+  MIGRATE_LABEL,
+  MIGRATE_SYSCTL,
+  supportsListenerMigration,
+} from "./kernel.ts"
 import { config, HOST_ALIAS } from "../config.ts"
 import {
+  type ContainerSpec,
   type ContainerState,
   DockerError,
   sidecarLabels,
@@ -74,19 +81,6 @@ const SPEC_VERSION = "2"
  */
 const CONFIG_HOME = "/config/musdash"
 
-/**
- * Lets a closing listener hand its queued connections to its replacement.
- *
- * Every admin-API write is a full config reload, and Caddy rebinds :80/:443 on
- * each one with SO_REUSEPORT, then closes the old socket. Linux resets whatever
- * was still in the closing socket's accept queue — measured on a real VPS as
- * one failed request (a TLS connect error) at every route switch, which is the
- * zero-downtime guarantee failing (D30). With this set, the kernel migrates
- * those connections to the new socket instead. Namespaced to the proxy's own
- * network namespace, so nothing on the host changes.
- */
-const MIGRATE_SYSCTL = "net.ipv4.tcp_migrate_req"
-
 /** How long to wait for the admin API after starting the container. */
 const READY_TIMEOUT_SEC = 30
 
@@ -114,8 +108,18 @@ export async function ensureCaddy(): Promise<void> {
   // there and try to create a second proxy on the same ports.
   let existing = (await docker.findContainersByName(CADDY_CONTAINER))[0]
 
+  // A current proxy that lacks the migration sysctl while the kernel now has it
+  // — created before a kernel upgrade — is replaced too, through the same
+  // preflight. Otherwise it would be adopted forever and every route switch
+  // would keep the hole D30 closes.
+  const canMigrate = supportsListenerMigration()
+  const current =
+    existing !== undefined &&
+    existing.labels[SPEC_LABEL] === SPEC_VERSION &&
+    (existing.labels[MIGRATE_LABEL] === "1" || !canMigrate)
+
   let id: string
-  if (existing && existing.labels[SPEC_LABEL] === SPEC_VERSION) {
+  if (existing && current) {
     // Adopt as-is: no recreate, no relabel. The running proxy is holding live
     // TLS connections and already has the current definition.
     id = existing.id
@@ -150,28 +154,7 @@ export async function ensureCaddy(): Promise<void> {
       )
     }
 
-    if (existing) {
-      // An outdated proxy — including one an older install.sh created, which
-      // has no labels at all. D7 said never to recreate an adopted proxy; that
-      // held until the proxy itself was the hole. Its admin API answers every
-      // app on the musdash network, unauthenticated, so any deployed app could
-      // rewrite routing and capture the dashboard login (D29). Certificates
-      // live on DATA_VOLUME, which is kept, so nothing is re-issued.
-      // There is no fallback once it is gone: :80/:443 cannot be held by two
-      // proxies, and recreating the old definition would reinstate the hole.
-      // A replacement that then fails to come up is reported by the readiness
-      // gates below and re-queued by the reconciler; the dashboard stays
-      // reachable over an SSH tunnel to :8000 meanwhile (D31 admits loopback).
-      logger.warn(
-        { container: CADDY_CONTAINER, id: existing.id },
-        "replacing the proxy container: its admin API was reachable from every app on the musdash network. " +
-          "Certificates are kept; sites are briefly unavailable while it restarts",
-      )
-      await docker.removeContainer(existing.id, true)
-      existing = undefined
-    }
-
-    const migrate = supportsListenerMigration()
+    const migrate = canMigrate
     if (!migrate) {
       logger.warn(
         { sysctl: MIGRATE_SYSCTL },
@@ -179,85 +162,79 @@ export async function ensureCaddy(): Promise<void> {
           "a route switch may drop a request that arrives at that instant",
       )
     }
+    const spec = proxySpec(migrate)
 
-    id = await docker.createContainer({
-      name: CADDY_CONTAINER,
-      image: CADDY_IMAGE,
-      env: {
-        // A unix socket in a bind-mounted directory only musdash's user can
-        // enter — never a TCP port. See ADMIN_LISTEN and D29.
-        CADDY_ADMIN: ADMIN_LISTEN,
-        XDG_CONFIG_HOME: CONFIG_HOME,
-      },
-      labels: { ...sidecarLabels("proxy"), [SPEC_LABEL]: SPEC_VERSION },
-      hostMounts: [
-        {
-          hostPath: config.caddyAdminDir,
-          mountPath: ADMIN_SOCKET_DIR_IN_CONTAINER,
-        },
-      ],
-      ...(migrate ? { sysctls: { [MIGRATE_SYSCTL]: "1" } } : {}),
-      // Lets Caddy dial the dashboard, which binds the host's loopback rather
-      // than living on this network (D2).
-      extraHosts: [`${HOST_ALIAS}:${config.hostGatewayIp}`],
-      networks: [config.network],
-      volumes: [
-        { name: DATA_VOLUME, mountPath: "/data" },
-        { name: CONFIG_VOLUME, mountPath: "/config" },
-      ],
-      ports: [
-        { containerPort: 80, hostPort: 80, protocol: "tcp", hostIp: "0.0.0.0" },
-        {
-          containerPort: 443,
-          hostPort: 443,
-          protocol: "tcp",
-          hostIp: "0.0.0.0",
-        },
-        // HTTP/3.
-        {
-          containerPort: 443,
-          hostPort: 443,
-          protocol: "udp",
-          hostIp: "0.0.0.0",
-        },
-        // No admin port. It used to be published on 127.0.0.1:2019, which
-        // required a TCP listener on every interface INSIDE the container —
-        // including the musdash network every user app is attached to (D29).
-      ],
-      memoryLimitBytes: CADDY_MEMORY_BYTES,
-      restartPolicy: "unless-stopped",
-      // `--resume` restores the persisted JSON config across restarts, so a
-      // reboot comes back with every route intact. No `--config`: on a fresh
-      // volume that file does not exist and Caddy exits rather than starting
-      // empty, which crash-loops the proxy forever on a new install. With
-      // `--resume` alone it starts blank the first time and ensureBaseConfig()
-      // below installs srv0 through the admin API; every later start resumes
-      // the autosave that the admin API writes.
-      command: ["caddy", "run", "--resume"],
-    })
+    if (existing) {
+      // An outdated proxy — including one an older install.sh created, which
+      // has no labels at all. D7 said never to recreate an adopted proxy; that
+      // held until the proxy itself was the hole. Its admin API answers every
+      // app on the musdash network, unauthenticated, so any deployed app could
+      // rewrite routing and capture the dashboard login (D29). Certificates
+      // live on DATA_VOLUME, which is kept, so nothing is re-issued.
+      //
+      // There is no fallback once it is gone: :80/:443 cannot be held by two
+      // proxies, and recreating the old definition would reinstate the hole.
+      // So the replacement is proven BEFORE the old proxy is touched: a
+      // throwaway copy of the new definition, minus the ports and volumes, has
+      // to be created, started, and answer on its admin socket. That exercises
+      // everything the Engine or the kernel could reject — the image, the
+      // sysctl, the bind mount, the socket's permissions — while the old proxy
+      // keeps serving. A failure leaves it in place and says why (N-2).
+      await preflight(spec)
+      logger.warn(
+        { container: CADDY_CONTAINER, id: existing.id },
+        existing.labels[SPEC_LABEL] === SPEC_VERSION
+          ? "replacing the proxy container: it was created without tcp_migrate_req, which this kernel now supports. " +
+              "Certificates are kept; sites are briefly unavailable while it restarts"
+          : "replacing the proxy container: its admin API was reachable from every app on the musdash network. " +
+              "Certificates are kept; sites are briefly unavailable while it restarts",
+      )
+      await docker.removeContainer(existing.id, true)
+      existing = undefined
+    }
+
+    // A socket file left by a proxy that died without cleaning up. Caddy
+    // unlinks one before binding, but that is its behaviour to change, and the
+    // directory is ours — so it is removed here too.
+    rmSync(config.caddyAdminSocket, { force: true })
+    id = await docker.createContainer(spec)
   }
 
   const adopted = existing !== undefined
-  await docker.startContainer(id)
-
-  // A container musdash created moments ago has never restarted. Any nonzero
-  // count means it started, died, and was restarted by the unless-stopped
-  // policy — which for Caddy means a bind failure, and which the readiness
-  // poll would otherwise paper over by catching it during an up-phase of the
-  // loop. The adopted path deliberately skips this: an operator's proxy that
-  // has been up for months across a reboot legitimately has restarts, so there
-  // it falls to gate 1 and the serving probe instead.
-  if (!adopted) {
-    const initial = await docker.inspectContainer(id)
-    if (!initial.running || initial.restartCount > 0) {
-      throw new CaddyError(exitedMessage(initial))
+  // Scoped to "never came up at all": start, the restart check, and the admin
+  // socket. A failure after that — ensureBaseConfig, or verifyServing's probe
+  // of :80, which can fail for reasons outside the proxy — leaves a live proxy
+  // that the next bootstrap adopts and re-checks. Removing it there would turn
+  // one false negative into an outage.
+  try {
+    await docker.startContainer(id)
+    // A container musdash created moments ago has never restarted. Any nonzero
+    // count means it started, died, and was restarted by the unless-stopped
+    // policy — which for Caddy means a bind failure, and which the readiness
+    // poll would otherwise paper over by catching it during an up-phase of the
+    // loop. The adopted path deliberately skips this: an operator's proxy that
+    // has been up for months across a reboot legitimately has restarts, so there
+    // it falls to gate 1 and the serving probe instead.
+    if (!adopted) {
+      const initial = await docker.inspectContainer(id)
+      if (!initial.running || initial.restartCount > 0) {
+        throw new CaddyError(exitedMessage(initial))
+      }
     }
+    await waitForAdmin(id, adopted)
+  } catch (err) {
+    // A container created in this run that never came up is removed rather
+    // than left behind. It carries the current SPEC_LABEL, so the next
+    // bootstrap would otherwise ADOPT the broken container forever instead of
+    // creating a fresh one (N-2).
+    if (!adopted)
+      await removeQuietly(id, "the proxy container that failed to start")
+    throw err
   }
-
-  await waitForAdmin(id, adopted)
   await caddy.ensureBaseConfig()
   // Only now is there unambiguously an srv0 to be bound. See verifyServing.
   await verifyServing(id)
+
   // A replaced proxy starts from a blank config, and a reboot can hand a
   // container a new IP: either way the database is the source of truth. New
   // routes go in at the front, so this can run before or after the dashboard's.
@@ -279,6 +256,175 @@ export async function ensureCaddy(): Promise<void> {
   )
 }
 
+/** The proxy's container definition. See SPEC_VERSION before changing it. */
+function proxySpec(migrate: boolean): ContainerSpec {
+  return {
+    name: CADDY_CONTAINER,
+    image: CADDY_IMAGE,
+    env: {
+      // A unix socket in a bind-mounted directory only musdash's user can
+      // enter — never a TCP port. See ADMIN_LISTEN and D29.
+      CADDY_ADMIN: ADMIN_LISTEN,
+      XDG_CONFIG_HOME: CONFIG_HOME,
+    },
+    labels: {
+      ...sidecarLabels("proxy"),
+      [SPEC_LABEL]: SPEC_VERSION,
+      [MIGRATE_LABEL]: migrate ? "1" : "0",
+    },
+    hostMounts: [
+      {
+        hostPath: config.caddyAdminDir,
+        mountPath: ADMIN_SOCKET_DIR_IN_CONTAINER,
+      },
+    ],
+    ...(migrate ? { sysctls: { [MIGRATE_SYSCTL]: "1" } } : {}),
+    // Lets Caddy dial the dashboard, which runs on the host rather than on
+    // this network and binds every interface (D2, D23).
+    extraHosts: [`${HOST_ALIAS}:${config.hostGatewayIp}`],
+    networks: [config.network],
+    volumes: [
+      { name: DATA_VOLUME, mountPath: "/data" },
+      { name: CONFIG_VOLUME, mountPath: "/config" },
+    ],
+    ports: [
+      { containerPort: 80, hostPort: 80, protocol: "tcp", hostIp: "0.0.0.0" },
+      {
+        containerPort: 443,
+        hostPort: 443,
+        protocol: "tcp",
+        hostIp: "0.0.0.0",
+      },
+      // HTTP/3.
+      {
+        containerPort: 443,
+        hostPort: 443,
+        protocol: "udp",
+        hostIp: "0.0.0.0",
+      },
+      // No admin port. It used to be published on 127.0.0.1:2019, which
+      // required a TCP listener on every interface INSIDE the container —
+      // including the musdash network every user app is attached to (D29).
+    ],
+    memoryLimitBytes: CADDY_MEMORY_BYTES,
+    restartPolicy: "unless-stopped",
+    // `--resume` restores the persisted JSON config across restarts, so a
+    // reboot comes back with every route intact. No `--config`: on a fresh
+    // volume that file does not exist and Caddy exits rather than starting
+    // empty, which crash-loops the proxy forever on a new install. With
+    // `--resume` alone it starts blank the first time and ensureBaseConfig()
+    // installs srv0 through the admin API; every later start resumes the
+    // autosave that the admin API writes.
+    command: ["caddy", "run", "--resume"],
+  }
+}
+
+const PREFLIGHT_CONTAINER = `${CADDY_CONTAINER}-preflight`
+
+/** Bounded well under READY_TIMEOUT_SEC: a blank Caddy is up in about a second. */
+const PREFLIGHT_TIMEOUT_SEC = 20
+
+/**
+ * Proves a proxy definition boots, without disturbing the running proxy.
+ *
+ * Creates a throwaway container from `spec` with everything that would clash
+ * with the live proxy stripped — no published ports, no named volumes (two
+ * Caddys must never share a certificate store), not on the musdash network, and
+ * its own socket directory — then requires it to run and answer on its admin
+ * socket. What remains is exactly what can reject a new definition: the image,
+ * the sysctl, the bind mount and the socket's permissions. The only thing it
+ * cannot prove is the :80/:443 bind, which the live proxy holds by definition.
+ *
+ * Always removes the throwaway container, pass or fail.
+ */
+async function preflight(spec: ContainerSpec): Promise<void> {
+  const dir = `${config.caddyAdminDir}-preflight`
+
+  let id: string | null = null
+  try {
+    prepareDir(dir)
+    // Every preflight is force-removed, so its socket is always left behind.
+    rmSync(`${dir}/admin.sock`, { force: true })
+    for (const stale of await docker.findContainersByName(
+      PREFLIGHT_CONTAINER,
+    )) {
+      await docker.removeContainer(stale.id, true)
+    }
+    id = await docker.createContainer({
+      ...spec,
+      name: PREFLIGHT_CONTAINER,
+      labels: sidecarLabels("proxy-preflight"),
+      hostMounts: [{ hostPath: dir, mountPath: ADMIN_SOCKET_DIR_IN_CONTAINER }],
+      networks: [],
+      volumes: [],
+      ports: [],
+      extraHosts: [],
+      restartPolicy: "no",
+      // Resumes nothing: the blank config is all a boot test needs.
+      command: ["caddy", "run"],
+    })
+    await docker.startContainer(id)
+
+    const probe = new CaddyClient(`${dir}/admin.sock`)
+    const deadline = Date.now() + PREFLIGHT_TIMEOUT_SEC * 1000
+    for (;;) {
+      const state = await docker.inspectContainer(id)
+      if (!state.running) {
+        throw new CaddyError(`it exited with code ${state.exitCode}`)
+      }
+      if (await probe.ping()) return
+      if (Date.now() > deadline) {
+        throw new CaddyError(
+          `its admin socket did not answer within ${PREFLIGHT_TIMEOUT_SEC}s`,
+        )
+      }
+      await Bun.sleep(500)
+    }
+  } catch (err) {
+    // The container is about to be removed, and its logs with it — and they
+    // are the only record of WHY it failed. Keep the tail in the error.
+    const tail = id ? await logTail(id) : ""
+    throw new CaddyError(
+      `the replacement proxy failed a preflight, so the current proxy was left in place and is still serving: ` +
+        `${(err as Error).message}${tail ? `. Its last log lines: ${tail}` : ""}`,
+    )
+  } finally {
+    if (id) await removeQuietly(id, PREFLIGHT_CONTAINER)
+  }
+}
+
+/**
+ * Removes a container on a cleanup path, where a second failure must not mask
+ * the first — but is still logged, never swallowed: a preflight left running
+ * is a container nobody else will ever remove.
+ */
+async function removeQuietly(id: string, what: string): Promise<void> {
+  try {
+    await docker.removeContainer(id, true)
+  } catch (err) {
+    logger.warn(
+      { id, err: (err as Error).message },
+      `could not remove ${what}; remove it by hand with 'docker rm -f ${id}'`,
+    )
+  }
+}
+
+/** The last few log lines of a container, joined, or "" if unreadable. */
+async function logTail(id: string): Promise<string> {
+  const lines: string[] = []
+  try {
+    for await (const line of docker.streamLogs(id, {
+      follow: false,
+      tail: 5,
+    })) {
+      lines.push(line.text.trim())
+    }
+  } catch {
+    // Diagnostics only: a failure to read them must not mask the real error.
+  }
+  return lines.filter((l) => l !== "").join(" | ")
+}
+
 /**
  * Creates the directory the proxy puts its admin socket in, private to musdash.
  *
@@ -288,28 +434,19 @@ export async function ensureCaddy(): Promise<void> {
  * mode is filtered by the umask and ignored entirely when the path exists.
  */
 function prepareAdminDir(): void {
+  prepareDir(config.caddyAdminDir)
+}
+
+function prepareDir(dir: string): void {
   try {
-    mkdirSync(config.caddyAdminDir, { recursive: true, mode: 0o700 })
-    chmodSync(config.caddyAdminDir, 0o700)
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    chmodSync(dir, 0o700)
   } catch (err) {
     throw new CaddyError(
-      `cannot prepare ${config.caddyAdminDir} for the proxy's admin socket: ${(err as Error).message}. ` +
+      `cannot prepare ${dir} for the proxy's admin socket: ${(err as Error).message}. ` +
         "It must be a directory owned by the user musdash runs as.",
     )
   }
-}
-
-/**
- * Whether the kernel has tcp_migrate_req (Linux 5.14+).
- *
- * Read from this host's /proc, which assumes the daemon shares this kernel —
- * true for the local socket, which is the only place the proxy runs. The check
- * matters because runc fails the container START, not the create, on a sysctl
- * the kernel does not have: a proxy that never starts is far worse than one
- * that occasionally drops a request during a reload.
- */
-function supportsListenerMigration(): boolean {
-  return existsSync(`/proc/sys/${MIGRATE_SYSCTL.replaceAll(".", "/")}`)
 }
 
 /** Names the one cause an exited proxy almost always has, and how to see it. */
