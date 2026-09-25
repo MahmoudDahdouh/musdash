@@ -8,6 +8,7 @@ import { Eta } from "eta"
 // `bun run dev` and then 500 on every page in the shipped binary, because
 // src/views/ does not exist inside it. Same for public/. This is trap 6, and it
 // is invisible until someone runs the release artifact.
+import forbiddenSrc from "./forbidden.eta" with { type: "text" }
 import layoutSrc from "./layout.eta" with { type: "text" }
 import deploymentSrc from "./pages/deployment.eta" with { type: "text" }
 import loginSrc from "./pages/login.eta" with { type: "text" }
@@ -16,6 +17,7 @@ import projectsSrc from "./pages/projects.eta" with { type: "text" }
 import resourceSrc from "./pages/resource.eta" with { type: "text" }
 import settingsSrc from "./pages/settings.eta" with { type: "text" }
 import setupSrc from "./pages/setup.eta" with { type: "text" }
+import statusSrc from "./pages/status.eta" with { type: "text" }
 import appCss from "../../public/app.css" with { type: "text" }
 import appJs from "../../public/app.js" with { type: "text" }
 import alpineJs from "../../public/alpine.js" with { type: "text" }
@@ -30,6 +32,7 @@ const PAGES = {
   resource: resourceSrc,
   deployment: deploymentSrc,
   settings: settingsSrc,
+  status: statusSrc,
 } as const
 
 export type PageName = keyof typeof PAGES
@@ -93,6 +96,14 @@ export function renderPage(
     activeSettings: layout.activeSettings ?? false,
     body,
   })
+}
+
+/**
+ * The page a public peer gets on the dashboard port (D31). A whole document
+ * with its styles inline, because that peer is refused /assets as well.
+ */
+export function renderForbidden(): string {
+  return eta.renderString(forbiddenSrc, {})
 }
 
 /**

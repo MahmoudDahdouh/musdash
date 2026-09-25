@@ -74,7 +74,8 @@ export interface ContainerSpec {
    *
    * Used to give the proxy `host-gateway`, which the Engine resolves to the
    * host's address on the bridge. Caddy needs it to reach the dashboard, which
-   * binds the HOST's loopback rather than living in a container (D2).
+   * runs on the host rather than in a container and binds every interface
+   * (D2, D23).
    */
   extraHosts?: string[]
   /** Overrides the image's CMD. */
@@ -172,6 +173,14 @@ export interface DockerClient {
   streamLogs(id: string, opts: LogOpts): AsyncIterable<LogLine>
 
   ensureNetwork(name: string): Promise<void>
+  /**
+   * The CIDR subnets a network allocates from, e.g. ["172.18.0.0/16"].
+   *
+   * Read-only. The dashboard trusts its proxy by address (D31), and the proxy's
+   * address comes from here — Docker's pools are private by default but are the
+   * operator's to change.
+   */
+  networkSubnets(name: string): Promise<string[]>
   createVolume(name: string): Promise<void>
   removeVolume(name: string): Promise<void>
   /**

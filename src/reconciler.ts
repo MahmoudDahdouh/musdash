@@ -1,4 +1,4 @@
-import { BUILDKIT_CONTAINER } from "./build/bootstrap.ts"
+import { BUILDKIT_CONTAINER, probeDaemon } from "./build/bootstrap.ts"
 import { CADDY_CONTAINER } from "./caddy/bootstrap.ts"
 import { caddy } from "./caddy/client.ts"
 import { LABEL_MANAGED, LABEL_RESOURCE, LABEL_ROLE } from "./docker/client.ts"
@@ -10,6 +10,7 @@ import {
   updateResource,
 } from "./db/queries.ts"
 import { publishStatus, type ResourceState } from "./events.ts"
+import { refreshTrustedSubnets } from "./http.ts"
 import { enqueueDeploy } from "./jobs/deploy.ts"
 import { logger } from "./log.ts"
 import { startLogStream } from "./logs/stream.ts"
@@ -39,6 +40,10 @@ export async function reconcileOnce(): Promise<void> {
       return null
     })
   if (!containers) return
+
+  // Every tick, not just at startup: the network can be recreated with a new
+  // subnet, and the proxy would be locked out of the dashboard until a restart.
+  await refreshTrustedSubnets()
 
   const running = listRunningResources()
   const byResource = new Map<string, (typeof containers)[number]>()
@@ -299,7 +304,11 @@ async function ensureBuildkitQueued(): Promise<void> {
     .catch(() => null)
   if (!found) return
 
-  if (found.some((c) => c.running)) {
+  // Running is not enough: a daemon whose socket this process cannot open —
+  // the D32 permissions, a stale socket — reads as running forever while every
+  // build fails. The probe is the same HTTP/2 preface the bootstrap uses, over
+  // a local socket, so it is cheap enough for every tick.
+  if (found.some((c) => c.running) && (await probeDaemon())) {
     buildkitReported = false
     return
   }
@@ -310,7 +319,9 @@ async function ensureBuildkitQueued(): Promise<void> {
   // seconds while nothing is actually happening — noise that buries the one
   // line an operator needs.
   if (!buildkitReported) {
-    logger.info("reconcile: BuildKit is not running, queueing bootstrap")
+    logger.info(
+      "reconcile: BuildKit is not running or not answering on its socket, queueing bootstrap",
+    )
     buildkitReported = true
   }
   queueBuildkitBootstrap()

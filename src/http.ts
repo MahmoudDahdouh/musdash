@@ -1,4 +1,7 @@
+import { config } from "./config.ts"
+import { docker } from "./docker/impl.ts"
 import { logger } from "./log.ts"
+import { renderForbidden, renderPage } from "./views/render.ts"
 
 /**
  * Process-wide HTTP hooks, kept out of src/index.ts so the entry point stays a
@@ -48,6 +51,96 @@ export function isPrivatePeer(address: string): boolean {
   )
 }
 
+/** An IPv4 CIDR as a 32-bit network address and mask. */
+interface Subnet4 {
+  network: number
+  mask: number
+}
+
+function ipv4ToInt(address: string): number | null {
+  const o = octets(address)
+  if (!o) return null
+  return (
+    (((o[0] ?? 0) << 24) |
+      ((o[1] ?? 0) << 16) |
+      ((o[2] ?? 0) << 8) |
+      (o[3] ?? 0)) >>>
+    0
+  )
+}
+
+function parseSubnet4(cidr: string): Subnet4 | null {
+  const [ip = "", bits = ""] = cidr.split("/")
+  const base = ipv4ToInt(ip)
+  const n = Number(bits)
+  if (base === null || !/^\d{1,2}$/.test(bits) || n > 32) return null
+  const mask = n === 0 ? 0 : (0xffffffff << (32 - n)) >>> 0
+  return { network: (base & mask) >>> 0, mask }
+}
+
+/**
+ * The Docker network's own subnets, trusted in addition to the private ranges.
+ *
+ * Caddy reaches the dashboard from its address on the musdash network. Docker
+ * allocates that from private pools by default, but `default-address-pools`
+ * and `bip` are the operator's to set, and a host using a public range would
+ * have the dashboard refuse its own proxy (N-9). Refreshed by the reconciler,
+ * never by a request: this is a Docker read.
+ */
+let trustedSubnets: Subnet4[] = []
+
+/** Replaces the trusted subnets. Non-IPv4 entries are ignored. */
+export function trustSubnets(cidrs: string[]): void {
+  trustedSubnets = cidrs.flatMap((c) => {
+    const s = parseSubnet4(c)
+    return s ? [s] : []
+  })
+}
+
+/** A private address, or one inside the musdash network's own subnets. */
+export function isTrustedPeer(address: string): boolean {
+  if (isPrivatePeer(address)) return true
+  const lower = address.toLowerCase()
+  const ip = ipv4ToInt(lower.startsWith("::ffff:") ? lower.slice(7) : lower)
+  if (ip === null) return false
+  return trustedSubnets.some((s) => (ip & s.mask) >>> 0 === s.network)
+}
+
+/**
+ * Re-reads the musdash network's subnets. Called by the reconciler at startup
+ * and every tick; a failure keeps the previous list rather than emptying it,
+ * because Docker being briefly unreachable is no reason to lock Caddy out.
+ */
+export async function refreshTrustedSubnets(): Promise<void> {
+  try {
+    trustSubnets(await docker.networkSubnets(config.network))
+    subnetReadFailing = false
+  } catch (err) {
+    // Warned once per outage, not every 30-second tick: the reachability
+    // probe's 403 message promises this clears on its own, and when it does
+    // not, this line is the one that says why.
+    if (!subnetReadFailing) {
+      logger.warn(
+        { err: (err as Error).message, network: config.network },
+        "could not read the musdash network's subnets; keeping the previous list",
+      )
+    }
+    subnetReadFailing = true
+  }
+}
+
+let subnetReadFailing = false
+
+/** A status page. The words live in the template, not here. */
+function statusPage(status: 400 | 404 | 500): Response {
+  return new Response(
+    renderPage("status", { status }, { title: String(status) }),
+    { status, headers: HTML },
+  )
+}
+
+const HTML = { "content-type": "text/html; charset=utf-8" }
+
 /**
  * Refuses a request whose TCP peer is on the public internet.
  *
@@ -70,12 +163,9 @@ export function rejectPublicPeers({
   server: PeerSource | null
 }): Response | undefined {
   const peer = server?.requestIP(request)?.address
-  if (peer !== undefined && isPrivatePeer(peer)) return undefined
+  if (peer !== undefined && isTrustedPeer(peer)) return undefined
   logger.debug({ peer: peer ?? null }, "refused a request from a public peer")
-  return new Response(
-    "Forbidden: this port only answers the local proxy. Open the dashboard on port 80 or 443.\n",
-    { status: 403 },
-  )
+  return new Response(renderForbidden(), { status: 403, headers: HTML })
 }
 
 /**
@@ -94,19 +184,25 @@ export function handleError({
   code,
   error,
   request,
-  set,
 }: {
   code: string | number
   error: unknown
   request: Request
-  set: { status?: number | string }
-}): Response | string {
+}): Response {
   const where = { method: request.method, path: new URL(request.url).pathname }
   if (code === "NOT_FOUND") {
     logger.info({ ...where, code }, "no route for the request")
-    return new Response("Not found", { status: 404 })
+    return statusPage(404)
+  }
+  // NEVER log these errors' messages. Elysia builds a ValidationError's message
+  // as JSON carrying `found: <the whole request body>`, in production too, and
+  // it validates before any handler runs — so an env form that fails its schema
+  // (a missing csrf field is enough) would write the decrypted values in its
+  // textareas to the journal. A parse error carries the raw body the same way.
+  if (code === "VALIDATION" || code === "PARSE") {
+    logger.warn({ ...where, code }, "rejected a malformed request")
+    return statusPage(400)
   }
   logger.error({ ...where, code, err: String(error) }, "request failed")
-  set.status = 500
-  return "Something went wrong. Check the server logs."
+  return statusPage(500)
 }

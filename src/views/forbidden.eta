@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Not on this port · musdash</title>
+    <%/* Self-contained on purpose: the peer that sees this page is refused
+         /assets like everything else, so a linked stylesheet never loads. */%>
+    <style>
+      :root { color-scheme: light dark; --bg: #f6f7f9; --text: #16181d; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #0f1115; --text: #e6e8ec; } }
+      body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+        font: 16px/1.5 system-ui, sans-serif; }
+      main { max-width: 32rem; margin: 15vh auto 0; }
+      h1 { font-size: 1.4rem; margin: 0 0 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Not on this port</h1>
+      <p>
+        This port only answers the proxy running on this server. Open the
+        dashboard through it instead: this server's address on port 80, or its
+        hostname over HTTPS once one is set.
+      </p>
+    </main>
+  </body>
+</html>

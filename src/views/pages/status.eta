@@ -1,0 +1,12 @@
+<div class="narrow">
+  <% if (it.status === 400) { %>
+  <h1>That request was not valid</h1>
+  <p>Go back and try again. If the page had been open a long time, reload it first.</p>
+  <% } else if (it.status === 404) { %>
+  <h1>Not found</h1>
+  <p>There is nothing at this address.</p>
+  <% } else { %>
+  <h1>Something went wrong</h1>
+  <p>The details are in the server logs: <code>journalctl -u musdash</code>.</p>
+  <% } %>
+</div>

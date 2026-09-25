@@ -678,6 +678,15 @@ export class DockerHttpClient implements DockerClient {
     await create.arrayBuffer().catch(() => undefined)
   }
 
+  async networkSubnets(name: string): Promise<string[]> {
+    const net = await this.json<{
+      IPAM?: { Config?: { Subnet?: unknown }[] | null }
+    }>(`/networks/${encodeURIComponent(name)}`)
+    return (net.IPAM?.Config ?? []).flatMap((c) =>
+      typeof c.Subnet === "string" ? [c.Subnet] : [],
+    )
+  }
+
   async createVolume(name: string): Promise<void> {
     await this.expectOk("/volumes/create", this.postJson({ Name: name }))
   }
