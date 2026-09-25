@@ -1,3 +1,4 @@
+import { chmodSync, mkdirSync } from "node:fs"
 import { config } from "../config.ts"
 import {
   type ContainerState,
@@ -81,26 +82,30 @@ function gcKeepStorageMb(): string {
 }
 
 /**
- * Extracts the port from a `tcp://host:port` address.
- *
- * musdash publishes the daemon itself, so it has to know the port as a number
- * rather than passing the address through opaquely. A malformed value is a
- * configuration error worth failing loudly on at import: the alternative is a
- * container published on a port nobody intended.
+ * Where the daemon creates its socket, INSIDE the container. The host directory
+ * config.buildkitDir is bind-mounted here, so the socket is
+ * config.buildkitSocket on the host — which is where buildctl and railpack dial.
  */
-function parseBuildkitPort(addr: string): number {
-  const match = /^tcp:\/\/[^:]+:(\d{1,5})$/.exec(addr)
-  const port = match ? Number(match[1]) : Number.NaN
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new DockerError(
-      `MUSDASH_BUILDKIT_ADDR must look like tcp://127.0.0.1:1234, got ${JSON.stringify(addr)}`,
-    )
-  }
-  return port
-}
+const SOCKET_DIR_IN_CONTAINER = "/run/musdash-buildkit"
 
-/** The port the daemon listens on, parsed from the configured address. */
-const BUILDKIT_PORT = parseBuildkitPort(config.buildkitAddr)
+/**
+ * Which generation of the container definition a daemon was created from.
+ *
+ * Generation 2 moved the API from `tcp://0.0.0.0:1234` — which answered every
+ * app on the `musdash` network, unauthenticated, on a privileged container —
+ * to a unix socket (D32). A daemon without this label is replaced; the cache
+ * volume is kept, so the only cost is one daemon restart.
+ */
+const SPEC_LABEL = "musdash.builder_spec"
+const SPEC_VERSION = "2"
+
+/**
+ * The gid the socket was created for, fixed into the daemon's `--group` at
+ * create time. If musdash's gid changes, the daemon is replaced rather than
+ * adopted with a socket this process can no longer open.
+ */
+const GID_LABEL = "musdash.builder_gid"
+const GID = String(process.getgid?.() ?? 0)
 
 /** How long to wait for the daemon to answer after starting the container. */
 const READY_TIMEOUT_SEC = 30
@@ -116,11 +121,30 @@ export async function ensureBuildkit(): Promise<void> {
   await docker.ensureNetwork(config.network)
   await docker.createVolume(CACHE_VOLUME)
 
+  prepareSocketDir()
+
   // By name, not by label — the same reasoning as the proxy: a container left
   // by an earlier install carries no musdash labels and is invisible to a
   // managed=true filter, so a label lookup would conclude nothing is there and
-  // try to bind an already-held port.
-  const existing = (await docker.findContainersByName(BUILDKIT_CONTAINER))[0]
+  // try to create a second daemon under the same name.
+  const found = (await docker.findContainersByName(BUILDKIT_CONTAINER))[0]
+  // An outdated daemon is replaced, not adopted: its TCP listener is the hole
+  // D32 closes, and a listen address cannot be changed on a running container.
+  // Unlike the proxy's replacement this costs nothing a user can see — no
+  // traffic flows through a build daemon, the job queue guarantees no build is
+  // running right now, and CACHE_VOLUME survives the removal.
+  const current =
+    found !== undefined &&
+    found.labels[SPEC_LABEL] === SPEC_VERSION &&
+    found.labels[GID_LABEL] === GID
+  if (found && !current) {
+    logger.warn(
+      { container: BUILDKIT_CONTAINER, id: found.id },
+      "replacing the build daemon: its API was reachable from every app on the musdash network. The build cache is kept",
+    )
+    await docker.removeContainer(found.id, true)
+  }
+  const existing = current ? found : undefined
   const adopted = existing !== undefined
 
   let id: string
@@ -161,19 +185,19 @@ export async function ensureBuildkit(): Promise<void> {
       env: {},
       // The role label is what makes the privileged flag below legal:
       // createContainer refuses privileged mode on any spec without one.
-      labels: sidecarLabels("builder"),
+      labels: {
+        ...sidecarLabels("builder"),
+        [SPEC_LABEL]: SPEC_VERSION,
+        [GID_LABEL]: GID,
+      },
       networks: [config.network],
       volumes: [{ name: CACHE_VOLUME, mountPath: "/var/lib/buildkit" }],
-      ports: [
-        // Loopback only. BuildKit's API is unauthenticated and runs arbitrary
-        // build instructions, so publishing it beyond the host would be handing
-        // out remote code execution.
-        {
-          containerPort: BUILDKIT_PORT,
-          hostPort: BUILDKIT_PORT,
-          protocol: "tcp",
-          hostIp: "127.0.0.1",
-        },
+      // No published port, and no TCP listener at all. BuildKit's API is
+      // unauthenticated and runs arbitrary build instructions in a privileged
+      // container: a TCP listener inside it answers the musdash network, which
+      // every user app is attached to (D32).
+      hostMounts: [
+        { hostPath: config.buildkitDir, mountPath: SOCKET_DIR_IN_CONTAINER },
       ],
       memoryLimitBytes: BUILDKIT_MEMORY_BYTES,
       restartPolicy: "unless-stopped",
@@ -189,13 +213,12 @@ export async function ensureBuildkit(): Promise<void> {
       // default unix socket. Verified against a real daemon: it starts, logs a
       // healthy worker, and is unreachable over TCP.
       //
-      // Listening on all interfaces INSIDE the container is what makes the
-      // loopback port mapping above reach it — the lesson of the D2 amendment.
-      // (Caddy has since moved its admin API to a unix socket, because the
-      // same listener also answers the musdash network — D29.) The container
-      // is not on the host network, so
-      // binding 127.0.0.1 here would bind the container's own loopback and the
-      // mapping would forward to a listener that refuses it.
+      // `--group` is musdash's own gid. buildkitd creates the socket 0660 and
+      // chowns it to root:<group>, so this process can connect while other
+      // host users are kept out by config.buildkitDir's 0700. It leaves the
+      // existing parent directory alone (containerd's mkdirAs only creates a
+      // missing one), so the 0700 set by prepareSocketDir survives.
+      //
       // The daemon keeps its own cache in CACHE_VOLUME, which is where Railpack
       // builds cache — buildCacheDir only ever holds the Dockerfile strategy's
       // exports. Capping one without the other would leave the default build
@@ -209,28 +232,45 @@ export async function ensureBuildkit(): Promise<void> {
       // loudly at the readiness gate instead of silently doing nothing.
       command: [
         "--addr",
-        `tcp://0.0.0.0:${BUILDKIT_PORT}`,
+        `unix://${SOCKET_DIR_IN_CONTAINER}/buildkitd.sock`,
+        "--group",
+        GID,
         "--oci-worker-gc",
         `--oci-worker-gc-keepstorage=${gcKeepStorageMb()}`,
       ],
     })
   }
 
-  await docker.startContainer(id)
+  try {
+    await docker.startContainer(id)
 
-  // A container musdash created moments ago has never restarted. A nonzero
-  // count means it started, died, and was restarted by the unless-stopped
-  // policy — which the readiness poll would otherwise paper over by catching it
-  // during an up-phase. The adopted path skips this: a daemon that has been up
-  // for months across a reboot legitimately has restarts.
-  if (!adopted) {
-    const initial = await docker.inspectContainer(id)
-    if (!initial.running || initial.restartCount > 0) {
-      throw new DockerError(exitedMessage(initial))
+    // A container musdash created moments ago has never restarted. A nonzero
+    // count means it started, died, and was restarted by the unless-stopped
+    // policy — which the readiness poll would otherwise paper over by catching
+    // it during an up-phase. The adopted path skips this: a daemon that has
+    // been up for months across a reboot legitimately has restarts.
+    if (!adopted) {
+      const initial = await docker.inspectContainer(id)
+      if (!initial.running || initial.restartCount > 0) {
+        throw new DockerError(exitedMessage(initial))
+      }
     }
-  }
 
-  await waitForDaemon(id, adopted)
+    await waitForDaemon(id, adopted)
+  } catch (err) {
+    // Removed rather than left for the next bootstrap to adopt: it carries the
+    // current labels, so it would be adopted, broken, forever (N-2's lesson).
+    // The cache volume is untouched.
+    if (!adopted) {
+      await docker.removeContainer(id, true).catch((rmErr: unknown) => {
+        logger.warn(
+          { id, err: (rmErr as Error).message },
+          `could not remove the build daemon that failed to start; 'docker rm -f ${id}'`,
+        )
+      })
+    }
+    throw err
+  }
 
   logger.info(
     { container: BUILDKIT_CONTAINER, id, adopted },
@@ -238,33 +278,48 @@ export async function ensureBuildkit(): Promise<void> {
   )
 }
 
+/**
+ * Creates the directory the daemon puts its socket in, private to musdash.
+ *
+ * The same shape as the proxy's (D29): the 0700 here is the access control on
+ * an unauthenticated API. chmod after mkdir because mkdir's mode is filtered by
+ * the umask and ignored entirely when the path exists.
+ */
+function prepareSocketDir(): void {
+  try {
+    mkdirSync(config.buildkitDir, { recursive: true, mode: 0o700 })
+    chmodSync(config.buildkitDir, 0o700)
+  } catch (err) {
+    throw new DockerError(
+      `cannot prepare ${config.buildkitDir} for the build daemon's socket: ${(err as Error).message}. ` +
+        "It must be a directory owned by the user musdash runs as.",
+    )
+  }
+}
+
 /** Names the cause an exited build daemon usually has, and how to see it. */
 function exitedMessage(state: ContainerState): string {
   return (
     `the ${BUILDKIT_CONTAINER} container is not running (exit code ${state.exitCode}, ` +
-    `${state.restartCount} restarts). BuildKit exits when it cannot bind its port or when the ` +
-    `daemon lacks the privileges to set up its snapshotter — check ` +
-    `'ss -ltnp | grep ":${BUILDKIT_PORT} "' and 'docker logs ${BUILDKIT_CONTAINER}'.`
+    `${state.restartCount} restarts). BuildKit exits when it cannot create its socket or when the ` +
+    `daemon lacks the privileges to set up its snapshotter — see 'docker logs ${BUILDKIT_CONTAINER}'.`
   )
 }
 
 /**
  * Waits until the daemon is alive and answering.
  *
- * Three gates, each earning its place the same way the proxy's do:
+ * Two gates, each earning its place the same way the proxy's do:
  *
  * 1. THE CONTAINER IS RUNNING. startContainer's 204 says "start accepted", not
- *    "still alive". BuildKit exits when it cannot bind, and unless-stopped
- *    turns that into a restart loop.
+ *    "still alive". BuildKit exits when it cannot create its socket, and
+ *    unless-stopped turns that into a restart loop.
  *
- * 2. ITS PUBLISHED PORT IS ACTUALLY MAPPED. When a host port is already held
- *    the Engine starts the container anyway and leaves the mapping
- *    unprogrammed, so the daemon is healthy inside while nothing on the host
- *    can reach it. Without this gate that reads as "the daemon did not answer"
- *    and gets blamed on the wrong thing — the lesson from the Caddy slice.
+ * 2. THE SOCKET ANSWERS AS A gRPC SERVER. Gate 1 ties the answer to the
+ *    container just started — a socket file can outlive the daemon that made
+ *    it — and only this says the daemon is actually serving.
  *
- * 3. THE PORT ACCEPTS A CONNECTION. Gates 1 and 2 say it should be reachable;
- *    only this says it is.
+ * The published-port gate this used to have is gone with the port (D32).
  */
 async function waitForDaemon(id: string, adopted: boolean): Promise<void> {
   const deadline = Date.now() + READY_TIMEOUT_SEC * 1000
@@ -276,10 +331,9 @@ async function waitForDaemon(id: string, adopted: boolean): Promise<void> {
     if (Date.now() > deadline) {
       throw new DockerError(
         `${BUILDKIT_CONTAINER} did not become ready within ${READY_TIMEOUT_SEC}s (${lastReason})` +
+          `. Its socket should appear at ${config.buildkitSocket}; see 'docker logs ${BUILDKIT_CONTAINER}'` +
           (adopted
-            ? `. The container was adopted, not created by musdash — if it was created without ` +
-              `'--addr tcp://0.0.0.0:${BUILDKIT_PORT}' its API is bound inside the container where the ` +
-              `port mapping cannot reach it. Recreate it: 'docker rm -f ${BUILDKIT_CONTAINER}'.`
+            ? `. The container was already running; 'docker rm -f ${BUILDKIT_CONTAINER}' makes musdash start a fresh one.`
             : "."),
       )
     }
@@ -289,14 +343,6 @@ async function waitForDaemon(id: string, adopted: boolean): Promise<void> {
       // An exited daemon is not going to start answering, and the exit code is
       // the fact that explains it. Fail now rather than burning the full 30s.
       throw new DockerError(exitedMessage(state))
-    }
-    if (state?.running === true && state.publishedPortCount === 0) {
-      throw new DockerError(
-        `the ${BUILDKIT_CONTAINER} container is running but its published port is not mapped to the host. ` +
-          "The Engine leaves a mapping unprogrammed when the host port is already taken, so the build " +
-          `daemon is unreachable even though the container is up. Check what holds :${BUILDKIT_PORT} ` +
-          `('ss -ltnp | grep ":${BUILDKIT_PORT} "'), free it, then 'docker rm -f ${BUILDKIT_CONTAINER}'.`,
-      )
     }
     if (state && state.restartCount > 0) {
       lastReason = `the container has restarted ${state.restartCount} times`
@@ -312,24 +358,22 @@ async function waitForDaemon(id: string, adopted: boolean): Promise<void> {
  * Whether the build daemon itself answers — not merely whether something
  * accepts a connection on its port.
  *
- * A bare TCP connect is worthless here and was tried first: when a port is
- * published, Docker's userland proxy binds the host side and accepts
- * connections whether or not anything is listening inside the container. A
- * connect-only probe therefore passed against a daemon that had silently fallen
- * back to its unix socket, which is exactly the false success the Caddy slice
- * was spent eliminating.
+ * A bare connect is worthless here and was tried first: back when the daemon
+ * listened on a published TCP port, Docker's userland proxy accepted
+ * connections whether or not anything was listening inside the container. On
+ * a unix socket the same trap has a different shape — a stale socket file from
+ * a dead daemon — and the answer is the same: make the far end speak.
  *
  * BuildKit speaks gRPC, which musdash has no client for and will not add one
  * for. Instead it asks `buildctl` — which ships inside the image, so this costs
  * no host install — to list workers. That round-trips through the real API and
  * fails if the daemon is absent, wedged, or listening somewhere else.
  */
-async function probeDaemon(): Promise<boolean> {
+export async function probeDaemon(): Promise<boolean> {
   try {
     let answered = false
     const socket = await Bun.connect({
-      hostname: "127.0.0.1",
-      port: BUILDKIT_PORT,
+      unix: config.buildkitSocket,
       socket: {
         data: () => {
           answered = true
@@ -349,7 +393,7 @@ async function probeDaemon(): Promise<boolean> {
     socket.end()
     return answered
   } catch {
-    // Connect refused: nothing is published, or the mapping is unprogrammed.
+    // No socket yet, or a stale one nothing is listening on.
     return false
   }
 }

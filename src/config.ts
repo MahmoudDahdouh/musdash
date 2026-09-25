@@ -71,10 +71,9 @@ const schema = z.object({
   // path is derived from the data directory. A stale line in an existing
   // musdash.env is harmless — zod object parsing ignores unknown keys.
 
-  // The build daemon's address, loopback for the same reason the Caddy admin
-  // API is: BuildKit runs arbitrary build steps and its API is unauthenticated,
-  // so it must never be reachable off the box.
-  MUSDASH_BUILDKIT_ADDR: z.string().default("tcp://127.0.0.1:1234"),
+  // MUSDASH_BUILDKIT_ADDR is gone (D32), like MUSDASH_CADDY_ADMIN before it:
+  // the build daemon listens on a unix socket derived from the data directory,
+  // never on TCP. A stale line in musdash.env is ignored.
   MUSDASH_BUILD_CACHE_GB: z.coerce.number().int().positive().default(10),
 
   // Verification only. A cached build proves nothing about what reaches the
@@ -138,7 +137,12 @@ export const config = Object.freeze({
   caddyAdminDir: resolve(dataDir, "caddy"),
   caddyAdminSocket: resolve(dataDir, "caddy", "admin.sock"),
 
-  buildkitAddr: env.MUSDASH_BUILDKIT_ADDR,
+  // BuildKit's API is unauthenticated and runs arbitrary build steps in a
+  // privileged container, so it gets the Caddy treatment (D29, D32): a unix
+  // socket in a 0700 directory bind-mounted into the daemon's container.
+  buildkitDir: resolve(dataDir, "buildkit"),
+  buildkitAddr: `unix://${resolve(dataDir, "buildkit", "buildkitd.sock")}`,
+  buildkitSocket: resolve(dataDir, "buildkit", "buildkitd.sock"),
   buildCacheGb: env.MUSDASH_BUILD_CACHE_GB,
   buildNoCache: env.MUSDASH_BUILD_NO_CACHE,
   railpackBin: env.MUSDASH_RAILPACK_BIN,
@@ -173,12 +177,12 @@ export type Config = typeof config
  * 127.0.0.1 cannot accept that connection, so narrowing the bind does not
  * harden the dashboard, it disconnects it.
  *
- * The boundary therefore moves from an implicit bind address to an explicit
- * firewall rule, which install.sh now creates. That is the honest place for it:
- * the old rule was already untrue in practice, since install.sh set
- * MUSDASH_BIND_ALL=true on every install without a dashboard host. What is
- * exposed without a firewall is the login form, /health and /assets — every
- * other route is behind a session and the global CSRF gate.
+ * The boundary is not the bind address. The process refuses every request
+ * whose TCP peer is not loopback, private, CGNAT or inside the musdash
+ * network's own subnets (D31, src/http.ts), so a box with no firewall serves the
+ * internet a 403 and nothing else. The ufw rules install.sh writes are a second
+ * layer — D23 made them the only one, and a real VPS showed ufw is often
+ * installed but inactive.
  */
 export function bindHostname(): string {
   return "0.0.0.0"
