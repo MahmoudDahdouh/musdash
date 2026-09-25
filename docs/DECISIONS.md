@@ -2591,3 +2591,87 @@ directory is removed; its log is kept in `$TMPDIR` for reading. Result on
 macOS: 72 checks, all pass. `bun run ci` and
 `bun test` (179) pass; `public/app.css` and `public/app.js` are unchanged.
 Not yet run on the VPS.
+
+## Host size and swap (C-3, I-3, 2026-09-25)
+
+The first VPS test ran on a 512MB RamNode host with no swap. Installing came
+within ~45MB of an OOM kill twice — `fwupd` during the Docker install, then the
+Bun compile (I-3). Later, with only the Phase 1 stack running, apt's daily
+timers pushed it into thrash (`kswapd0` at 25%, `docker ps` hung for minutes),
+and after a reboot the host never answered again and needed a power cycle
+(C-3). The same test on a 1GB host with no swap passed the whole Definition of
+Done, reboots included. Nothing stated a minimum host size, and nothing set up
+swap.
+
+### D38 — 1 GB is the minimum; the installer adds swap below 2 GB
+
+**The supported minimum is 1 GB**, with 2 GB recommended for building from
+GitHub, as RUNNING.md already advised. That is the only size with a passing
+record. 512MB is documented as unsupported until a run with swap passes the
+reboot step; the installer warns below ~900 MiB of MemTotal and carries on,
+since a piped install cannot ask a question, and refusing would only move the
+failure somewhere less clear.
+
+**Below 1900 MiB of MemTotal, with no swap active, `install.sh` creates a 1 GiB
+swapfile** at `/musdash.swap` (0600, `sw,nofail` in `/etc/fstab`) before it
+installs Docker, since the Docker install is the first dip. Without swap the
+kernel can reclaim only file-backed pages, so under pressure it evicts the
+executables it is running and reads them back in a loop — the thrash C-3
+recorded. Swap gives idle anonymous pages of host processes (dockerd,
+containerd, apt, the compile) somewhere to go instead. 1 GiB covers the
+measured spikes (fwupd 188MB, Bun 163MB) with room to spare, and is small
+enough that a host process leaking without bound still hits the OOM killer
+rather than grinding the disk for long. `MUSDASH_SWAP=0` skips it. Hosts of 2
+GB and up are left alone.
+
+**Containers cannot use it, so every memory limit stays hard.** Every
+container musdash creates — apps, Caddy, BuildKit — sets `MemorySwap` equal to
+`Memory` (`src/docker/impl.ts`), which Docker on cgroup v2 turns into
+`memory.swap.max = 0`. Checked on the 1GB host with the swapfile active:
+`docker info` shows no swap-limit warning, and all four containers read
+`swap.max=0`. On cgroup v1 without swap accounting Docker would drop that
+setting and let containers swap without bound, so a v1 host gets no swap. The
+Compose pipeline, when it is built, must set `memswap_limit` the same way.
+
+**Best effort, and nothing the operator owns is changed.** Like the firewall
+rules (D23, D31), the step only adds: existing swap is left as it is, and
+every skip or failure is one log line, never an aborted install. It is skipped
+inside OpenVZ/LXC containers (which cannot `swapon`), on a root filesystem
+other than ext4 or XFS (btrfs needs a NOCOW file, ZFS has no swapfiles), and
+with less than 3 GiB free on `/`. `fallocate` is tried first, with `dd` as the
+fallback for filesystems that reject a fallocated swapfile. Re-running the
+installer, which is how upgrades work (D22), is a no-op once swap is active; a
+file left swapped off is re-enabled, and the fstab line is added only when no
+line names that file.
+
+Rejected: `vm.swappiness` or `vfs_cache_pressure` changes (a lower swappiness
+biases the kernel toward evicting file pages, which is C-3's failure mode, and
+they belong to the operator); disabling apt's timers (they are the operator's
+security updates; the thrash is the host's lack of headroom, not apt's fault);
+refusing to install below 1 GB (see above); counting swap in D33's BuildKit
+cap (BuildKit cannot use swap either).
+
+**Two costs, recorded.** Pages of musdash's heap can now reach disk, including
+decrypted env values while a deploy holds them; the swapfile is root-only, and
+Docker already keeps each container's environment in plaintext under
+`/var/lib/docker`. And on a host with swap, RSS can read lower than the
+process really is, because swapped-out pages do not count; RUNNING.md says to
+read `VmSwap` next to it. The CI gate measures on a runner without swap and is
+unaffected.
+
+### Verified, and not verified
+
+On the 1GB host (RamNode KVM, Ubuntu 24.04.1, kernel 6.8, ext4, cgroup v2).
+The swap step was run on its own: `ensure_swap` and `persist_swap` with their
+variables, cut from `scripts/install.sh` (from `SWAP_FILE=` to the
+`ensure_swap` call) into a file headed by `set -euo pipefail` and a plain
+`log` function, then run with bash as root. Results: `MUSDASH_SWAP=0` skips
+it; the first run creates and enables 1 GiB in 90 ms with one fstab line; a
+re-run says swap is already active; after `swapoff` it re-enables the same
+file without a second fstab line; after `swapoff` and deleting the fstab line,
+one line is added back; with swap live and its fstab line deleted, a re-run
+adds the line back; with `/etc/fstab` made immutable (`chattr +i`), the step
+logs that swap will not survive a reboot and exits 0. `shellcheck -S warning`
+(0.9.0) is clean on `install.sh`. Not yet verified: swap surviving a reboot, a
+full fresh install on the swap host, the skip paths (container, cgroup v1,
+filesystem, disk), and 512MB with swap.

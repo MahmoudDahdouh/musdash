@@ -233,8 +233,25 @@ gate — it must stay under 100 MB.
 ## Part B — VPS (fresh Ubuntu)
 
 A fresh Ubuntu 22.04/24.04 host with root SSH. **No build machine and no DNS are
-required.** 1 GB RAM runs the control plane plus Caddy; use **2 GB** if you will
-build from GitHub, because BuildKit and image extraction spike during a build.
+required.**
+
+**Host size.** 1 GB of RAM is the supported minimum: it runs the control plane,
+Caddy, BuildKit and a few small apps, and survives a reboot unattended. Use
+**2 GB** if you will build from GitHub, because BuildKit and image extraction
+spike during a build. A 512 MB host is not supported: without swap it thrashed
+and never came back from a reboot (C-3), and it has not been re-tested with
+swap. Tested on: RamNode KVM, 1 GB, Ubuntu 24.04.1, kernel 6.8, cgroup v2.
+
+**Swap.** On a host under 2 GB with no swap, the installer creates a 1 GiB
+swapfile at `/musdash.swap` and adds it to `/etc/fstab`, so apt, dockerd and
+the compile have somewhere to page out instead of stalling the host (D38).
+Containers cannot use it: musdash sets every container's swap limit equal to
+its memory limit, so a leaking app is still killed at its cap. It is skipped,
+with a line saying why, when swap already exists, on a cgroup v1 host, inside
+an OpenVZ/LXC container, on a root filesystem other than ext4 or XFS, or with
+less than 3 GiB free on `/`. `MUSDASH_SWAP=0` skips it. To remove it later:
+`swapoff /musdash.swap`, delete its line from `/etc/fstab`, then
+`rm /musdash.swap`.
 
 ### B1. Run one command
 
@@ -541,7 +558,7 @@ when its build ends, with a daily sweep for anything a crash left behind.
 | Component             | Idle RSS              |
 | --------------------- | --------------------- |
 | musdash control plane | ~50–80 MB (gate: 100) |
-| Caddy sidecar         | ~50 MB                |
+| Caddy sidecar         | ~50–70 MB             |
 | BuildKit sidecar      | ~66 MB                |
 | Each app container    | capped at 512 MB      |
 
@@ -549,6 +566,13 @@ BuildKit idles at ~66 MB and may grow during a build up to a cap sized from the
 host's memory — 384 MiB on a 1GB host, about 1 GiB on 2GB, at most 8 GiB (D33).
 A build step that exceeds it is killed inside BuildKit's container instead of
 starving the host; `MUSDASH_BUILDKIT_MEMORY_MB` overrides it.
+
+On the 1 GB test host the whole idle stack — the OS, dockerd and containerd
+(~216 MB), musdash 63, Caddy 67, BuildKit 66 and two small apps — left about
+520 MB available. On a host with swap, read musdash's `VmSwap` next to its RSS
+(`grep -E 'VmRSS|VmSwap' /proc/$(pidof musdash)/status`): pages the kernel has
+swapped out do not count as RSS, so RSS alone can read lower than the process
+really is.
 
 Verify the control plane yourself with `bun run gate:rss`.
 

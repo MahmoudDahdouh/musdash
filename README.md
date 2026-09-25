@@ -18,9 +18,9 @@ Measured on Ubuntu 24.04 (kernel 5.15, x86_64) with Bun 1.4.0: compiled with
 number exceeds 100 MB.
 
 **Sidecars are extra and reported honestly**, because you will actually be
-running them: Caddy adds roughly 50 MB. Every app container you deploy has its
-own hard memory limit (512 MB by default) and is counted separately. No number
-here excludes something you will be running.
+running them: Caddy adds roughly 50–70 MB, and BuildKit about 66 MB. Every app
+container you deploy has its own hard memory limit (512 MB by default) and is
+counted separately. No number here excludes something you will be running.
 
 musdash is one process holding a SQLite file. There is no PostgreSQL, no Redis,
 no queue worker daemon, and no WebSocket server, because each of those is a
@@ -46,12 +46,16 @@ process that costs memory before it does anything useful.
 
 ## Install
 
-On a fresh Ubuntu host:
+On a fresh Ubuntu 22.04/24.04 host with at least 1 GB of RAM (2 GB if you will
+build from GitHub), as root:
 
 ```bash
-bun run build
-sudo ./scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/MahmoudDahdouh/musdash/main/scripts/install.sh | bash
 ```
+
+It installs Docker, compiles musdash on the host, and on a host under 2 GB with
+no swap, adds a 1 GiB swapfile (`MUSDASH_SWAP=0` skips it). See
+[docs/RUNNING.md](docs/RUNNING.md) for the details.
 
 Then open `http://<server-ip>` (port 80, through Caddy) and create your admin
 account. Port 8000 answers only loopback and private addresses — Caddy's among

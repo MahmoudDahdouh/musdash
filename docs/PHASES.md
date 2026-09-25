@@ -1377,7 +1377,7 @@ The number is the product. Measure at the end of every phase and publish it.
 Even at Phase 5, that is **five to eight times lighter than Coolify's control
 plane**. The comparison stays true through full feature parity.
 
-**Sidecar containers musdash manages** (Caddy ~50MB, BuildKit idle ~30MB) are
+**Sidecar containers musdash manages** (Caddy ~50–70MB, BuildKit idle ~66MB) are
 reported separately and honestly in the README. Coolify's published overhead
 also includes its proxy, so the comparison remains fair — but never quote a
 number that excludes something a user will actually be running.

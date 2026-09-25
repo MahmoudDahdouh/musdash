@@ -13,6 +13,7 @@
 #   MUSDASH_REF=<branch|tag|sha>  what to check out (default: main)
 #   MUSDASH_DASHBOARD_HOST=<fqdn> serve the dashboard on a domain, with HTTPS
 #   MUSDASH_SRC=<path>            build from a local checkout instead of cloning
+#   MUSDASH_SWAP=0                do not create a swapfile on a host under 2 GB
 set -euo pipefail
 
 MUSDASH_USER="${MUSDASH_USER:-musdash}"
@@ -64,6 +65,92 @@ frame() {
 }
 
 [ "$(id -u)" -eq 0 ] || die "run this as root (sudo)"
+
+# ----------------------------------------------------------------- swap
+# C-3 (D38): a 512MB host with no swap thrashed when apt's timers fired, and
+# never came back from a reboot — with nothing to page out, the kernel evicts
+# executables and re-reads them in a loop. A small swapfile gives the host's
+# own processes (dockerd, apt, the compile below) somewhere to go. Containers
+# cannot use it: every one musdash creates sets MemorySwap equal to Memory
+# (src/docker/impl.ts), so their limits stay hard. That holds only under
+# cgroup v2, so a v1 host gets no swap. Before Docker, because the Docker
+# install is the first memory dip (I-3). Best effort: nothing here stops the
+# install.
+SWAP_FILE=/musdash.swap
+SWAP_MB=1024
+# The fstab line is what brings swap back after a reboot, which is when C-3
+# struck, so a live /musdash.swap without one gets it too.
+persist_swap() {
+  if ! awk -v f="$SWAP_FILE" '$1 == f { found = 1 } END { exit !found }' /etc/fstab; then
+    { printf '%s none swap sw,nofail 0 0\n' "$SWAP_FILE" >>/etc/fstab; } 2>/dev/null ||
+      log "Could not add $SWAP_FILE to /etc/fstab; swap will be off after a reboot"
+  fi
+}
+ensure_swap() {
+  local mem_mb free_mb fstype verb=Created
+  mem_mb=$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo) || true
+  if [ -z "$mem_mb" ]; then return 0; fi
+  if [ "$mem_mb" -lt 900 ]; then
+    log "This host has ${mem_mb} MiB of memory. 1 GB is the supported minimum (docs/RUNNING.md)"
+  fi
+  if [ "$(wc -l </proc/swaps)" -gt 1 ]; then
+    log "Swap already active; leaving it as it is"
+    if awk -v f="$SWAP_FILE" '$1 == f { found = 1 } END { exit !found }' /proc/swaps; then
+      persist_swap
+    fi
+    return 0
+  fi
+  if [ "$mem_mb" -ge 1900 ]; then return 0; fi
+  if [ "${MUSDASH_SWAP:-1}" = "0" ]; then
+    log "MUSDASH_SWAP=0: not creating swap on a ${mem_mb} MiB host"
+    return 0
+  fi
+  if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then
+    log "Not creating swap: this host uses cgroup v1, where containers could swap past their memory limits"
+    return 0
+  fi
+  if systemd-detect-virt --container --quiet 2>/dev/null; then
+    log "Not creating swap: this host is a container ($(systemd-detect-virt --container)), which cannot enable it"
+    return 0
+  fi
+  fstype=$(findmnt -no FSTYPE / 2>/dev/null || true)
+  case "$fstype" in
+    ext4 | xfs) ;;
+    *)
+      log "Not creating swap: a swapfile on a ${fstype:-unknown} root filesystem needs manual setup"
+      return 0
+      ;;
+  esac
+  free_mb=$(df -Pm / 2>/dev/null | awk 'NR == 2 { print $4 }') || true
+  if [ -z "$free_mb" ] || [ "$free_mb" -lt $((SWAP_MB + 2048)) ]; then
+    log "Not creating swap: only ${free_mb:-an unknown number of} MiB free on /"
+    return 0
+  fi
+
+  # A file left by an earlier run (swapped off since) is reused if it still
+  # activates. fallocate is fast, but some filesystems refuse a fallocated
+  # swapfile as having holes, so dd is the fallback.
+  if [ -f "$SWAP_FILE" ] && swapon "$SWAP_FILE" >/dev/null 2>&1; then
+    verb=Re-enabled
+  else
+    rm -f "$SWAP_FILE"
+    if ! { fallocate -l "${SWAP_MB}M" "$SWAP_FILE" 2>/dev/null &&
+      chmod 600 "$SWAP_FILE" && mkswap "$SWAP_FILE" >/dev/null 2>&1 &&
+      swapon "$SWAP_FILE" >/dev/null 2>&1; }; then
+      rm -f "$SWAP_FILE"
+      if ! { dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SWAP_MB" status=none 2>/dev/null &&
+        chmod 600 "$SWAP_FILE" && mkswap "$SWAP_FILE" >/dev/null 2>&1 &&
+        swapon "$SWAP_FILE" >/dev/null 2>&1; }; then
+        rm -f "$SWAP_FILE"
+        log "Could not create swap on this host; continuing without it"
+        return 0
+      fi
+    fi
+  fi
+  persist_swap
+  log "$verb ${SWAP_MB} MiB of swap at $SWAP_FILE for this ${mem_mb} MiB host (MUSDASH_SWAP=0 skips it)"
+}
+ensure_swap
 
 # --------------------------------------------------------------- Docker
 if ! command -v docker >/dev/null 2>&1; then

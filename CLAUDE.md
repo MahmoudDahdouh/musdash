@@ -73,7 +73,7 @@ the build if it exceeds 100MB**. Without that gate the number drifts silently an
 the product loses its reason to exist. The ceiling does not move to accommodate a
 new component without an explicit, justified decision.
 
-Sidecar containers musdash manages (Caddy ~50MB, BuildKit idle ~30MB) are
+Sidecar containers musdash manages (Caddy ~50–70MB, BuildKit idle ~66MB) are
 reported separately — never quote a number that excludes something the user will
 actually be running.
 
