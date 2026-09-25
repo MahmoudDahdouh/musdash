@@ -403,14 +403,26 @@ sleep 5
 if systemctl is-active --quiet musdash; then
   IP=$(hostname -I | awk '{print $1}')
   log "musdash is running"
+  # Ask musdash itself whether the account exists, so an upgrade is not told to
+  # create one (R-4): /login answers 200 once there is an account and redirects
+  # to /setup until then. Any other answer (not listening yet, a custom port
+  # this script cannot see) prints the address with no instruction.
+  # Spaces, quotes and a CR from a hand-edited file are stripped (\047 is ').
+  LIVE_PORT=$(awk -F= '{ k = $1; gsub(/[ \t]/, "", k) } k == "MUSDASH_PORT" { v = $2; gsub(/[ \t"\047\r]/, "", v); p = v } END { print p }' "$ENV_FILE" 2>/dev/null || true)
+  LOGIN_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${LIVE_PORT:-$PORT}/login" 2>/dev/null || true)
+  case "$LOGIN_CODE" in
+    200) NEXT_STEP=" to sign in" ;;
+    3*) NEXT_STEP=" to create your admin account" ;;
+    *) NEXT_STEP="" ;;
+  esac
   echo
   banner
   echo
   if [ -n "${MUSDASH_DASHBOARD_HOST:-}" ]; then
-    frame "Open https://$MUSDASH_DASHBOARD_HOST to create your admin account."
+    frame "Open https://$MUSDASH_DASHBOARD_HOST$NEXT_STEP."
     echo "  (If the certificate is not ready yet, give Caddy a few seconds.)"
   else
-    frame "Open http://$IP to create your admin account."
+    frame "Open http://$IP$NEXT_STEP."
     echo
     echo "  That is plain HTTP: no certificate authority issues for an IP."
     echo "  Once you point a domain here, open Settings in the dashboard and"
