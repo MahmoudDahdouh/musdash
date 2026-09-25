@@ -12,6 +12,7 @@
     <script defer src="/assets/alpine.js"></script>
   </head>
   <body>
+    <a class="skip" href="#main">Skip to content</a>
     <% if (it.user) { %>
     <!--
       Icon sprite. Inline <symbol> definitions referenced by <use href="#i-...">.
@@ -155,7 +156,7 @@
         </div>
       </aside>
 
-      <main class="<%= it.wide ? 'wide' : '' %>">
+      <main id="main" class="<%= it.wide ? 'wide' : '' %>">
         <% if (it.flash) { %>
         <div class="flash flash-<%= it.flash.kind %>"><%= it.flash.text %></div>
         <% } %> <%~ it.body %>
@@ -178,7 +179,7 @@
       </div>
     </dialog>
     <% } else { %>
-    <main class="<%= it.wide ? 'wide' : '' %>">
+    <main id="main" class="<%= it.wide ? 'wide' : '' %>">
       <% if (it.flash) { %>
       <div class="flash flash-<%= it.flash.kind %>"><%= it.flash.text %></div>
       <% } %> <%~ it.body %>
