@@ -151,19 +151,42 @@ export async function reconcileOnce(): Promise<void> {
  * row forever and the self-heal would fire exactly once in the process's life.
  * One bucket is long enough to collapse a burst of ticks, short enough that a
  * proxy killed later still gets a new job.
+ *
+ * It also carries the process nonce, so the collapse is per process AND per
+ * bucket. Without it, a restart whose boot landed in the previous process's
+ * bucket collided with the row that process left — done, failed, pending, or a
+ * lease stranded by a crash — and the conflict was swallowed as "already
+ * queued". The bootstrap (the D29 spec replacement, the D28 issuer, the route
+ * sync) then silently never ran for the new process.
  */
 const CADDY_JOB_BUCKET_MS = 5 * 60 * 1000
 
+/**
+ * Identifies this process in the sidecar job ids: its start time in base 36,
+ * readable and unique per boot.
+ *
+ * It MUST be computed once, here at module load. Recomputed per call it would
+ * differ on every tick, no id would ever collide, and a sidecar that stays down
+ * would queue a fresh bootstrap every 30 seconds — the burst of jobs the
+ * bucket exists to collapse (D7, D8).
+ *
+ * With it, a new process can never match a row a previous one left, so it
+ * always re-bootstraps. A bootstrap the previous process left pending may then
+ * run as well; that is harmless, because the handler is idempotent.
+ */
+const PROCESS_NONCE = Date.now().toString(36)
+
 function caddyJobId(): string {
-  return `ensure-caddy-${Math.floor(Date.now() / CADDY_JOB_BUCKET_MS)}`
+  return `ensure-caddy-${PROCESS_NONCE}-${Math.floor(Date.now() / CADDY_JOB_BUCKET_MS)}`
 }
 
 /**
  * A shorter bucket than the proxy's, deliberately.
  *
  * The bucket exists to stop a burst of ticks queueing a job each, but it also
- * sets the blind window: once a bucket holds a finished row, the id collides
- * with it and nothing can be re-queued until the bucket rolls over. Five
+ * sets the blind window: once a bucket holds a finished row from this process,
+ * the id collides with it and nothing can be re-queued until the bucket rolls
+ * over. A restart is not blind — the process nonce gives it fresh ids. Five
  * minutes is right for a proxy that almost never dies and whose bootstrap is
  * expensive. A build daemon is different — it is removed routinely (a prune, an
  * upgrade, an operator clearing disk), and while it is down nothing that is
@@ -174,13 +197,13 @@ function caddyJobId(): string {
 const BUILDKIT_JOB_BUCKET_MS = 60 * 1000
 
 function buildkitJobId(): string {
-  return `ensure-buildkit-${Math.floor(Date.now() / BUILDKIT_JOB_BUCKET_MS)}`
+  return `ensure-buildkit-${PROCESS_NONCE}-${Math.floor(Date.now() / BUILDKIT_JOB_BUCKET_MS)}`
 }
 
 /**
- * Whether an enqueue error is the primary-key conflict that means "this bucket
- * already holds a row" rather than a genuine failure like a locked database or
- * a full disk. The message fallback covers drivers that do not set `code`.
+ * Whether an enqueue error is the primary-key conflict that means "this
+ * process's bucket already holds a row" rather than a genuine failure like a
+ * locked database or a full disk. The message fallback covers drivers that do not set `code`.
  */
 function isConflict(err: unknown): boolean {
   const code = (err as { code?: unknown }).code
@@ -191,20 +214,22 @@ function isConflict(err: unknown): boolean {
 }
 
 /**
- * Queues the proxy bootstrap, tolerating a row this bucket already has.
+ * Queues the proxy bootstrap, tolerating a row this process already queued in
+ * this bucket.
  *
- * Called at boot and whenever the reconciler finds no running proxy. Both share
- * the bucketed id, so a startup reconcile that already queued one is not doubled
- * up on — a second bootstrap job would occupy the single worker while the
- * startup deploys behind it wait.
+ * Called at boot and whenever the reconciler finds no running proxy. Within one
+ * process both share the bucketed id, so a startup reconcile that already
+ * queued one is not doubled up on — a second bootstrap job would occupy the
+ * single worker while the startup deploys behind it wait. Across processes they
+ * never share one: the nonce guarantees each boot its own bootstrap.
  */
 export function queueCaddyBootstrap(): void {
   try {
     enqueue("ensure_caddy", {}, { id: caddyJobId(), maxAttempts: 1 })
   } catch (err) {
-    // A primary-key conflict IS the answer here: the bucket already holds a row
-    // — pending, leased, done, or failed — so there is nothing to queue.
-    // Anything else (the database is locked, the disk is full) is a real
+    // A primary-key conflict IS the answer here: this process already put a row
+    // in the bucket — pending, leased, done, or failed — so there is nothing to
+    // queue. Anything else (the database is locked, the disk is full) is a real
     // failure and must not vanish. Swallowing it hides the proxy never being
     // queued at all, which reaches the operator as "no site loads, and nothing
     // in the log".
@@ -254,18 +279,22 @@ async function ensureCaddyQueued(): Promise<void> {
 }
 
 /**
- * Queues the build-daemon bootstrap, tolerating a row this bucket already has.
+ * Queues the build-daemon bootstrap, tolerating a row this process already
+ * queued in this bucket.
  *
  * Its own bucket key, deliberately not shared with the proxy's: the two heal
  * independently, and a single key would mean a proxy failure suppressing the
- * build daemon's recovery for five minutes.
+ * build daemon's recovery for five minutes. Like the proxy's, the key carries
+ * the process nonce, so a restart always re-bootstraps the daemon — which is
+ * how a changed memory limit (D33) reaches it without waiting out a bucket the
+ * previous process filled.
  */
 export function queueBuildkitBootstrap(): void {
   try {
     enqueue("ensure_buildkit", {}, { id: buildkitJobId(), maxAttempts: 1 })
   } catch (err) {
-    // A primary-key conflict IS the answer: the bucket already holds a row.
-    // Anything else is a real failure and must not vanish.
+    // A primary-key conflict IS the answer: this process already put a row in
+    // the bucket. Anything else is a real failure and must not vanish.
     if (!isConflict(err)) {
       logger.error(
         { err: (err as Error).message },
@@ -314,10 +343,9 @@ async function ensureBuildkitQueued(): Promise<void> {
   }
 
   // Logged once per outage, not once per tick. The bucketed job id means a
-  // bootstrap that already ran in this five-minute window cannot be re-queued
-  // until the bucket rolls over, so an unguarded log line here repeats every 30
-  // seconds while nothing is actually happening — noise that buries the one
-  // line an operator needs.
+  // bootstrap that already ran in this one-minute window cannot be re-queued
+  // until the bucket rolls over, so an unguarded log line here repeats on every
+  // tick in between — noise that buries the one line an operator needs.
   if (!buildkitReported) {
     logger.info(
       "reconcile: BuildKit is not running or not answering on its socket, queueing bootstrap",

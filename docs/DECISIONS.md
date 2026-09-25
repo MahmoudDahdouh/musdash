@@ -2872,3 +2872,41 @@ Verified on the 1 GB host beside the live service: a 5 s and a 60 s run
 passed, the same seven containers ran before and after, no `./data` or
 temporary directory was left, and `--with-docker` refused. The CI side runs on
 the next push.
+
+## Every boot re-ensures the sidecars (R-1, 2026-09-26)
+
+The boot-time `ensure_caddy` and `ensure_buildkit` jobs shared the reconciler's
+time-bucketed ids (5 minutes for Caddy, 1 for BuildKit, D7 and D8), and
+finished job rows are kept for seven days. A restart in the same bucket as the
+previous boot therefore collided with that process's finished row, the
+conflict was swallowed as "already queued", and the bootstrap never ran:
+setting `MUSDASH_BUILDKIT_MEMORY_MB` and restarting within the minute changed
+nothing and logged nothing (V-1 10–11), and an upgrade within five minutes of
+the previous boot skipped the proxy spec replacement (D29), the issuer
+correction (D28) and the route sync. A lease stranded by a crash mid-bootstrap
+had the same effect.
+
+### D43 — the bucket is per process
+
+Both ids now carry a nonce computed once at module load, the process start time
+in base 36: `ensure-caddy-<nonce>-<bucket>`, `ensure-buildkit-<nonce>-<bucket>`.
+Inside one process nothing changes: the startup reconcile, the boot enqueue and
+the ticks still collapse onto one row per bucket, and the blind window is
+still the bucket. A new process can never match a row an earlier one left, so
+every boot runs both bootstraps. A bootstrap the previous process left pending
+may also run; the handlers are idempotent. The nonce must stay module-level:
+computed per call it would give every tick a fresh id and queue a bootstrap
+every 30 seconds.
+
+Rejected: a fresh ULID for the boot enqueue only (D25's pattern) would break
+the collapse with the startup reconcile and the first tick, putting two or
+three bootstraps ahead of the startup deploys; re-arming the finished row in
+the queue would overwrite its `last_error`, still collapse onto a stranded
+lease, and change a function every job type uses.
+
+Verified on the 1 GB host: two restarts 15 s apart in the same minute, the
+second with `MUSDASH_BUILDKIT_MEMORY_MB=320`, both logged `ensure_caddy` and
+`ensure_buildkit` completing (same bucket, different nonce), and the second
+replaced the daemon at 320 MB; removing the override and restarting restored 384. With the daemon removed by hand, the next tick queued exactly one
+bootstrap and it came back. No test: the id helpers are private, and the
+behaviour needs a restart.

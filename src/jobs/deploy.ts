@@ -685,12 +685,13 @@ export function enqueueDeploy(
  * and job concurrency is exactly 1, so a job per delivery parks real work behind
  * a queue of redundant builds of nearly the same tree.
  *
- * The tradeoff is sharper than the reconciler's (reconciler.ts:156-169) and cuts
- * the other way, so it is worth stating plainly. For a sidecar the bucket only
- * DELAYS a re-queue, because the reconciler tries again every 30 seconds
- * forever. A webhook has no retry loop: a second, genuinely different push
- * landing in a bucket that already holds a finished row is DROPPED, not delayed,
- * and that commit does not deploy until someone pushes again or clicks Deploy.
+ * The tradeoff is sharper than the reconciler's (`caddyJobId` and
+ * `buildkitJobId` in reconciler.ts) and cuts the other way, so it is worth
+ * stating plainly. For a sidecar the bucket only DELAYS a re-queue, because the
+ * reconciler tries again every 30 seconds forever. A webhook has no retry loop:
+ * a second, genuinely different push landing in a bucket that already holds a
+ * finished row is DROPPED, not delayed, and that commit does not deploy until
+ * someone pushes again or clicks Deploy.
  *
  * 60 seconds — the BuildKit precedent, not the proxy's five minutes — bounds
  * that blind window to roughly the length of one build while still collapsing
@@ -705,8 +706,8 @@ function pushJobId(resourceId: string): string {
 /**
  * Whether an enqueue error is the primary-key conflict that means "this bucket
  * already holds a row" rather than a genuine failure like a locked database or
- * a full disk. Same shape as reconciler.ts:180-186; the message fallback covers
- * drivers that do not set `code`.
+ * a full disk. Same shape as `isConflict` in reconciler.ts; the message fallback
+ * covers drivers that do not set `code`.
  */
 function isConflict(err: unknown): boolean {
   const code = (err as { code?: unknown }).code
