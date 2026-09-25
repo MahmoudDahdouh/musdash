@@ -169,12 +169,9 @@ select:focus-visible {
 /* ---------------------------------------------------------------- shell */
 
 /*
- * The sidebar is a grid column, not `position: fixed`, so `main` never needs
- * a magic left margin that has to be kept in sync with the sidebar width.
- *
- * The content column is `minmax(0, 1fr)` rather than `1fr`: a grid track's
- * default `min-width: auto` lets the log <pre> push the column wider than the
- * viewport, which would scroll the whole page sideways.
+ * The sidebar is a grid column, not fixed, so main needs no margin kept in
+ * sync with its width. minmax(0, 1fr), not 1fr: a track's default min-width
+ * lets the log <pre> widen the column past the viewport.
  */
 .shell {
   display: grid;
@@ -182,12 +179,8 @@ select:focus-visible {
   min-height: 100vh;
 }
 
-/*
- * Inside the shell, main is a grid item that already owns the whole content
- * column, so the centering the bare `main` rule applies for the chromeless
- * login/setup pages would only shrink it and push it off-centre. Reset both
- * here rather than editing `main`, which those pages still depend on.
- */
+/* The bare `main` rule centres login/setup; in the shell's column that
+   would only shrink it off-centre. */
 .shell > main {
   max-width: none;
   margin: 0;
@@ -209,7 +202,8 @@ select:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: var(--s-2);
-  padding: var(--s-4);
+  min-height: 56px;
+  padding: 0 var(--s-4);
   border-bottom: 1px solid var(--border);
 }
 
@@ -252,6 +246,20 @@ select:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.rss {
+  display: flex;
+  gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-2) var(--s-4);
+  border-top: 1px solid var(--border);
+  font-size: var(--t-xs);
+  color: var(--text-2);
+}
+.rss-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
 }
 
 .nav-top,
@@ -323,13 +331,9 @@ select:focus-visible {
 @media (max-width: 760px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
-    /*
-     * The bar sizes to its content and main takes the rest. Without explicit
-     * rows, min-height: 100vh plus grid's default `align-content: stretch`
-     * splits the viewport evenly between the two in-flow rows, and the bar
-     * renders ~360px tall instead of ~45px. The sidebar and scrim are
-     * position: fixed here, so they are not grid items and not counted.
-     */
+    /* Explicit rows: otherwise min-height: 100vh and the default stretch
+       split the viewport between bar and main, and the bar grows ~360px.
+       The sidebar and scrim are fixed here, so not grid items. */
     grid-template-rows: auto 1fr;
   }
   /* Narrow screens cannot spare 32px a side. */
@@ -340,7 +344,8 @@ select:focus-visible {
     display: flex;
     align-items: center;
     gap: var(--s-3);
-    padding: var(--s-3) var(--s-4);
+    min-height: 56px;
+    padding: 0 var(--s-4);
     background: var(--surface);
     border-bottom: 1px solid var(--border);
   }
@@ -349,10 +354,9 @@ select:focus-visible {
   }
   /*
    * A closed drawer is off screen, but transform alone leaves its links in the
-   * tab order, so a keyboard user would walk through invisible navigation.
-   * visibility takes them out. Transitioning it keeps the drawer visible for
-   * the whole slide in either direction: visibility interpolates as "visible"
-   * whenever one end of the transition is.
+   * tab order, so visibility takes them out. Closing transitions it, so the
+   * drawer stays visible for the whole slide out; opening switches it at once,
+   * or the Close button would still be hidden when open() focuses it.
    */
   .sidebar {
     position: fixed;
@@ -369,6 +373,8 @@ select:focus-visible {
   .sidebar.open {
     transform: translateX(0);
     visibility: visible;
+    transition: transform var(--d-base) var(--ease);
+    box-shadow: var(--shadow-3);
   }
   .nav-scrim {
     display: block;
@@ -380,16 +386,21 @@ select:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sidebar {
+  .sidebar,
+  .sidebar.open {
     transition: none;
   }
 }
 
 .brand {
-  font-weight: 650;
-  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-lg);
+  font-weight: 600;
+  letter-spacing: -0.02em;
   color: var(--text);
-  letter-spacing: -0.01em;
+  text-decoration: none;
 }
 
 /* Semibold, never bold; sizes from the scale. */
@@ -425,6 +436,7 @@ h3 {
 .card-title {
   font-size: var(--t-lg);
   line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 h4 {
   font-size: var(--t-md);
@@ -472,21 +484,69 @@ code {
   border-radius: var(--r-sm);
 }
 
+/* Crumbs, then title and status, then actions. The actions drop to their own
+   row by the head's width, not the viewport's: the sidebar takes 240px. */
 .page-head {
+  container: page-head / inline-size;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--s-4);
-  margin: var(--s-5) 0;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3) var(--s-4);
+  margin: 0 0 var(--s-5);
 }
-.breadcrumbs {
-  color: var(--text-2);
+.crumbs {
+  flex-basis: 100%;
+}
+.crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
   font-size: var(--t-sm);
-  margin-bottom: var(--s-1);
+  color: var(--text-2);
 }
-.breadcrumbs span {
-  margin: 0 var(--s-2);
+.crumbs li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* Empty alt text: a screen reader reads the list, not the slashes. */
+.crumbs li + li::before {
+  content: "/" / "";
+  margin-inline-end: var(--s-2);
+}
+.crumbs [aria-current="page"] {
+  color: var(--text);
+}
+.link-quiet {
+  color: var(--text-2);
+  text-decoration: none;
+}
+.link-quiet:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+.page-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  min-width: 0;
+}
+.page-title h1 {
+  overflow-wrap: anywhere;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+@container page-head (width < 600px) {
+  .actions {
+    flex-basis: 100%;
+  }
 }
 
 .card {
@@ -522,9 +582,6 @@ main > .card + .card {
 .row.end {
   justify-content: flex-end;
   gap: var(--s-2);
-}
-.page-head .row {
-  flex-wrap: wrap;
 }
 .cols {
   display: grid;

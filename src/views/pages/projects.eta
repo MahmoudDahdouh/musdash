@@ -1,9 +1,11 @@
 <div class="page-head">
-  <h1>Projects</h1>
-  <button type="button" class="btn btn-primary" data-open="new-project" commandfor="new-project" command="show-modal">
-    <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
-    New project
-  </button>
+  <div class="page-title"><h1>Projects</h1></div>
+  <div class="actions">
+    <button type="button" class="btn btn-primary" data-open="new-project" commandfor="new-project" command="show-modal">
+      <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+      New project
+    </button>
+  </div>
 </div>
 
 <% if (it.projects.length === 0) { %>

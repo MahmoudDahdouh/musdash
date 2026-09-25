@@ -1,7 +1,5 @@
-<div class="breadcrumbs">Settings</div>
-
 <div class="page-head">
-  <h1>Settings</h1>
+  <div class="page-title"><h1>Settings</h1></div>
 </div>
 
 <% if (it.flash) { %>

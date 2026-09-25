@@ -73,7 +73,7 @@ import {
   SETTING_GITHUB_MANIFEST_STATE,
   setDashboardHost,
 } from "../settings.ts"
-import { renderPage } from "../views/render.ts"
+import { type LayoutData, renderPage } from "../views/render.ts"
 
 const html = (body: string) =>
   new Response(body, {
@@ -1066,7 +1066,7 @@ function layout(
   session: SessionUser | null,
   title: string,
   options: LayoutOptions = {},
-) {
+): LayoutData {
   return {
     title,
     user: session ? { email: session.email } : null,
@@ -1079,6 +1079,12 @@ function layout(
     activeEnvironmentId: options.activeEnvironmentId,
     activeSettings: options.activeSettings,
     wide: options.wide,
+    // Read fresh on every render and never stored: the sidebar instrument is a
+    // spot reading, and a cached one would report a number that is not true.
+    // MiB, the unit scripts/measure-rss.ts gates on, so the two never disagree.
+    rssMb: session
+      ? Math.round(process.memoryUsage.rss() / 1048576)
+      : undefined,
   }
 }
 

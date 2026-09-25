@@ -172,6 +172,24 @@ document.addEventListener("alpine:init", () => {
       window.addEventListener("beforeunload", () => es.close())
     },
   }))
+
+  // Focus follows the drawer, so Escape never strands it on <body>.
+  Alpine.data("drawer", () => ({
+    navOpen: false,
+    open() {
+      this.navOpen = true
+      this.$nextTick(() => this.$refs.close.focus())
+    },
+    close() {
+      if (!this.navOpen) return
+      this.navOpen = false
+      this.$refs.menu.focus()
+    },
+    // A modal dialog owns its own Escape; the drawer under it stays open.
+    escape(event) {
+      if (!event.target.closest("dialog")) this.close()
+    },
+  }))
 })
 
 // --------------------------------------------------------- confirm dialog

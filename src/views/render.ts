@@ -16,7 +16,7 @@ import projectsSrc from "./pages/projects.eta" with { type: "text" }
 import resourceSrc from "./pages/resource.eta" with { type: "text" }
 import settingsSrc from "./pages/settings.eta" with { type: "text" }
 import setupSrc from "./pages/setup.eta" with { type: "text" }
-import statusSrc from "./partials/status.eta" with { type: "text" }
+import statusPartialSrc from "./partials/status.eta" with { type: "text" }
 import appCss from "../../public/app.css" with { type: "text" }
 import appJs from "../../public/app.js" with { type: "text" }
 import alpineJs from "../../public/alpine.js" with { type: "text" }
@@ -24,7 +24,7 @@ import alpineJs from "../../public/alpine.js" with { type: "text" }
 const eta = new Eta({ autoEscape: true, cache: true })
 // Registered by name so pages can `include("@status", …)`. An "@" name never
 // reaches Eta's file loader, which is what keeps it working in the binary.
-eta.loadTemplate("@status", statusSrc)
+eta.loadTemplate("@status", statusPartialSrc)
 
 const PAGES = {
   setup: setupSrc,
@@ -75,6 +75,8 @@ export interface LayoutData {
   activeEnvironmentId?: string
   /** Highlights the sidebar's Settings link. */
   activeSettings?: boolean
+  /** This process's resident memory in MiB. Set only for a signed-in render. */
+  rssMb?: number
 }
 
 export function renderPage(

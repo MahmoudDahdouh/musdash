@@ -1,15 +1,17 @@
-<div class="breadcrumbs">
-  <a href="/">Projects</a> <span>/</span>
-  <a href="/p/<%= it.project.id %>"><%= it.project.name %></a> <span>/</span>
-  <%= it.environment.name %> <span>/</span> <%= it.resource.name %>
-</div>
-
 <div class="page-head" x-data="resourceStatus('<%= it.resource.id %>', '<%= it.state %>')">
-  <div class="row gap">
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <ol>
+      <li><a class="link-quiet" href="/">Projects</a></li>
+      <li><a class="link-quiet" href="/p/<%= it.project.id %>"><%= it.project.name %></a></li>
+      <li><a class="link-quiet" href="/p/<%= it.project.id %>#env-<%= it.environment.id %>"><%= it.environment.name %></a></li>
+      <li aria-current="page"><%= it.resource.name %></li>
+    </ol>
+  </nav>
+  <div class="page-title">
     <h1><%= it.resource.name %></h1>
     <%~ include("@status", { state: it.state, live: true }) %>
   </div>
-  <div class="row gap">
+  <div class="actions">
     <form
       method="post"
       action="/r/<%= it.resource.id %>/deploy"

@@ -1,12 +1,18 @@
-<div class="breadcrumbs"><a href="/">Projects</a> <span>/</span> <%= it.project.name %></div>
-
 <div class="page-head">
-  <h1><%= it.project.name %></h1>
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <ol>
+      <li><a class="link-quiet" href="/">Projects</a></li>
+      <li aria-current="page"><%= it.project.name %></li>
+    </ol>
+  </nav>
+  <div class="page-title"><h1><%= it.project.name %></h1></div>
   <% if (it.tab === 'resources') { %>
-  <button type="button" class="btn btn-quiet" data-open="new-env" commandfor="new-env" command="show-modal">
-    <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
-    New environment
-  </button>
+  <div class="actions">
+    <button type="button" class="btn btn-quiet" data-open="new-env" commandfor="new-env" command="show-modal">
+      <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+      New environment
+    </button>
+  </div>
   <% } %>
 </div>
 

@@ -1,15 +1,18 @@
-<div class="breadcrumbs">
-  <a href="/">Projects</a> <span>/</span>
-  <a href="/r/<%= it.resource.id %>"><%= it.resource.name %></a> <span>/</span>
-  deployment
-</div>
-
 <div class="page-head">
-  <div class="row gap" x-data="deploymentStatus('<%= it.deployment.id %>', '<%= it.deployment.status %>')">
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <ol>
+      <li><a class="link-quiet" href="/">Projects</a></li>
+      <li><a class="link-quiet" href="/r/<%= it.resource.id %>"><%= it.resource.name %></a></li>
+      <li aria-current="page">deployment</li>
+    </ol>
+  </nav>
+  <div class="page-title" x-data="deploymentStatus('<%= it.deployment.id %>', '<%= it.deployment.status %>')">
     <h1 class="mono"><%= it.deployment.image %></h1>
     <%~ include("@status", { state: it.deployment.status, live: true }) %>
   </div>
-  <a class="btn btn-quiet" href="/r/<%= it.resource.id %>">Back to resource</a>
+  <div class="actions">
+    <a class="btn btn-quiet" href="/r/<%= it.resource.id %>">Back to resource</a>
+  </div>
 </div>
 
 <div class="card" x-data="logPanel('/d/<%= it.deployment.id %>/logs')">
