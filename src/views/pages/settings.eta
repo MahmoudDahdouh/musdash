@@ -39,7 +39,9 @@
   </p>
   <% } %>
 
-  <% if (it.host.applyPending) { %>
+  <%/* Not alongside a flash: the save redirect already says this, and the
+       note is for a reload that finds the change still being applied. */%>
+  <% if (it.host.applyPending && !it.flash) { %>
   <div class="flash flash-ok">
     Saved. Applying it to the proxy — reload in a moment to see the result.
   </div>

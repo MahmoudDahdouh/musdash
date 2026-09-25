@@ -52,6 +52,24 @@ export interface ContainerSpec {
    */
   privileged?: boolean
   /**
+   * Host directories bind-mounted into the container.
+   *
+   * A privilege boundary like `privileged`: a bind mount of a host path gives
+   * the container that path, and a resource-derived spec with one could mount
+   * `/` or the Docker socket. It exists solely so the proxy can create its admin
+   * socket in a directory musdash owns (D29), and `createContainer` REJECTS it
+   * on any spec not marked as musdash's own infrastructure via `sidecarLabels`.
+   *
+   * `hostPath` is a path on whatever host the daemon runs on.
+   */
+  hostMounts?: { hostPath: string; mountPath: string }[]
+  /**
+   * Kernel parameters set inside the container's own namespace, e.g.
+   * `net.ipv4.tcp_migrate_req`. Only namespaced `net.*` keys are meaningful —
+   * the Engine rejects anything that would change the host.
+   */
+  sysctls?: Record<string, string>
+  /**
    * Extra `/etc/hosts` entries, as `name:address`.
    *
    * Used to give the proxy `host-gateway`, which the Engine resolves to the

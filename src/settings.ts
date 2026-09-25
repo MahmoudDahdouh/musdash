@@ -63,8 +63,9 @@ export function setDashboardHost(host: string): void {
  * moment the domain is changed from the Settings page, which is the same
  * silent-breakage this derivation exists to remove. The env var survives as the
  * fallback for the case derivation cannot express: something else fronting
- * musdash on a different name — a tunnel, an external load balancer — where no
- * dashboard host is set at all.
+ * musdash on a different name — a tunnel, or a load balancer on a private
+ * network (a public-address peer is refused, D31) — where no dashboard host is
+ * set at all.
  */
 export function getPublicUrl(): string | undefined {
   const host = getDashboardHost()

@@ -19,9 +19,11 @@ musdash does not win on feature count and should not try. It targets parity with
 Coolify's core at one-tenth the memory, and concedes template breadth,
 integration count, and battle-tested edge cases.
 
-The repository is currently a scaffold: [src/index.ts](src/index.ts) is a
-hello-world Elysia server. Nearly everything described below is still to be
-built.
+Phases 1 and 2 are built: image and GitHub deploys with the zero-downtime swap,
+Caddy and BuildKit as managed sidecars, the reconciler, shared env vars, and the
+one-command installer. [docs/PHASES.md](docs/PHASES.md) is the roadmap,
+[docs/DECISIONS.md](docs/DECISIONS.md) records every deviation from it, and the
+most recent real-host run is `docs/VPS-TEST-*.md`.
 
 The stack is fixed, and some dependencies are forbidden outright: Prisma
 (ships a large Rust query engine), Redis-backed queues like BullMQ, Socket.io
@@ -126,10 +128,9 @@ backend/frontend split. The seams that matter are these:
 | **Validator**     | read only                                  | findings by severity: critical / important / minor. Never fixes. |
 
 **Tool restriction is the point, not the prompt** — a validator that cannot edit
-cannot quietly fix what it should have reported. `.claude/agents/` does not exist
-yet; until it does, run the loop with the Task tool, one subagent per role, each
-given only the tools its row allows. When adding those files, one role per file
-with an explicit output-format contract, since the next role parses it.
+cannot quietly fix what it should have reported. Each role is an agent in
+`.claude/agents/` with an explicit output-format contract, and
+`.claude/hooks/scope-guard.ts` enforces the path scopes above on subagents.
 
 ### Output contracts
 
@@ -223,14 +224,12 @@ bun run check          # format + lint with warnings as errors — run before co
 bun run ci             # non-mutating equivalent (prettier --check + biome ci)
 bun run format         # prettier --write .
 bun run lint:fix       # biome lint --write .
-bun test               # test runner (no tests exist yet)
+bun test               # all tests
 bun test src/docker/demux.test.ts   # a single test file
+bun run build          # release binary: dist/musdash (bun build --compile)
+bun run gate:rss       # build, boot, idle 60s, fail above 100MB RSS
 bun add <pkg>          # bun is the package manager — bun.lock is committed
 ```
-
-Expected once the app is real, not yet in package.json: `bun build --compile
---minify src/index.ts --outfile dist/musdash` for the release build, and
-`bun run rss` to measure its idle RSS.
 
 ## Security constraints
 
@@ -242,12 +241,18 @@ Expected once the app is real, not yet in package.json: `bun build --compile
   (they become container names and DNS labels), and image references must be
   validated against a registry-reference regex — an unvalidated image string is a
   command injection vector if it ever reaches a shell.
-- The Caddy admin API is never published to the host. The musdash HTTP port
-  binds `0.0.0.0` and the **firewall** is the boundary (D23) — Caddy runs in a
-  container and dials the host's bridge address, which a loopback-bound socket
-  cannot accept, so narrowing the bind disconnects the dashboard rather than
-  hardening it. `install.sh` creates the ufw rules; a box without a firewall
-  exposes the login page, `/health` and `/assets`, and nothing else.
+- The Caddy admin API is a **unix socket** in `$MUSDASH_DATA_DIR/caddy/` (0700),
+  never a TCP port (D29). A TCP listener inside the proxy also answers on the
+  `musdash` network, where every user app lives — "never published to the host"
+  was true and still let any app rewrite routing. The same applies to any
+  unauthenticated sidecar API.
+- The musdash HTTP port binds `0.0.0.0`, because Caddy dials the host's bridge
+  address and a loopback-bound socket cannot accept that (D23). The process
+  itself answers 403 to any non-private TCP peer (D31); the ufw rules
+  `install.sh` writes are a second layer, and are often inactive on provider
+  images.
+- New Caddy routes are inserted at index 0 (`PUT .../routes/0`), never appended:
+  the dashboard's catch-all must stay last or it swallows every resource.
 - Docker socket access is root-equivalent on the host. Treat any path that can
   influence a container spec as a privilege boundary.
 
@@ -271,9 +276,11 @@ any Biome warning — a deterministic gate that runs regardless of what any agen
 believes about the code. **Prefer gates over instructions wherever a rule can be
 mechanically checked.**
 
-`.gitattributes` forces LF everywhere; this is a Windows dev machine, so do not
-re-enable `core.autocrlf` or the `endOfLine: "lf"` Prettier setting will fight
-the checkout.
+`.gitattributes` forces LF everywhere. Development has moved from Windows to
+macOS; on any Windows checkout, do not re-enable `core.autocrlf` or the
+`endOfLine: "lf"` Prettier setting will fight the checkout. Neither macOS nor
+Windows can run the Docker-facing paths (container IPs, the proxy's admin
+socket) — those are verified on Linux.
 
 ## Testing
 

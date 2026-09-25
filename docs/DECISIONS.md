@@ -74,8 +74,10 @@ resolves app containers by name via Docker's embedded DNS. Routes are managed by
 PATCHing its JSON admin API, using `@id` for addressable objects so each route
 can be replaced or deleted independently.
 
-- The admin API binds to the musdash network only, **never published to the
-  host**.
+- ~~The admin API binds to the musdash network only, **never published to the
+  host**.~~ **Superseded by D29:** the musdash network is where every user app
+  lives, so "the musdash network only" meant "every app". The admin API is a
+  unix socket in a directory only musdash's user can enter.
 - `/data` (certificates) and `/config` are named volumes. Losing the certificate
   store means re-issuing everything and burning Let's Encrypt rate limit.
 - Rate limits are 50 certificates per registered domain per week. **Use the
@@ -1668,3 +1670,178 @@ absent.
 
 **Not verified against a real VPS.** The GitHub App registration round trip
 against a derived URL has not been run.
+
+## VPS test fixes (2026-09-25)
+
+`docs/VPS-TEST-2026-09-25.md` ran the Phase 1 Definition of Done on a real
+512MB RamNode box. This section covers the findings that were defects in the
+code. C-3 (the host thrashing on reboot without swap) and the memory margin in
+I-3 are properties of the host and are not addressed here.
+
+### C-1 — new resource routes are inserted at the front
+
+`upsertRoute` created a new route with `POST .../routes/`, which appends. The
+dashboard's catch-all has no host matcher and is terminal, so every route
+appended after it was unreachable: each resource answered with the dashboard's
+login redirect after its first deploy, on every install, and a redeploy PATCHed
+it in place behind the catch-all. D20's defence — re-appending the dashboard
+routes in `ensureCaddy()` — only ran when the proxy was bootstrapped, which a
+healthy host never does.
+
+New routes now go in with `PUT .../routes/0`, which inserts at index 0, so the
+catch-all stays last by construction rather than by a repair that has to run.
+Resource routes all carry host matchers and no two share a host, so their order
+among themselves does not matter. `ensureDashboardRoutes()` still deletes and
+re-appends on every bootstrap; that is what repairs a config written before this
+fix.
+
+### D29 — the Caddy admin API is a unix socket, and an outdated proxy is replaced
+
+`CADDY_ADMIN=0.0.0.0:2019` (the D2 amendment) made the admin API reachable from
+the host's loopback mapping — and from every interface inside the container,
+including the `musdash` network that every user app is attached to. A test app
+read the full route list with `wget http://musdash-caddy:2019/...`. The same
+unauthenticated API accepts `POST /load`, so any deployed app, a compromised
+dependency, or a one-click template could point the dashboard's hostname at
+itself and capture the admin login. The host-side loopback binding was correct;
+the container-network side was the hole.
+
+**Resolution.** The proxy's admin API listens on
+`unix//run/musdash-caddy/admin.sock|0222`, in a host directory
+(`$MUSDASH_DATA_DIR/caddy`, mode 0700, owned by musdash's user) bind-mounted
+into the container. The client talks to it with Bun's `fetch(url, { unix })`, as
+the Docker client already does. Port 2019 is no longer published at all, and
+`MUSDASH_CADDY_ADMIN` is removed — a stale line in `musdash.env` is ignored.
+
+- **The directory is the access control, not the socket mode.** The socket is
+  0222 because `connect()` needs write permission only and Caddy's default 0200
+  admits root alone; musdash runs as its own user. The mode suffix needs Caddy
+  2.8+, so the bootstrap now pulls `caddy:2-alpine` on every create rather than
+  only when absent, falling back to a cached copy only if the pull fails.
+- **The client sends `Host: 127.0.0.1`, not `localhost`.** Caddy 2.10+ skips the
+  Host check on unix sockets, but 2.9 and earlier enforce it and allow only an
+  empty host, `127.0.0.1` and `::1` — `localhost` would be a 403 on every call,
+  and a replaced proxy would never pass the readiness gate. Found by the
+  Validator reading Caddy's tagged sources; the fake admin API used for the
+  client check could not have caught it.
+- **The base config no longer writes an `admin` block.** It used to write
+  `admin.listen: 0.0.0.0:2019`, and a persisted config's admin block beats
+  `CADDY_ADMIN` on `--resume`, which would have reinstated the TCP listener on
+  every restart.
+- **An outdated proxy is replaced, amending D7.** D7 adopts an existing proxy and
+  never recreates it. That cannot hold when the proxy itself is the hole: the
+  listener and the mount cannot be changed on a running container. The proxy now
+  carries `musdash.proxy_spec=2`; one without it — including a pre-D7 container
+  with no labels — is removed and recreated once. Certificates survive on
+  `musdash-caddy-data`. The replacement autosaves under
+  `XDG_CONFIG_HOME=/config/musdash`, so the old `autosave.json` (with its TCP
+  admin block) is never resumed but stays on the volume for anyone who
+  hand-edited it. The image is pulled before the old container is removed, so
+  the outage is a container start, not a download.
+- **The replacement has no rollback.** :80 and :443 cannot be held by two
+  proxies, and recreating the old definition would reinstate the hole. If the
+  new proxy fails to come up, the readiness gates say why, the reconciler
+  re-queues the bootstrap within its 5-minute bucket, and the dashboard stays
+  reachable over an SSH tunnel to :8000 (D31 admits loopback). That is the
+  accepted cost of closing the hole on every upgrading install.
+- **Routes are re-asserted from the database on every bootstrap**
+  (`syncResourceRoutes`). The replacement starts blank, and nothing previously
+  reconciled Caddy's routes with the `resources` table at all — a lost config
+  volume, or a reboot handing a container a new IP, left sites dark with the
+  database still correct. It writes only on a real difference, since every
+  admin write is a full reload.
+- **Host mounts are a sidecar-only privilege**, like `privileged`:
+  `createContainer` refuses `hostMounts` on a spec without a `musdash.role`
+  label, and refuses volume names containing a path, which the Engine would
+  otherwise read as a host bind.
+
+A rootless or user-namespaced Docker daemon cannot write into a directory owned
+by musdash's user, so the socket never appears; the readiness error names the
+socket path. That configuration was never supported and is still not.
+
+### D30 — the proxy migrates queued connections across reloads
+
+The zero-downtime switch dropped exactly one request per deploy and per
+rollback, lined up to the millisecond with Caddy logging a full reload after the
+route PATCH. The ordering was correct and the old container was serving
+throughout. The cause is below musdash: every admin write reloads Caddy, Caddy
+binds :80/:443 with `SO_REUSEPORT` (`listen_unix.go`) so the new config can
+listen before the old one closes, and when the old socket closes Linux resets
+the connections still in its accept queue. The client saw curl exit 35.
+
+**Resolution: the proxy container gets `net.ipv4.tcp_migrate_req=1`** (Linux
+5.14+), which makes the kernel move those queued connections to another socket
+in the same reuseport group instead of resetting them. The sysctl is
+namespaced, so it changes only the proxy's own network namespace.
+
+- **Rejected: avoiding the reload.** Every admin change is a full reload in
+  Caddy; there is no partial one. A stable upstream name moved by Docker network
+  aliases would avoid the reload, but an alias cannot be removed from a running
+  container without disconnecting it, which kills the old container's in-flight
+  requests — trading one dropped request for a dropped drain.
+- **The kernel is checked first**, from this host's `/proc`, because runc fails
+  the container _start_ on an unknown sysctl — a proxy that never starts is far
+  worse than an occasional dropped request. On an older kernel the bootstrap
+  logs a warning and creates the proxy without it.
+
+### D31 — the dashboard refuses public peers itself
+
+D23 made the host firewall the boundary for port 8000. On the test provider's
+stock Ubuntu 24.04 image ufw is installed but inactive, `install.sh` only adds
+rules, and `/health` answered the public internet — as did the login form, over
+plain HTTP, bypassing Caddy's TLS.
+
+**Resolution: a global `onRequest` hook answers 403 to any request whose TCP
+peer is not loopback, RFC 1918, CGNAT (100.64/10), IPv6 ULA or link-local**
+(`src/http.ts`). Caddy reaches the dashboard from its address on the musdash
+bridge, which Docker allocates from private pools; a local tunnel or SSH forward
+arrives on loopback. The peer is the socket's address, never a forwarded header.
+The firewall rules stay, as a second layer.
+
+- **Rejected: enabling ufw from `install.sh`.** Turning on a default-deny
+  firewall on someone's server can cut off SSH on a non-standard port or any
+  other service already running there. Refusing public peers in the process
+  closes the exposure without touching anything musdash does not own.
+- **No toggle.** Something fronting musdash from a public address — the one case
+  this refuses — should go through Caddy like everything else. A tunnel or a load
+  balancer on a private network still works, which is what `MUSDASH_PUBLIC_URL`
+  is for.
+- **Private is not the same as trusted.** Other tenants on a provider's shared
+  private network pass this check; login is still required, and the ufw rules
+  `install.sh` writes shut them out when ufw is enabled.
+
+### Minor findings
+
+- **M-1** — confirmed and wider than reported. Every `pattern` in `src/views`
+  had an unescaped `-` in its character class: the project name and the
+  resource, database and environment names. Browsers compile `pattern` with the
+  `v` flag, where that is a syntax error, so all four fields silently skipped
+  client-side validation. All four now escape it (`\-`), and each was compiled
+  with the `v` flag straight from the file. A first pass wrongly called this
+  unreproducible after reading tool output instead of the file's bytes; the
+  Validator caught it.
+- **M-2** — the error handler logs method and path (not the query, which carries
+  OAuth codes), and 404s are logged at info rather than error.
+- **M-3** — the Settings page's inline "applying" note is hidden when the save
+  redirect's flash already says the same thing.
+- **M-4** — `bun run rss` prints the peak (VmHWM) next to the idle figure on
+  Linux. Informational only; the gate stays an idle number.
+- **I-3, the code half** — `install.sh` sent the build's output to `/dev/null`,
+  so an OOM-killed compile exited under `set -e` with no message. Output now goes
+  to a log whose tail is printed on failure, and exit 137 is named as memory.
+
+### Verified, and not verified
+
+Verified locally (macOS, no Docker daemon): typecheck, lint, and the existing
+test suite; the idle RSS gate (35.9MB); the new Caddy client against a fake admin API on a unix socket
+(first deploys insert ahead of the catch-all, redeploys patch in place,
+`ensureRoute` writes nothing when unchanged); the peer classifier against
+public, private, mapped and IPv6 addresses; the dev server serving loopback and
+LAN requests through the hook; the build-step error path, including a simulated
+SIGKILL.
+
+**Not verified against a real Docker daemon or VPS.** The proxy replacement,
+the socket appearing in the bind-mounted directory with the right permissions,
+`tcp_migrate_req` removing the dropped request, and a public request to :8000
+receiving a 403 all need a rerun of DoD steps 8–10 and a public probe of :8000
+with the report's own method.

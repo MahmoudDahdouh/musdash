@@ -7,10 +7,10 @@ import { z } from "zod"
  * frozen. A getter that re-read `process.env` per call would be slower and
  * could return different answers at different points in a request.
  *
- * Defaults follow PHASES.md §18, with two deliberate deviations recorded in
- * docs/DECISIONS.md — D2 (Caddy admin on loopback, because musdash runs on the
- * host and cannot resolve container-name DNS) and D4 (ACME staging defaults on,
- * so a careless dev run cannot burn the Let's Encrypt rate limit).
+ * Defaults follow PHASES.md §18, with deliberate deviations recorded in
+ * docs/DECISIONS.md — D29 (the Caddy admin API is a unix socket under the data
+ * directory, not a TCP port, so no container can reach it) and D4 (ACME staging
+ * defaults on, so a careless dev run cannot burn the Let's Encrypt rate limit).
  */
 
 const bool = z
@@ -32,8 +32,9 @@ const schema = z.object({
   // FALLBACK ONLY. The public address is normally DERIVED from the dashboard
   // host (src/settings.ts getPublicUrl), because it is by definition
   // `https://` + that name. This stays for the one case derivation cannot
-  // express: something else fronting musdash on a different name — a tunnel, an
-  // external load balancer — where no dashboard host is set at all.
+  // express: something else fronting musdash on a different name — a tunnel, or
+  // a load balancer on a private network (public peers are refused, D31) —
+  // where no dashboard host is set at all.
   MUSDASH_PUBLIC_URL: z.string().url().optional(),
 
   // The dashboard's own hostname — the FALLBACK for the `dashboard_host`
@@ -66,7 +67,9 @@ const schema = z.object({
   MUSDASH_HOST_GATEWAY: z.string().default("host-gateway"),
 
   MUSDASH_ACME_STAGING: bool.default(true), // D4
-  MUSDASH_CADDY_ADMIN: z.string().url().default("http://127.0.0.1:2019"), // D2
+  // MUSDASH_CADDY_ADMIN is gone (D29): the admin API is a unix socket whose
+  // path is derived from the data directory. A stale line in an existing
+  // musdash.env is harmless — zod object parsing ignores unknown keys.
 
   // The build daemon's address, loopback for the same reason the Caddy admin
   // API is: BuildKit runs arbitrary build steps and its API is unauthenticated,
@@ -129,7 +132,11 @@ export const config = Object.freeze({
   acmeStaging: env.MUSDASH_ACME_STAGING,
   // Trailing slash stripped so callers can join paths without doubling it.
   publicUrl: env.MUSDASH_PUBLIC_URL?.replace(/\/$/, ""),
-  caddyAdmin: env.MUSDASH_CADDY_ADMIN.replace(/\/$/, ""),
+  // The directory is bind-mounted into the proxy container, which creates the
+  // socket inside it. Only this process's user can traverse it (0700), which is
+  // the whole access control: Caddy's admin API has no authentication.
+  caddyAdminDir: resolve(dataDir, "caddy"),
+  caddyAdminSocket: resolve(dataDir, "caddy", "admin.sock"),
 
   buildkitAddr: env.MUSDASH_BUILDKIT_ADDR,
   buildCacheGb: env.MUSDASH_BUILD_CACHE_GB,

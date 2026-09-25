@@ -174,7 +174,6 @@ MUSDASH_PORT=8000
 MUSDASH_DATA_DIR=./data
 MUSDASH_DOCKER_SOCKET=/var/run/docker.sock
 MUSDASH_NETWORK=musdash
-MUSDASH_CADDY_ADMIN=http://127.0.0.1:2019
 MUSDASH_ACME_STAGING=true
 MUSDASH_DEFAULT_MEMORY_MB=512
 MUSDASH_HEALTH_TIMEOUT_SEC=60
@@ -330,18 +329,19 @@ ufw deny 8000/tcp
 ufw enable
 ```
 
-`install.sh` writes those last two rules for you when ufw is present. They are
-load-bearing, not optional hardening. The dashboard binds `0.0.0.0:8000` because
-Caddy runs in a container and reaches the host through its bridge address — a
-socket on `127.0.0.1` cannot accept that connection (D23). So the firewall, not
-the bind address, is what keeps port 8000 off the internet, and the bridge rule
-is what lets the proxy through. Get the second rule wrong and the dashboard is
-publicly reachable in plaintext; get the first wrong and the proxy times out
-reaching its own upstream.
+`install.sh` writes those last two rules for you when ufw is present, but it does
+not enable ufw — many provider images ship it installed and inactive. The
+dashboard binds `0.0.0.0:8000` because Caddy runs in a container and reaches the
+host through its bridge address — a socket on `127.0.0.1` cannot accept that
+connection (D23). musdash therefore refuses, with a 403, any request on port 8000
+whose TCP peer is a public address (D31): loopback, private and CGNAT ranges get
+through, the internet does not. The firewall is the second layer. Get the bridge
+rule wrong and the proxy times out reaching its own upstream.
 
-Only 22, 80 and 443 should be reachable from outside. The Caddy admin API (2019)
-and BuildKit (1234) are loopback-only by design and **must never be exposed** —
-BuildKit's API is unauthenticated and runs arbitrary build steps.
+Only 22, 80 and 443 should be reachable from outside. The Caddy admin API is a
+unix socket at `$MUSDASH_DATA_DIR/caddy/admin.sock` with no TCP port at all
+(D29), and BuildKit (1234) is loopback-only by design and **must never be
+exposed** — its API is unauthenticated and runs arbitrary build steps.
 
 Verify the proxy's path to the dashboard after any firewall change — this is the
 exact dial Caddy performs:
@@ -440,26 +440,25 @@ Private repos work through the GitHub App connect flow under **Settings**.
 Read once at startup by [src/config.ts](../src/config.ts) and frozen. Changing
 any of these requires a restart.
 
-| Variable                     | Default                 | Notes                                                                 |
-| ---------------------------- | ----------------------- | --------------------------------------------------------------------- |
-| `MUSDASH_PORT`               | `8000`                  | Binds `0.0.0.0`; the firewall is the boundary (D23)                   |
-| `MUSDASH_DATA_DIR`           | `./data`                | SQLite, `secret.key` (0600), logs, build cache                        |
-| `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock`  | Must be a real unix socket                                            |
-| `MUSDASH_DASHBOARD_HOST`     | —                       | Fallback only — the Settings page wins once a hostname is saved there |
-| `MUSDASH_WILDCARD_DOMAIN`    | —                       | e.g. `mus.example.com`; needed for auto-domains                       |
-| `MUSDASH_ACME_EMAIL`         | —                       | Required for automatic HTTPS                                          |
-| `MUSDASH_PUBLIC_URL`         | derived from the host   | Fallback only; set it when a tunnel or load balancer fronts musdash   |
-| `MUSDASH_ACME_STAGING`       | `true`                  | Safe default — set `false` deliberately, on real DNS                  |
-| `MUSDASH_CADDY_ADMIN`        | `http://127.0.0.1:2019` | Never published beyond loopback                                       |
-| `MUSDASH_BUILDKIT_ADDR`      | `tcp://127.0.0.1:1234`  | Unauthenticated API — loopback only                                   |
-| `MUSDASH_BUILD_CACHE_GB`     | `10`                    | Layer cache ceiling, on disk and in the build daemon                  |
-| `MUSDASH_RAILPACK_BIN`       | `railpack`              | Shelled out to, not linked                                            |
-| `MUSDASH_BUILDCTL_BIN`       | `buildctl`              | Shelled out to, not linked                                            |
-| `MUSDASH_NETWORK`            | `musdash`               | Must be user-defined                                                  |
-| `MUSDASH_DEFAULT_MEMORY_MB`  | `512`                   | Per-container hard limit; there is no "unlimited"                     |
-| `MUSDASH_HEALTH_TIMEOUT_SEC` | `60`                    | How long a new container has to pass the gate                         |
-| `MUSDASH_LOG_LEVEL`          | `info`                  | `trace`…`fatal`                                                       |
-| `NODE_ENV`                   | —                       | `production` enables the loopback bind                                |
+| Variable                     | Default                | Notes                                                                 |
+| ---------------------------- | ---------------------- | --------------------------------------------------------------------- |
+| `MUSDASH_PORT`               | `8000`                 | Binds `0.0.0.0`; public peers get a 403 (D31), the firewall is extra  |
+| `MUSDASH_DATA_DIR`           | `./data`               | SQLite, `secret.key` (0600), logs, build cache                        |
+| `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock` | Must be a real unix socket                                            |
+| `MUSDASH_DASHBOARD_HOST`     | —                      | Fallback only — the Settings page wins once a hostname is saved there |
+| `MUSDASH_WILDCARD_DOMAIN`    | —                      | e.g. `mus.example.com`; needed for auto-domains                       |
+| `MUSDASH_ACME_EMAIL`         | —                      | Required for automatic HTTPS                                          |
+| `MUSDASH_PUBLIC_URL`         | derived from the host  | Fallback only; for a tunnel or private-network LB fronting musdash    |
+| `MUSDASH_ACME_STAGING`       | `true`                 | Safe default — set `false` deliberately, on real DNS                  |
+| `MUSDASH_BUILDKIT_ADDR`      | `tcp://127.0.0.1:1234` | Unauthenticated API — loopback only                                   |
+| `MUSDASH_BUILD_CACHE_GB`     | `10`                   | Layer cache ceiling, on disk and in the build daemon                  |
+| `MUSDASH_RAILPACK_BIN`       | `railpack`             | Shelled out to, not linked                                            |
+| `MUSDASH_BUILDCTL_BIN`       | `buildctl`             | Shelled out to, not linked                                            |
+| `MUSDASH_NETWORK`            | `musdash`              | Must be user-defined                                                  |
+| `MUSDASH_DEFAULT_MEMORY_MB`  | `512`                  | Per-container hard limit; there is no "unlimited"                     |
+| `MUSDASH_HEALTH_TIMEOUT_SEC` | `60`                   | How long a new container has to pass the gate                         |
+| `MUSDASH_LOG_LEVEL`          | `info`                 | `trace`…`fatal`                                                       |
+| `NODE_ENV`                   | —                      | `production` enables the loopback bind                                |
 
 ---
 
@@ -549,10 +548,17 @@ Job concurrency is exactly 1 by design — deploys spike memory, so serializing
 them is what keeps the RAM budget. A stuck job blocks the rest. Check the log
 for the job that never finished.
 
-**Caddy will not start, or port 80/443/2019 is in use**
+**Caddy will not start, or port 80/443 is in use**
 Something else holds the port — often a stale `musdash-caddy` from a previous
 run, or a system nginx. `docker ps -a --filter name=musdash-caddy` and
-`sudo ss -tlnp | grep -E ':(80|443|2019)'`.
+`sudo ss -tlnp | grep -E ':(80|443)'`.
+
+**Caddy was recreated after an upgrade**
+Expected, once. A proxy created before D29 had its admin API on a TCP port that
+every app container could reach, and it cannot be fixed in place, so musdash
+replaces it: certificates are kept on their volume, routes are rebuilt from the
+database, and sites are down for a few seconds. The old config file stays on
+the `musdash-caddy-config` volume under `caddy/autosave.json`.
 
 **Certificates fail to issue**
 Check that `MUSDASH_ACME_STAGING=false`, that the A record resolves, and that 80
@@ -565,7 +571,7 @@ what the env said. Saving the dashboard address now reconciles that (D28). To
 check which one is in force:
 
 ```bash
-curl -s localhost:2019/config/apps/tls | grep -o "acme-staging[^\"]*"
+sudo curl -s --unix-socket /opt/musdash/data/caddy/admin.sock http://127.0.0.1/config/apps/tls | grep -o "acme-staging[^\"]*"
 ```
 
 **Builds fail with ENOENT on `railpack` or `buildctl`**

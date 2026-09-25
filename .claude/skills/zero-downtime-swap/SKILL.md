@@ -56,9 +56,20 @@ outage.
 
 Route objects use `@id` so each can be replaced or deleted independently:
 
-- Add — `POST /config/apps/http/servers/srv0/routes/`
+- Add — `PUT /config/apps/http/servers/srv0/routes/0` (insert at the FRONT)
 - Replace atomically — `PATCH /id/musdash-<resourceId>`
 - Delete — `DELETE /id/musdash-<resourceId>`
+
+**Never add a resource route with `POST .../routes/`.** POST appends, and the
+dashboard's catch-all (no host matcher, terminal) must stay last — a route
+appended behind it is never reached. That shipped, and every resource was
+unreachable after its first deploy on a real VPS (VPS test C-1).
+
+**Every admin-API write reloads the whole proxy**, and Caddy rebinds :80/:443
+with SO_REUSEPORT on each reload. Without `net.ipv4.tcp_migrate_req=1` in the
+proxy container, connections queued on the closing socket are reset — one failed
+request per route switch, measured (D30). Do not add admin writes to the deploy
+path casually, and do not drop that sysctl.
 
 The upstream dials the container **by name** on the `musdash` network, which is
 why the network must be user-defined — the default bridge gives no name
@@ -66,9 +77,12 @@ resolution.
 
 ### Caddy security
 
-- **The admin API is never published to the host.** Bind it to the musdash
-  network only. Anyone reaching port 2019 can replace the entire config with no
-  authentication.
+- **The admin API is a unix socket, never a TCP port** (D29). A TCP listener
+  inside the proxy container answers on the musdash network, which every user
+  app is attached to — so any deployed app could rewrite routing and capture the
+  dashboard login. The socket lives in `$MUSDASH_DATA_DIR/caddy/` (0700),
+  bind-mounted into the container. Anyone reaching it can replace the entire
+  config with no authentication.
 - `/data` (certificates) and `/config` are named volumes. Losing the cert store
   means re-issuing everything and burning rate limit.
 - **Use the Let's Encrypt staging endpoint during development.** Production

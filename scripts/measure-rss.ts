@@ -7,8 +7,15 @@
  * RSS, and fails the build if it exceeds 100MB. Without that gate the number
  * drifts silently and the product loses its reason to exist."
  *
- * Cross-platform because this is a Windows dev machine and a Linux CI/VPS:
- * `ps -o rss=` does not exist on Windows, so PowerShell is used there.
+ * Cross-platform because development has happened on Windows and macOS and the
+ * gate runs on Linux CI and VPSes: `ps -o rss=` does not exist on Windows, so
+ * PowerShell is used there.
+ *
+ * On Linux it also prints the PEAK resident set (VmHWM) next to the idle one.
+ * Informational, never gated: the ceiling is an idle number by definition, but
+ * a 512MB host has to fit the peak too, and a real VPS measured 41MB idle with
+ * a 104MB high-water mark after deploys. A number that is never printed is a
+ * number nobody notices drifting.
  *
  *   bun run gate:rss                 build, then measure
  *   bun run rss -- --idle 5          shorter idle while iterating
@@ -61,6 +68,18 @@ async function rssMb(pid: number): Promise<number | null> {
   return Number.isFinite(kb) && kb > 0 ? kb / 1024 : null
 }
 
+/**
+ * Peak resident set size in MB (Linux VmHWM), or null where /proc has no such
+ * line — macOS and Windows expose no equivalent through a cheap interface.
+ */
+async function peakRssMb(pid: number): Promise<number | null> {
+  const status = await Bun.file(`/proc/${pid}/status`)
+    .text()
+    .catch(() => "")
+  const kb = Number(status.match(/^VmHWM:\s+(\d+)\s+kB/m)?.[1])
+  return Number.isFinite(kb) && kb > 0 ? kb / 1024 : null
+}
+
 console.log(`Booting ${BINARY}, idling ${idle}s, ceiling ${ceiling}MB...`)
 
 const proc = Bun.spawn([BINARY], {
@@ -91,6 +110,12 @@ try {
   }
 
   const rounded = mb.toFixed(1)
+  const peak = await peakRssMb(proc.pid)
+  if (peak !== null) {
+    console.log(
+      `INFO  peak RSS since start ${peak.toFixed(1)}MB (not gated; deploys raise it further).`,
+    )
+  }
   if (mb > ceiling) {
     console.error(
       `FAIL  idle RSS ${rounded}MB exceeds the ${ceiling}MB ceiling.`,

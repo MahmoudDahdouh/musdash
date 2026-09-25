@@ -4,9 +4,12 @@ import { logger } from "../log.ts"
 /**
  * Caddy admin API wrapper.
  *
- * Caddy runs as a container musdash manages. Its admin API is never published
- * to the host beyond loopback: anyone who reaches port 2019 can replace the
- * entire configuration, unauthenticated.
+ * Caddy runs as a container musdash manages. Its admin API can replace the
+ * entire configuration, unauthenticated, so it is a unix socket in a directory
+ * only this process's user can enter — never a TCP port (D29). A TCP listener
+ * inside the container binds every interface on the `musdash` network, which is
+ * the network every user app is attached to: any deployed app could then
+ * rewrite routing, including pointing the dashboard's hostname at itself.
  *
  * Routes are addressed by `@id` so each can be replaced or deleted
  * independently — without ids, changing one route means rewriting the whole
@@ -14,6 +17,25 @@ import { logger } from "../log.ts"
  */
 
 const SERVER = "srv0"
+
+/**
+ * Where the proxy creates its admin socket, INSIDE the container. The host
+ * directory config.caddyAdminDir is bind-mounted here, so the same socket is
+ * config.caddyAdminSocket on the host.
+ */
+export const ADMIN_SOCKET_DIR_IN_CONTAINER = "/run/musdash-caddy"
+
+/**
+ * The value for the proxy's CADDY_ADMIN.
+ *
+ * Mode 0222 because connect() on a unix socket needs write permission and
+ * nothing else, and Caddy's default of 0200 would admit only root — musdash
+ * runs as its own user. The mode is not the access control: the 0700 directory
+ * around the socket is (D29).
+ */
+export const ADMIN_LISTEN = `unix/${ADMIN_SOCKET_DIR_IN_CONTAINER}/admin.sock|0222`
+
+type UnixInit = RequestInit & { unix: string }
 
 /**
  * Every admin-API call is bounded.
@@ -41,6 +63,36 @@ export interface RouteSpec {
   hosts: string[]
   /** Container IP or name, plus port. */
   upstream: string
+}
+
+/**
+ * Structural equality for two JSON values, ignoring object key order.
+ *
+ * Caddy stores config as decoded maps and re-encodes them with sorted keys, so
+ * a route read back never matches JSON.stringify of the object that was sent.
+ */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!(Array.isArray(a) && Array.isArray(b)) || a.length !== b.length) {
+      return false
+    }
+    return a.every((v, i) => sameJson(v, b[i]))
+  }
+  if (
+    a === null ||
+    b === null ||
+    typeof a !== "object" ||
+    typeof b !== "object"
+  ) {
+    return false
+  }
+  const ak = Object.keys(a)
+  const bk = Object.keys(b)
+  if (ak.length !== bk.length) return false
+  const bo = b as Record<string, unknown>
+  const ao = a as Record<string, unknown>
+  return ak.every((k) => k in bo && sameJson(ao[k], bo[k]))
 }
 
 /**
@@ -78,22 +130,27 @@ function routeBody(spec: RouteSpec): unknown {
 }
 
 export class CaddyClient {
-  constructor(private readonly admin: string = config.caddyAdmin) {}
+  constructor(private readonly socket: string = config.caddyAdminSocket) {}
 
   private async request(
     path: string,
     init: RequestInit = {},
   ): Promise<Response> {
     try {
-      return await fetch(`${this.admin}${path}`, {
+      // The socket is the address; the URL's host only becomes the Host
+      // header. It must be 127.0.0.1, not "localhost": Caddy 2.10+ skips the
+      // Host check on unix sockets, but 2.9 and earlier enforce it and accept
+      // only "", 127.0.0.1 and ::1 — anything else is a 403 on every call.
+      return await fetch(`http://127.0.0.1${path}`, {
         ...init,
+        unix: this.socket,
         // Callers may pass their own signal; nothing does today, and the
         // fallback keeps the door open without a second parameter.
         signal: init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      })
+      } as UnixInit)
     } catch (cause) {
       throw new CaddyError(
-        `cannot reach the Caddy admin API at ${this.admin}: ${(cause as Error).message}`,
+        `cannot reach the Caddy admin API at ${this.socket}: ${(cause as Error).message}`,
       )
     }
   }
@@ -177,10 +234,13 @@ export class CaddyClient {
 
     const issuer = issuerConfig()
 
+    // No `admin` key. The listen address comes from the container's
+    // CADDY_ADMIN alone, so a persisted config can never carry a TCP admin
+    // listener back in on the next `--resume` — which is exactly what the
+    // `admin.listen: 0.0.0.0:2019` this used to write did (D29).
     await this.expectOk("/load", {
       method: "POST",
       ...this.json({
-        admin: { listen: "0.0.0.0:2019" },
         apps: {
           http: {
             servers: {
@@ -202,10 +262,14 @@ export class CaddyClient {
     )
   }
 
-  private async routeExists(id: string): Promise<boolean> {
+  /** The route stored under `id`, or null when there is none. */
+  private async getRoute(id: string): Promise<unknown> {
     const res = await this.request(`/id/${encodeURIComponent(id)}`)
-    await res.arrayBuffer().catch(() => undefined)
-    return res.ok
+    if (!res.ok) {
+      await res.arrayBuffer().catch(() => undefined)
+      return null
+    }
+    return await res.json().catch(() => null)
   }
 
   /**
@@ -213,28 +277,51 @@ export class CaddyClient {
    *
    * PATCH on an existing @id swaps the upstream atomically — Caddy applies the
    * new config in one step, so no request sees a half-updated route. That is
-   * what makes the zero-downtime swap safe.
+   * what makes the zero-downtime swap safe. (Every admin change is a full
+   * config reload inside Caddy; the listener side of that is handled by the
+   * proxy's tcp_migrate_req sysctl, see D30.)
+   *
+   * A NEW route is inserted at index 0, never appended. Resource routes carry
+   * host matchers and the dashboard's catch-all has none, so the catch-all must
+   * stay last or it swallows every resource behind it — which is what appending
+   * did: every resource was unreachable after its first deploy, on every
+   * install (D20, VPS test C-1). PUT on an array index inserts; POST appends.
+   * Relative order among resource routes does not matter, because no two of
+   * them match the same host.
    */
   async upsertRoute(spec: RouteSpec): Promise<void> {
-    if (await this.routeExists(spec.id)) {
+    if ((await this.getRoute(spec.id)) !== null) {
       await this.expectOk(`/id/${encodeURIComponent(spec.id)}`, {
         method: "PATCH",
         ...this.json(routeBody(spec)),
       })
       return
     }
-    await this.expectOk(`/config/apps/http/servers/${SERVER}/routes/`, {
-      method: "POST",
+    await this.expectOk(`/config/apps/http/servers/${SERVER}/routes/0`, {
+      method: "PUT",
       ...this.json(routeBody(spec)),
     })
   }
 
   /**
+   * upsertRoute, but only when the stored route differs from `spec`.
+   *
+   * For reconciling rather than deploying: every admin write reloads the whole
+   * proxy, so re-asserting an unchanged route on every boot would cost a reload
+   * per resource for nothing. Returns whether anything was written.
+   */
+  async ensureRoute(spec: RouteSpec): Promise<boolean> {
+    if (sameJson(await this.getRoute(spec.id), routeBody(spec))) return false
+    await this.upsertRoute(spec)
+    return true
+  }
+
+  /**
    * Appends a route to the END of the list, without replacing an existing one.
    *
-   * upsertRoute PATCHes in place when the id already exists, which preserves
-   * position. The dashboard's catch-all must instead always land last, so it
-   * is deleted and re-appended rather than upserted.
+   * Only the dashboard's routes are appended. They must always land last, so
+   * they are deleted and re-appended rather than upserted — upsertRoute would
+   * insert them at the front.
    */
   async appendRoute(spec: RouteSpec): Promise<void> {
     await this.expectOk(`/config/apps/http/servers/${SERVER}/routes/`, {
@@ -352,9 +439,10 @@ export function isValidHostname(host: string): boolean {
  * writes is `terminal`. Resource routes carry host matchers, so a request for a
  * deployed app's domain matches its own route and stops. The catch-all matches
  * everything, so it must be LAST or it swallows every resource. upsertRoute
- * POSTs to the same collection and therefore appends, so a resource deployed
- * later would land behind it — which is why both dashboard routes are deleted
- * and re-appended as a unit on every ensureCaddy() rather than created once.
+ * inserts new resource routes at the front for exactly this reason. Both
+ * dashboard routes are still deleted and re-appended as a unit on every
+ * ensureCaddy(): that is what repairs a config written before the insert fix,
+ * where resource routes had been appended behind the catch-all.
  */
 export async function ensureDashboardRoutes(
   host: string | undefined,

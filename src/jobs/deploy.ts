@@ -1,4 +1,4 @@
-import { autoDomainFor, caddy, routeIdFor } from "../caddy/client.ts"
+import { caddy, routeIdFor } from "../caddy/client.ts"
 import { buildFromSource } from "./build.ts"
 import { config } from "../config.ts"
 import { LABEL_RESOURCE, LABEL_ROLE, managedLabels } from "../docker/client.ts"
@@ -8,7 +8,6 @@ import {
   deleteDeployment,
   getDeployment,
   getResourceContext,
-  listDomains,
   markDeploymentFailed,
   resolveEnvVars,
   updateDeployment,
@@ -23,6 +22,7 @@ import { nowIso, shortId } from "../ids.ts"
 import { logger, redactGithub, redactValues } from "../log.ts"
 import { enqueue } from "../queue/index.ts"
 import { startLogStream, stopLogStream } from "../logs/stream.ts"
+import { routeHosts } from "./routes.ts"
 
 export interface DeployPayload {
   resourceId: string
@@ -206,9 +206,7 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     emit("Health check passed")
 
     // 8a. switch the route BEFORE touching the old container
-    const hosts = listDomains(resourceId).map((d) => d.host)
-    const auto = autoDomainFor(resource.name, environment.name)
-    if (auto && !hosts.includes(auto)) hosts.push(auto)
+    const hosts = routeHosts(resourceId, resource.name, environment.name)
 
     if (hosts.length > 0 && resource.containerPort) {
       const state = await docker.inspectContainer(newContainerId)

@@ -53,8 +53,9 @@ bun run build
 sudo ./scripts/install.sh
 ```
 
-Then open `http://<server-ip>:8000` and create your admin account. Once an admin
-exists, musdash binds to `127.0.0.1` and is reached through Caddy.
+Then open `http://<server-ip>` (port 80, through Caddy) and create your admin
+account. Port 8000 answers only loopback and private addresses — Caddy's among
+them — and refuses the public internet with a 403 (D31).
 
 To get automatic HTTPS subdomains, point a wildcard A record
 (`*.mus.example.com`) at the host and set `MUSDASH_WILDCARD_DOMAIN` and
@@ -62,19 +63,18 @@ To get automatic HTTPS subdomains, point a wildcard A record
 
 ## Configuration
 
-| Variable                     | Default                 | Notes                                        |
-| ---------------------------- | ----------------------- | -------------------------------------------- |
-| `MUSDASH_PORT`               | `8000`                  | Binds `127.0.0.1` once an admin exists       |
-| `MUSDASH_DATA_DIR`           | `./data`                | SQLite, logs, secret key                     |
-| `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock`  |                                              |
-| `MUSDASH_WILDCARD_DOMAIN`    | —                       | e.g. `mus.example.com`                       |
-| `MUSDASH_ACME_EMAIL`         | —                       | Required for automatic HTTPS                 |
-| `MUSDASH_ACME_STAGING`       | `true`                  | Safe default; set `false` in production      |
-| `MUSDASH_CADDY_ADMIN`        | `http://127.0.0.1:2019` | Never exposed beyond loopback                |
-| `MUSDASH_NETWORK`            | `musdash`               | Must be a user-defined network               |
-| `MUSDASH_DEFAULT_MEMORY_MB`  | `512`                   | Per-container limit; there is no "unlimited" |
-| `MUSDASH_HEALTH_TIMEOUT_SEC` | `60`                    |                                              |
-| `MUSDASH_LOG_LEVEL`          | `info`                  |                                              |
+| Variable                     | Default                | Notes                                        |
+| ---------------------------- | ---------------------- | -------------------------------------------- |
+| `MUSDASH_PORT`               | `8000`                 | Binds `0.0.0.0`; public peers get a 403      |
+| `MUSDASH_DATA_DIR`           | `./data`               | SQLite, logs, secret key                     |
+| `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock` |                                              |
+| `MUSDASH_WILDCARD_DOMAIN`    | —                      | e.g. `mus.example.com`                       |
+| `MUSDASH_ACME_EMAIL`         | —                      | Required for automatic HTTPS                 |
+| `MUSDASH_ACME_STAGING`       | `true`                 | Safe default; set `false` in production      |
+| `MUSDASH_NETWORK`            | `musdash`              | Must be a user-defined network               |
+| `MUSDASH_DEFAULT_MEMORY_MB`  | `512`                  | Per-container limit; there is no "unlimited" |
+| `MUSDASH_HEALTH_TIMEOUT_SEC` | `60`                   |                                              |
+| `MUSDASH_LOG_LEVEL`          | `info`                 |                                              |
 
 ## Development
 

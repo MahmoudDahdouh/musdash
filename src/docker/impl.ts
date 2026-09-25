@@ -361,6 +361,44 @@ export class DockerHttpClient implements DockerClient {
       )
     }
 
+    // Same boundary, same reason: a host bind mount from a resource-derived
+    // spec would let a user mount the host filesystem or the Docker socket.
+    if (
+      spec.hostMounts !== undefined &&
+      spec.hostMounts.length > 0 &&
+      spec.labels[LABEL_ROLE] === undefined
+    ) {
+      throw new DockerError(
+        "refusing to bind-mount a host path without a musdash.role label: " +
+          "host mounts are reserved for musdash's own infrastructure",
+      )
+    }
+
+    // The Engine reads a Binds source containing a slash as a HOST path, so a
+    // "volume" named "/" would be a host bind mount that walks around the check
+    // above. Named volumes are plain names; anything else is refused.
+    for (const v of spec.volumes) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(v.name)) {
+        throw new DockerError(
+          `invalid volume name ${JSON.stringify(v.name)}: host paths go in hostMounts`,
+        )
+      }
+    }
+
+    // A Binds entry is `source:target`, so a colon in either half re-splits it.
+    for (const m of spec.hostMounts ?? []) {
+      if (
+        !m.hostPath.startsWith("/") ||
+        !m.mountPath.startsWith("/") ||
+        m.hostPath.includes(":") ||
+        m.mountPath.includes(":")
+      ) {
+        throw new DockerError(
+          `invalid host mount ${JSON.stringify(m)}: both paths must be absolute and contain no ':'`,
+        )
+      }
+    }
+
     const primary = spec.networks[0]
 
     // Publishing a port needs BOTH halves. PortBindings alone is silently
@@ -401,7 +439,13 @@ export class DockerHttpClient implements DockerClient {
         ...(spec.extraHosts && spec.extraHosts.length > 0
           ? { ExtraHosts: spec.extraHosts }
           : {}),
-        Binds: spec.volumes.map((v) => `${v.name}:${v.mountPath}`),
+        Binds: [
+          ...spec.volumes.map((v) => `${v.name}:${v.mountPath}`),
+          ...(spec.hostMounts ?? []).map((m) => `${m.hostPath}:${m.mountPath}`),
+        ],
+        ...(spec.sysctls && Object.keys(spec.sysctls).length > 0
+          ? { Sysctls: spec.sysctls }
+          : {}),
         LogConfig: {
           Type: "json-file",
           // Bound the per-container log file: disk is the other budget.

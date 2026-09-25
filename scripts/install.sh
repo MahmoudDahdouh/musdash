@@ -173,8 +173,25 @@ fi
 # libc. Costs about a minute.
 log "Building the binary (this takes ~60s)"
 cd "$SRC_DIR"
-"$BUN_BIN" install --frozen-lockfile >/dev/null 2>&1 || "$BUN_BIN" install >/dev/null
-"$BUN_BIN" run build >/dev/null
+# Output goes to a log rather than /dev/null. Under `set -e` a failed step
+# otherwise exits with no message at all — and the likeliest failure on a small
+# host is the kernel OOM killer, whose only trace is exit status 137.
+BUILD_LOG=$(mktemp /tmp/musdash-build.XXXXXX)
+build_step() {
+  local status=0
+  "$@" >>"$BUILD_LOG" 2>&1 || status=$?
+  [ "$status" -eq 0 ] && return 0
+  tail -n 30 "$BUILD_LOG" >&2
+  if [ "$status" -eq 137 ]; then
+    die "'$*' was killed (exit 137) — almost certainly out of memory. Add swap or use a larger host, then re-run. Full log: $BUILD_LOG"
+  fi
+  die "'$*' failed (exit $status). Full log: $BUILD_LOG"
+}
+if ! "$BUN_BIN" install --frozen-lockfile >>"$BUILD_LOG" 2>&1; then
+  build_step "$BUN_BIN" install
+fi
+build_step "$BUN_BIN" run build
+rm -f "$BUILD_LOG"
 
 [ -f "$SRC_DIR/dist/musdash" ] || die "the build produced no dist/musdash"
 # Stop before overwriting: replacing the binary under a running process is what
@@ -199,7 +216,6 @@ if [ ! -f "$ENV_FILE" ]; then
 MUSDASH_PORT=$PORT
 MUSDASH_DATA_DIR=$DATA_DIR
 MUSDASH_NETWORK=$NETWORK
-MUSDASH_CADDY_ADMIN=http://127.0.0.1:2019
 
 # --- Dashboard address -------------------------------------------------
 # SET THIS FROM THE SETTINGS PAGE, not here. The value below is only a seed for
@@ -263,9 +279,11 @@ EOF
 # --------------------------------------------------------------- firewall
 # The dashboard binds every interface, because Caddy is in a container and dials
 # the host through its bridge address — a socket on 127.0.0.1 cannot accept that
-# connection. So the firewall, not the bind address, is what keeps the port off
-# the internet. This is only meaningful when ufw is actually enabled; on a box
-# with no firewall the port is open either way, which is worth knowing.
+# connection. musdash itself refuses any request whose peer is a public address
+# (D31) — only loopback, private and CGNAT peers are served — so the internet
+# gets a 403 even with no firewall. These rules are the second layer, and only
+# take effect when ufw is enabled. They also shut out other tenants on a
+# provider's shared private network, which D31 alone admits.
 if command -v ufw >/dev/null 2>&1; then
   log "Allowing the proxy to reach the dashboard, and denying everyone else"
   ufw allow in on docker0 to any port "$PORT" proto tcp >/dev/null 2>&1 || true
@@ -275,10 +293,10 @@ if command -v ufw >/dev/null 2>&1; then
   fi
   ufw deny "$PORT/tcp" >/dev/null 2>&1 || true
   if ! ufw status 2>/dev/null | grep -q "Status: active"; then
-    log "ufw is installed but inactive — port $PORT is reachable from anywhere"
+    log "ufw is installed but inactive. musdash refuses public peers on port $PORT itself; enabling ufw adds a second layer"
   fi
 else
-  log "No ufw here; port $PORT is reachable from anywhere. Firewall it."
+  log "No ufw here. musdash refuses public peers on port $PORT itself; a host firewall adds a second layer"
 fi
 
 systemctl daemon-reload

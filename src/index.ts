@@ -1,6 +1,7 @@
 import { Elysia } from "elysia"
 import { bindHostname, config } from "./config.ts"
 import { migrate } from "./db/migrate.ts"
+import { handleError, rejectPublicPeers } from "./http.ts"
 import { logger } from "./log.ts"
 import {
   queueSidecarBootstraps,
@@ -28,13 +29,9 @@ startReconciler()
 startScheduler()
 
 const app = new Elysia()
-  .onError(({ code, error, set }) => {
-    // Never hand an internal error to the browser; log the detail, show a line.
-    logger.error({ code, err: String(error) }, "request failed")
-    if (code === "NOT_FOUND") return new Response("Not found", { status: 404 })
-    set.status = 500
-    return "Something went wrong. Check the server logs."
-  })
+  // Before anything else: a public peer gets nothing, not even /health (D31).
+  .onRequest(rejectPublicPeers)
+  .onError(handleError)
   .get(
     "/assets/:file",
     ({ params, status }) =>

@@ -190,8 +190,10 @@ export async function ensureBuildkit(): Promise<void> {
       // healthy worker, and is unreachable over TCP.
       //
       // Listening on all interfaces INSIDE the container is what makes the
-      // loopback port mapping above reach it — the same lesson as Caddy's
-      // CADDY_ADMIN=0.0.0.0:2019. The container is not on the host network, so
+      // loopback port mapping above reach it — the lesson of the D2 amendment.
+      // (Caddy has since moved its admin API to a unix socket, because the
+      // same listener also answers the musdash network — D29.) The container
+      // is not on the host network, so
       // binding 127.0.0.1 here would bind the container's own loopback and the
       // mapping would forward to a listener that refuses it.
       // The daemon keeps its own cache in CACHE_VOLUME, which is where Railpack
