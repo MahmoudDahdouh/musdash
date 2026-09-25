@@ -9,6 +9,14 @@
       <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
       <div><%= it.error %></div>
     </div>
+    <% } else if (it.busy) { %>
+    <div class="notice notice-warn" role="alert">
+      <svg class="icon" aria-hidden="true"><use href="#i-alert" /></svg>
+      <div>
+        musdash is busy checking other sign-in attempts, so your password was
+        not checked. Wait a few seconds, then sign in again.
+      </div>
+    </div>
     <% } %>
     <form method="post" action="/login" class="stack">
       <div class="field">

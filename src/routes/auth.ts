@@ -10,7 +10,9 @@ import {
   verifyCredentials,
   verifyCsrf,
 } from "../auth.ts"
+import type { User } from "../db/schema.ts"
 import { logger } from "../log.ts"
+import { GateBusyError } from "../password.ts"
 import { renderPage } from "../views/render.ts"
 
 const credentials = t.Object({
@@ -49,7 +51,13 @@ export const authRoutes = new Elysia()
         )
       }
 
-      const user = await createUser(body.email, body.password)
+      let user: User
+      try {
+        user = await createUser(body.email, body.password)
+      } catch (err) {
+        if (err instanceof GateBusyError) return busy("setup", "Set up")
+        throw err
+      }
       const session = createSession(user.id)
       cookie[SESSION_COOKIE]?.set({
         value: session.id,
@@ -69,7 +77,13 @@ export const authRoutes = new Elysia()
   .post(
     "/login",
     async ({ body, cookie, redirect }) => {
-      const user = await verifyCredentials(body.email, body.password)
+      let user: User | null
+      try {
+        user = await verifyCredentials(body.email, body.password)
+      } catch (err) {
+        if (err instanceof GateBusyError) return busy("login", "Sign in")
+        throw err
+      }
       if (!user) {
         // Deliberately vague: naming which half was wrong enumerates accounts.
         return html(
@@ -117,5 +131,22 @@ export const authRoutes = new Elysia()
 function html(body: string): Response {
   return new Response(body, {
     headers: { "content-type": "text/html; charset=utf-8" },
+  })
+}
+
+/**
+ * The answer when the argon2 gate is full (src/password.ts): the same form
+ * again, with the busy notice its template owns, and a 503 so a client knows to
+ * retry rather than treating it as a wrong password. Both login paths — known
+ * and unknown email — end here alike, so a busy answer reveals nothing about
+ * which accounts exist.
+ */
+function busy(page: "login" | "setup", title: string): Response {
+  return new Response(renderPage(page, { busy: true }, { title }), {
+    status: 503,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "retry-after": "2",
+    },
   })
 }

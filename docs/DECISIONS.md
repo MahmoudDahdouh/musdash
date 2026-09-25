@@ -2189,3 +2189,128 @@ in the Engine API v1.44 spec.
 Engine, the gen-2 → gen-3 replacement keeping the cache, the override replace
 and reject paths, and a runaway build under the computed 384 MiB cap through a
 real deploy. The premise test above used a hand-set cap, not this code.
+
+## Sign-in hashing is bounded (V-3, V-2, 2026-09-25)
+
+The 1GB VPS logged `peakRssMb: 128` after the first deploy and V-3 blamed
+deploys. Measuring before planning showed otherwise: a redeploy with no pull
+raised the process peak to 61 MB, a deploy that pulled a new image to 67 MB.
+The 128 MB came from argon2id at Bun's default `m=65536,t=2,p=1` — 64 MiB per
+hash or verify — run for the account setup and the first sign-in just before
+that deploy. `peakRssMb` is the process's lifetime high-water mark, so the
+deploy was blamed.
+
+### D34 — argon2id at 7 MiB, one operation at a time
+
+**Parameters.** argon2id stays (fixed stack) at `m=7168 KiB, t=5, p=1`. The
+OWASP Password Storage Cheat Sheet
+(https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html,
+checked 2026-09-25) lists five argon2id settings that "provide an equal level
+of defense", trading CPU for RAM: m=47104 t=1, m=19456 t=2, m=12288 t=3,
+m=9216 t=4, m=7168 t=5 (all p=1). Its summary line asks for "a minimum
+configuration of 19 MiB of memory, an iteration count of 2"; 7168 is below
+that headline figure and is justified by the list's equivalence statement.
+Memory is this product's constraint, and m×t is 35,840 here against 36,864 to
+47,104 for the others, so the smallest block costs nothing in CPU. The unit is
+KiB (bun-types 1.4.0 `bun.d.ts`: "Memory usage, in kibibytes"), proven at
+runtime by the PHC string Bun writes: `$argon2id$v=19$m=7168,t=5,p=1$`. One
+hash takes ~11 ms on an Apple M5; expect several times that on a 1 vCPU VPS.
+
+**One gate.** `src/password.ts` is the only file that calls `Bun.password`.
+Every hash and verify passes a single in-process gate: one runs at a time,
+at most `MAX_WAITING = 8` wait in order, and the next attempt is refused with
+a 503 "busy" page before anything is allocated. Bun runs these operations on
+worker threads, so without the gate concurrent attempts each held their own
+block, up to the width of Bun's worker pool (measured locally: 30 parallel
+hashes at 7 MiB took RSS from 10 to 105 MB, so not all 30 ran at once, but
+many did). With it, argon2 holds one block at a time whatever N is. Eight
+waiters because there is one legitimate user, and eight queued operations wait
+about a tenth of a second locally (~11 ms each); a 1 vCPU VPS is several times
+slower, still well under a second. The gate is decided by queue length only,
+never by the email, and the old `.catch(() => "")` on the unknown-email path
+is gone: it answered a busy unknown email with an instant "incorrect" while a
+busy known email got a 503, which revealed whether an address had an account.
+
+**Rehash on sign-in.** Hashes written before this change still verify — the
+parameters travel in the PHC string — but cost 64 MiB each. A successful
+sign-in against one rewrites it at the new parameters, with an `UPDATE`
+conditional on the hash just verified. A failed rehash logs only
+`{ userId, errorName }` and the sign-in still succeeds. The error object is
+never logged: drizzle 0.45's `DrizzleQueryError` message can embed the query
+parameters, i.e. the new and old hash. The SQLite errors seen so far (e.g. a
+UNIQUE violation) carry no parameters, but the rule has to hold for every path
+that might. Until the owner next signs in with a password — with 30-day
+sessions, possibly weeks — anyone can still make the server run the old
+64 MiB verify, one at a time; serialized old-parameter verifies were seen to
+level off at idle + ~97 MiB locally, and the window's bound is the measured
+128 MB, not arithmetic. Timing between a known and an unknown email differs
+during that window and matches after it.
+
+**A task that never settles** would hold the gate's slot forever: the eight
+waiters hang until their clients give up and every later sign-in gets a 503
+until restart. Only `Bun.password` runs behind the gate, and it always
+settles, so this is accepted rather than guarded with a timeout.
+
+**Throttled log.** A busy rejection logs at most once a minute: the first
+immediately, later ones counted and reported by the next line or by one timer
+at the end of the window. A flood cannot fill the journal, and no line ever
+carries an email, password or hash.
+
+**Measured (compiled binary, macOS, fresh data directory).**
+
+|                                                            | Before                                           | After                                                                                                                                                                      |
+| ---------------------------------------------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Memory per hash/verify                                     | 64 MiB                                           | 7 MiB (measured +7.9 MiB for one setup hash)                                                                                                                               |
+| 50 concurrent bad sign-ins                                 | concurrent 64 MiB blocks, up to Bun's pool width | ~10 answered "incorrect", ~40 answered 503 `retry-after: 2`, none 500, for unknown and known emails alike (runs split 10/40 and 9/41; the split depends on arrival timing) |
+| Process peak through setup, sign-in and a 50-request burst | —                                                | run 1 (builder): idle 44.9 → max 75.1 MB (+29.5); run 2 (reviewer): idle 44.2 → max 69.3 MiB (+24.6)                                                                       |
+
+The brief's criterion 12 set +25 MB for that last row: run 1 missed it, run 2
+met it, so the threshold sits inside run-to-run noise. The miss was accepted
+explicitly at the approval gate, not waved through. The growth is not argon2: 50 concurrent `GET /setup` with no hashing at all raised RSS
+from 44.7 to 59.1 MB, and 50 concurrent `POST /setup` rejected by validation
+to 62.9. About 18 MB is Bun and Elysia holding 50 requests at once; argon2's
+share is the ~8 MiB above. That leaves ~3.5 MB of run 1's +29.5 unexplained,
+and it is recorded as such rather than assigned a cause. The bound that matters is re-measured on the 1GB
+VPS (V-3 criterion 13, target `VmHWM` ≤ 85 MB, was 128).
+
+**Residuals, named.**
+
+- **Request bodies (B-1).** Elysia buffers each request body before any
+  handler runs, and nothing sets `maxRequestBodySize`, so Bun's 128 MB
+  default applies per request. Concurrent large POSTs to `/login` can still
+  buffer that much each before the gate is reached. Pre-existing, unrelated to
+  argon2, its own slice.
+- **CPU.** A sustained flood keeps one core busy running argon2 back to back,
+  and the owner's own sign-in may be answered 503 during it; existing sessions
+  keep working.
+- **No per-IP limiting.** Behind Caddy the TCP peer is Caddy, so a limiter
+  would key on `X-Forwarded-For`, which D31's trusted-peer rule would let any
+  private peer forge. That needs its own decision.
+
+**Tests.** `src/password.test.ts` widens the test policy by one file, like
+N-14 did: a gate that fails to release locks the only user out for good, and a
+misread `memoryCost` unit silently brings V-3 back. Neither shows in a
+click-through. It covers the parameters in the written hash, `needsRehash`,
+one-at-a-time ordering, the waiting bound, and release on error; each was
+checked to fail when the code is broken.
+
+**V-2.** The VPS reads 57–63 MB idle where the macOS gate reads ~36 MB. On
+Linux about 40 MB of that is `RssFile` — clean pages of the mapped compiled
+binary, reclaimable — and ~18 MB `RssAnon`, musdash's own heap. `bun run rss`
+now prints that split on Linux. The gate still judges the total, which is the
+conservative number, and CI's Linux run is the one to trust.
+
+**D33 knock-on.** D33's 576 MiB reserve counted musdash at 128 MB, which was
+argon2, not deploys. With this change about 55 MiB of it is unmeasured slack.
+It is not re-sized until the VPS re-measure.
+
+### Verified, and not verified
+
+Verified locally: `bun run ci`, `bun test` (163 pass), the parameters in the
+written hash, the 503 path for both email kinds, the busy log lines, the
+rehash of a literal old hash on sign-in, and the tests failing when the gate
+or parameters are broken. Not verified: anything on the 1GB VPS (criteria 13
+and 15), and criterion 14 as written (medians timed inside the handler). An
+end-to-end stand-in with curl — 3 runs, known vs unknown email — put the
+medians within 1% (~11.6 ms each); that is not the instrumented measurement
+the criterion asks for, and the omission was accepted at the approval gate.

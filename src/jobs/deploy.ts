@@ -49,12 +49,14 @@ export interface DeployPayload {
 /**
  * Logs the process's peak resident set after a deploy.
  *
- * The RAM gate measures idle memory, as specified, and a boot-and-idle run
- * never deploys — yet a real 512MB VPS measured a 104MB high-water mark after
- * deploys against 41MB idle (M-4, N-10). That peak is what a small host has to
- * fit, so it is recorded where it happens, on every deploy. maxRSS is a
- * lifetime high-water mark in KB, so the first deploy to raise it is the one
- * whose line shows the jump.
+ * The RAM gate measures idle memory, as specified, so a boot-and-idle run
+ * never sees a peak; this line is where one gets recorded on a real host.
+ * `peakRssMb` is maxRSS — the process's LIFETIME high-water mark (in KB), not
+ * this deploy's. It includes everything since boot, sign-in hashing above all:
+ * the 128MB once blamed on a deploy (V-3) was an argon2id block allocated at
+ * sign-in, while a deploy with an image pull adds about 5MB (D34). So a jump on
+ * this line means the peak rose at some point before the deploy finished, not
+ * necessarily during it.
  */
 function logPeakRss(
   resourceId: string,

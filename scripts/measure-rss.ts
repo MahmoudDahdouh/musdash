@@ -11,11 +11,20 @@
  * gate runs on Linux CI and VPSes: `ps -o rss=` does not exist on Windows, so
  * PowerShell is used there.
  *
- * On Linux it also prints the PEAK resident set (VmHWM) next to the idle one.
- * Informational, never gated: the ceiling is an idle number by definition. This
- * run never deploys, so its peak is the boot peak only; the figure a 512MB host
- * has to fit — a real VPS measured 104MB after deploys against 41MB idle — is
- * logged by every deploy as `peakRssMb` on its "deploy finished" line.
+ * On Linux it also prints the PEAK resident set (VmHWM) next to the idle one,
+ * and the idle figure split into anonymous and file-backed pages. Both are
+ * informational, never gated: the ceiling is an idle total by definition.
+ *
+ * The peak is the process's lifetime high-water mark, and this run never signs
+ * in or deploys, so it is the boot peak only. On a real VPS the dominant peak
+ * was sign-in, not deploys: argon2id at Bun's default cost took 64 MiB per hash
+ * (V-3, D34), since cut to 7 MiB. Every deploy still logs the process's
+ * lifetime peak as `peakRssMb` on its "deploy finished" line.
+ *
+ * The split explains why the VPS reads higher than a Mac (V-2): on Linux about
+ * 40MB of the total is RssFile — clean pages of the mapped compiled binary,
+ * which the kernel can reclaim — and only the rest is musdash's own heap. The
+ * gate still judges the total, which is the conservative number.
  *
  *   bun run gate:rss                 build, then measure
  *   bun run rss -- --idle 5          shorter idle while iterating
@@ -80,6 +89,23 @@ async function peakRssMb(pid: number): Promise<number | null> {
   return Number.isFinite(kb) && kb > 0 ? kb / 1024 : null
 }
 
+/**
+ * The resident set split into anonymous (heap) and file-backed (mapped binary)
+ * pages, in MB, or null where /proc has no such lines — macOS and Windows.
+ */
+async function rssSplitMb(
+  pid: number,
+): Promise<{ anon: number; file: number } | null> {
+  const status = await Bun.file(`/proc/${pid}/status`)
+    .text()
+    .catch(() => "")
+  const anon = Number(status.match(/^RssAnon:\s+(\d+)\s+kB/m)?.[1])
+  const file = Number(status.match(/^RssFile:\s+(\d+)\s+kB/m)?.[1])
+  return Number.isFinite(anon) && Number.isFinite(file)
+    ? { anon: anon / 1024, file: file / 1024 }
+    : null
+}
+
 console.log(`Booting ${BINARY}, idling ${idle}s, ceiling ${ceiling}MB...`)
 
 const proc = Bun.spawn([BINARY], {
@@ -114,7 +140,14 @@ try {
   if (peak !== null) {
     console.log(
       `INFO  peak RSS since start ${peak.toFixed(1)}MB — boot and idle only, not gated. ` +
-        'The deploy peak is logged by every deploy as peakRssMb ("deploy finished").',
+        'Sign-in and deploys raise it; every deploy logs the lifetime peak as peakRssMb ("deploy finished").',
+    )
+  }
+  const split = await rssSplitMb(proc.pid)
+  if (split !== null) {
+    console.log(
+      `INFO  idle RSS is ${split.anon.toFixed(1)}MB anonymous + ${split.file.toFixed(1)}MB file-backed ` +
+        "(the mapped binary, reclaimable) — not gated; the gate judges the total.",
     )
   }
   if (mb > ceiling) {
