@@ -338,10 +338,12 @@ whose TCP peer is a public address (D31): loopback, private and CGNAT ranges get
 through, the internet does not. The firewall is the second layer. Get the bridge
 rule wrong and the proxy times out reaching its own upstream.
 
-Only 22, 80 and 443 should be reachable from outside. The Caddy admin API is a
-unix socket at `$MUSDASH_DATA_DIR/caddy/admin.sock` with no TCP port at all
-(D29), and BuildKit (1234) is loopback-only by design and **must never be
-exposed** — its API is unauthenticated and runs arbitrary build steps.
+Only 22, 80 and 443 should be reachable from outside. Neither sidecar API has a
+TCP port at all: Caddy's admin API is a unix socket at
+`$MUSDASH_DATA_DIR/caddy/admin.sock` (D29) and BuildKit's is
+`$MUSDASH_DATA_DIR/buildkit/buildkitd.sock` (D32), each in a directory only the
+`musdash` user can enter. Both APIs are unauthenticated — a TCP listener inside
+either container would answer every app on the `musdash` network.
 
 Verify the proxy's path to the dashboard after any firewall change — this is the
 exact dial Caddy performs:
@@ -450,7 +452,6 @@ any of these requires a restart.
 | `MUSDASH_ACME_EMAIL`         | —                      | Required for automatic HTTPS                                          |
 | `MUSDASH_PUBLIC_URL`         | derived from the host  | Fallback only; for a tunnel or private-network LB fronting musdash    |
 | `MUSDASH_ACME_STAGING`       | `true`                 | Safe default — set `false` deliberately, on real DNS                  |
-| `MUSDASH_BUILDKIT_ADDR`      | `tcp://127.0.0.1:1234` | Unauthenticated API — loopback only                                   |
 | `MUSDASH_BUILD_CACHE_GB`     | `10`                   | Layer cache ceiling, on disk and in the build daemon                  |
 | `MUSDASH_RAILPACK_BIN`       | `railpack`             | Shelled out to, not linked                                            |
 | `MUSDASH_BUILDCTL_BIN`       | `buildctl`             | Shelled out to, not linked                                            |
@@ -559,6 +560,19 @@ every app container could reach, and it cannot be fixed in place, so musdash
 replaces it: certificates are kept on their volume, routes are rebuilt from the
 database, and sites are down for a few seconds. The old config file stays on
 the `musdash-caddy-config` volume under `caddy/autosave.json`.
+
+The replacement is tried first as a throwaway `musdash-caddy-preflight`
+container. If that fails, the old proxy is left serving and the bootstrap's
+error says why, including the preflight's last log lines. The build daemon is
+also replaced once after an upgrade (D32), keeping its cache volume, but with no
+preflight: no traffic flows through it, so nothing is down while it restarts.
+
+**A deploy log says the kernel is older than Linux 5.14**
+The zero-downtime switch relies on `net.ipv4.tcp_migrate_req` (D30), which
+arrived in Linux 5.14. Older kernels (Ubuntu 20.04's GA kernel, Debian 11) run
+the proxy without it, and a request that arrives at the instant of a route
+switch can fail. Upgrade the kernel (Ubuntu's HWE kernel is enough), then
+`docker rm -f musdash-caddy` so musdash recreates the proxy with the setting.
 
 **Certificates fail to issue**
 Check that `MUSDASH_ACME_STAGING=false`, that the A record resolves, and that 80

@@ -1833,7 +1833,8 @@ The firewall rules stay, as a second layer.
 ### Verified, and not verified
 
 Verified locally (macOS, no Docker daemon): typecheck, lint, and the existing
-test suite; the idle RSS gate (35.9MB); the new Caddy client against a fake admin API on a unix socket
+test suite; the idle RSS gate (35.9MB); and the following, by throwaway scripts
+that were NOT committed (N-14 — the two that matter are now tests, see below): the new Caddy client against a fake admin API on a unix socket
 (first deploys insert ahead of the catch-all, redeploys patch in place,
 `ensureRoute` writes nothing when unchanged); the peer classifier against
 public, private, mapped and IPv6 addresses; the dev server serving loopback and
@@ -1845,3 +1846,170 @@ the socket appearing in the bind-mounted directory with the right permissions,
 `tcp_migrate_req` removing the dropped request, and a public request to :8000
 receiving a 403 all need a rerun of DoD steps 8–10 and a public probe of :8000
 with the report's own method.
+
+## Review of `a619984` — the new code issues (2026-09-25)
+
+A code review of the fix commit (`docs/VPS-TEST-2026-09-25.md`, "New code
+issues") found fourteen more. All are addressed here; none has run against a
+real Docker daemon yet.
+
+### D32 — BuildKit's API is a unix socket too (N-1)
+
+`buildkitd` listened on `tcp://0.0.0.0:1234` inside a privileged container on
+the `musdash` network — the C-2 hole on the other sidecar, with a worse payoff:
+any app could run arbitrary builds on the host's CPU and memory, and fill or
+prune the build cache. D29's reasoning transfers exactly, and so does its fix.
+
+- **`--addr unix:///run/musdash-buildkit/buildkitd.sock`**, in
+  `$MUSDASH_DATA_DIR/buildkit` (0700) bind-mounted into the container, with
+  `--group` set to musdash's gid. buildkitd creates the socket 0660 owned by
+  `root:<group>` and leaves an existing parent directory alone (containerd's
+  `mkdirAs` only creates a missing one), so musdash can connect and nobody else
+  on the host can reach the directory.
+- **No published port, and `MUSDASH_BUILDKIT_ADDR` is removed.** buildctl and
+  railpack are handed `unix://…` from `config.buildkitAddr`, which is now
+  derived. A stale line in `musdash.env` is ignored.
+- **The readiness probe speaks HTTP/2 over the socket**, the same preface probe
+  as before. The published-port gate is gone with the port.
+- **An outdated daemon is replaced** (`musdash.builder_spec=2`), keeping
+  `musdash-buildkit-cache`. Unlike the proxy this needs no preflight: no traffic
+  flows through a build daemon, and the job queue guarantees no build is running
+  while the bootstrap is.
+
+### N-2 — the proxy replacement is proven before the old proxy is removed
+
+D29 accepted "no rollback". The reviewer's point stands: a rejection of the new
+definition is detectable before the old proxy is touched, and was not checked
+for. `ensureCaddy()` now runs a **preflight** when replacing: a throwaway
+`musdash-caddy-preflight` built from the same spec, minus the published ports,
+the named volumes (two Caddys must never share a certificate store) and the
+musdash network, with its own socket directory. It must run and answer on its
+admin socket within 20 seconds. That exercises the image, the sysctl, the bind
+mount and the socket's permissions — everything except the :80/:443 bind the
+live proxy holds. On failure the old proxy keeps serving, and the error carries
+the preflight's last log lines, which are otherwise lost with the container.
+
+Separately, a proxy created in this run that fails to start or to become ready
+is now removed. It carries the current spec label, so the next bootstrap would
+otherwise adopt the broken container forever instead of creating a fresh one.
+
+### N-3 — a resource cannot take the dashboard's hostname
+
+The domain form now refuses the dashboard's hostname, and `routeHosts()` strips
+it from every resource's route whichever way it arrived: an auto subdomain that
+collides, or a dashboard host set after the domain was attached. Saving the
+dashboard hostname now runs the route sync first, so an existing resource route
+gives the name up before the dashboard's route claims it.
+
+### N-4 — what is and is not settled about I-1
+
+Settled from source: Caddy starts the new config before stopping the old
+(`caddy.go`: `run(newCfg)`, then `unsyncedStop(oldCtx)`), so a reuseport peer
+exists for the migration to go to. And a connection Go has already accepted is
+not at risk mid-handshake: `Shutdown` treats a `StateNew` connection as idle only
+after five seconds, and Caddy's grace period is unbounded.
+
+Not settled: HTTP/3 on 443/udp is outside `tcp_migrate_req`, and the
+unexplained failure 20 seconds before the redeploy switch has no candidate cause
+in the switch itself — on a 512MB host during an image pull, memory pressure is
+the likelier one. Only a re-run of DoD steps 9–10 closes I-1. On a kernel older
+than 5.14, every deploy now says so in its own log at the switch, rather than
+only in a bootstrap warning nobody reads.
+
+### N-9 — the musdash network's own subnets are trusted
+
+The peer check admitted only the private ranges, so a host whose Docker
+`default-address-pools` hands out public space would have the dashboard refuse
+its own proxy. The reconciler now reads the musdash network's subnets at startup
+and on every tick (a Docker read, never on a request) and the check admits
+them too. A failed read keeps the previous list. The reachability probe reports
+a 403 as exactly this, instead of blaming the firewall.
+
+### N-10 — the deploy peak is logged by every deploy
+
+A boot-and-idle run cannot see a deploy peak. Every deploy now logs
+`peakRssMb` (the process's lifetime high-water mark) and `rssMb` on its
+"deploy finished" line, so the figure M-4 asked for is recorded on real hosts.
+The gate script's peak line says it covers boot and idle only.
+
+### N-12 — the route sync removes as well as writes
+
+`syncResourceRoutes()` now makes Caddy's resource routes match the database in
+both directions. A route exists exactly for a resource that is desired running,
+has a port, and has at least one host. Any other `musdash-*` route is deleted,
+and the dashboard's two are never touched. "Zero hosts" must mean "no route":
+a resource route with an empty host list has no matcher, which would make it a
+catch-all ahead of the dashboard's. A desired-running resource whose container
+is momentarily down keeps its route, because the reconciler is about to redeploy
+it. Adding or removing a domain enqueues a new `sync_routes` job, so the change
+reaches Caddy immediately instead of at the next deploy. Stopping a resource
+deletes its route.
+
+### Minors
+
+- **N-5, N-6, N-7** — the stale comments on how routes are created, on the
+  firewall being the boundary, and on the dashboard binding loopback are
+  corrected.
+- **N-8** — the 403, 404 and 500 bodies are rendered from
+  `src/views/pages/status.eta`, so no user-facing sentence lives in
+  `src/http.ts`.
+- **N-11** — the Settings "applying" note is hidden only on the redirect from
+  the hostname save itself (`&saved=host`), not by any flash.
+- **N-13** — accepted for now, and recorded where it will be found: the proxy
+  bootstrap reads kernel support from musdash's own `/proc`, and both sidecar
+  sockets need a filesystem shared with the daemon. `DockerClient` stays
+  neutral; Phase 5 (remote servers) has to ask the remote host for both.
+- **N-14** — the verification claims above were true but not reproducible.
+  The two that guard regressions are now tests: `src/caddy/client.test.ts`
+  (route order, patch in place, no-op `ensureRoute`, the Host header) against a
+  fake admin API on a unix socket, and `src/http.test.ts` (the peer classifier,
+  trusted subnets, fail-closed, `X-Forwarded-For` ignored). This widens
+  CLAUDE.md's four-area testing policy by two, deliberately: C-1 and the
+  dashboard exposure were each one careless edit away from shipping again, and
+  the policy's own test of "where the real bugs are" now includes both.
+
+### What the Validator found in the fixes, and what changed
+
+- **Critical, and older than all of this: a malformed request's body reached
+  the error log.** Elysia 1.4 builds a `ValidationError` message as JSON with
+  `found: <the whole body>`, in production mode too, and validates before any
+  handler — so an env form that failed its schema (a missing `csrf` is enough)
+  wrote the decrypted values in its textareas to the journal at error level,
+  against "never log a decrypted env value". `handleError` now logs only the
+  method, path and code for `VALIDATION` and `PARSE`, answers 400, and a test
+  spies on every log level to prove the body never appears.
+- **N-3 had a hole**: a wanted resource whose container was down at sync time
+  kept its old host list, so a name that had just become the dashboard's could
+  come back with the container. The sync now rewrites the hosts of such a route
+  anyway, keeping the upstream it already dials.
+- **N-4 checked the wrong thing**: the deploy note asked the host kernel, not
+  the running proxy. The proxy now carries `musdash.proxy_migrate=1|0`; the
+  deploy log reads that, and a proxy created without the sysctl on a kernel
+  that now has it is replaced through the same preflight.
+- **A sync must not change a live route's port.** The database port can be
+  ahead of the running container (edited for the next deploy), so the sync
+  keeps the port an existing route dials and only the deploy moves it, after
+  its health gate. A deploy that ends with no hosts or no port now deletes the
+  route instead of leaving it on the container it is about to remove.
+- **Cleanup scope.** A freshly created proxy is removed only if it never came
+  up (start, restart check, admin socket); a later `verifyServing` false
+  negative leaves it for the next bootstrap to re-check rather than turning into
+  an outage. BuildKit gets the same never-came-up cleanup, and a `builder_gid`
+  label so a changed gid replaces the daemon instead of adopting a socket this
+  process cannot open. Stale sockets are removed before a fresh create and
+  before every preflight; cleanup failures are logged, not swallowed.
+- **The reconciler probes BuildKit's socket**, not just its running flag, so
+  a daemon whose socket is unusable is re-bootstrapped.
+- **The 403 page is self-contained** (`src/views/forbidden.eta`, styles
+  inline), because the peer who sees it is refused `/assets` too. A failed
+  subnet read warns once per outage instead of logging at debug.
+
+### Verified, and not verified
+
+Verified locally (macOS, no Docker daemon): `bun run check`, the full test
+suite including the 33 new tests, and the idle RSS gate.
+
+**Not verified against a real Docker daemon or VPS:** the BuildKit socket and
+its `--group` permissions, the proxy preflight, `sync_routes` removing a stale
+route, and the trusted-subnet refresh. They join the list in the VPS report's
+"Needs a real Docker daemon or VPS" section.

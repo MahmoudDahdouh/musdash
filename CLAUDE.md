@@ -244,7 +244,8 @@ bun add <pkg>          # bun is the package manager — bun.lock is committed
 - The Caddy admin API is a **unix socket** in `$MUSDASH_DATA_DIR/caddy/` (0700),
   never a TCP port (D29). A TCP listener inside the proxy also answers on the
   `musdash` network, where every user app lives — "never published to the host"
-  was true and still let any app rewrite routing. The same applies to any
+  was true and still let any app rewrite routing. BuildKit's API is a unix
+  socket for the same reason (D32); the same applies to any future
   unauthenticated sidecar API.
 - The musdash HTTP port binds `0.0.0.0`, because Caddy dials the host's bridge
   address and a loopback-bound socket cannot accept that (D23). The process
@@ -284,12 +285,15 @@ socket) — those are verified on Linux.
 
 ## Testing
 
-Testing is intentionally minimal. Write `bun test` tests for exactly four things,
-which is where the real bugs are: Docker log frame demultiplexing (frames are
-8-byte-header multiplexed and split across chunk boundaries), env var encryption
-round-trip and tamper detection, job claiming under concurrency, and `KEY=value`
-env text parsing. **Do not scaffold broad unit coverage** — everything else is
-verified manually against a real VPS.
+Testing is intentionally minimal. Write `bun test` tests for the places the real
+bugs have been: Docker log frame demultiplexing (frames are 8-byte-header
+multiplexed and split across chunk boundaries), env var encryption round-trip
+and tamper detection, job claiming under concurrency, `KEY=value` env text
+parsing, and — since a real VPS caught both — Caddy route order against the
+dashboard catch-all and the dashboard port's peer check. **Do not scaffold broad
+unit coverage** — everything else is verified manually against a real VPS. A
+check you describe as done must exist in the repo; a throwaway script is not
+verification anyone else can repeat.
 
 The Test-Verifier proves acceptance criteria; it does not raise coverage for its
 own sake. A criterion that cannot be tested cheaply is verified by hand and
