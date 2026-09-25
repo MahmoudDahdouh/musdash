@@ -769,7 +769,8 @@ textarea {
 }
 
 /* A dot plus a label: the dot carries the hue, the label the meaning, so
-   nothing is said by colour alone. Labels come from views/partials/status.eta. */
+   nothing is said by colour alone. Resource labels come from
+   views/partials/status.eta; Settings writes its own strip labels. */
 .status {
   --tone: var(--idle);
   display: inline-flex;
@@ -1201,12 +1202,16 @@ dialog.confirm p {
   white-space: nowrap;
 }
 
-.local-source summary {
+summary {
   cursor: pointer;
   color: var(--text-2);
 }
-.local-source > * + * {
+details > * + * {
   margin-top: var(--s-2);
+}
+/* Settings reads as prose, so its cards stop at a readable measure. */
+.card-prose {
+  max-width: var(--prose-w);
 }
 
 /* The git dialog carries a repository list and eight fields, more than the

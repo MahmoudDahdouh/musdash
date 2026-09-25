@@ -740,7 +740,12 @@ export const appRoutes = new Elysia()
         // that shape carries the rule about never spreading the github_apps row,
         // and nothing on this path should be able to reach it.
         { ...view, host: dashboardHostView(), restarting },
-        layout(session, "Settings", { activeSettings: true }),
+        // The layout renders the flash, above the page head. Settings is the
+        // first route to hand it one; the page no longer renders its own.
+        {
+          ...layout(session, "Settings", { activeSettings: true }),
+          flash: view.flash,
+        },
       ),
     )
   })
