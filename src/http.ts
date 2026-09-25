@@ -1,5 +1,6 @@
-import { config } from "./config.ts"
+import { bindHostname, config } from "./config.ts"
 import { docker } from "./docker/impl.ts"
+import { WEBHOOK_PATH } from "./github/webhook.ts"
 import { logger } from "./log.ts"
 import { renderForbidden, renderPage } from "./views/render.ts"
 
@@ -132,9 +133,12 @@ export async function refreshTrustedSubnets(): Promise<void> {
 let subnetReadFailing = false
 
 /** A status page. The words live in the template, not here. */
-function statusPage(status: 400 | 404 | 500): Response {
+function statusPage(
+  status: 400 | 404 | 413 | 500,
+  extra?: Record<string, unknown>,
+): Response {
   return new Response(
-    renderPage("status", { status }, { title: String(status) }),
+    renderPage("status", { ...extra, status }, { title: String(status) }),
     { status, headers: HTML },
   )
 }
@@ -167,6 +171,100 @@ export function rejectPublicPeers({
   logger.debug({ peer: peer ?? null }, "refused a request from a public peer")
   return new Response(renderForbidden(), { status: 403, headers: HTML })
 }
+
+/**
+ * Bun's ceiling for every route and every peer: the webhook's allowance (D35).
+ *
+ * Bun's default is 128 MiB per request, and a body is held at least twice
+ * (the buffer, then the string), so two concurrent requests could exhaust a
+ * 1GB host (B-1). The option is server-wide, so it must be the largest
+ * legitimate body — a GitHub push — and forms get their smaller limit from
+ * limitRequestBody. Bun refuses a Content-Length over this with its own bare
+ * 413 before musdash sees the request, and cuts a chunked body off here too.
+ */
+export const MAX_REQUEST_BODY_BYTES = 1_048_576
+
+/**
+ * Every non-webhook route, checked from Content-Length before Elysia parses.
+ * Over 6x a heavy environment-variable paste, which is the largest form.
+ */
+export const MAX_FORM_BODY_BYTES = 262_144
+
+/**
+ * Refuses a form whose declared body is over MAX_FORM_BODY_BYTES.
+ *
+ * Runs in onRequest, before Elysia reads anything, and never reads the body
+ * itself: answering early is what keeps a refused body from being buffered —
+ * Bun discards the unread rest and keeps the connection usable (D35).
+ *
+ * The webhook is exempt; only Bun's ceiling applies to it. No Content-Length at
+ * all means a chunked body, which that same ceiling bounds. A header that is
+ * present but not a plain integer is refused outright: Bun joins duplicate
+ * headers into "100, 100", which no integer parse should be trusted to read
+ * the way the body parser will, and no legitimate client sends one.
+ */
+export function limitRequestBody({
+  request,
+}: {
+  request: Request
+}): Response | undefined {
+  const header = request.headers.get("content-length")
+  if (header === null) return undefined
+  const path = new URL(request.url).pathname
+  if (!/^\d+$/.test(header)) {
+    logger.debug(
+      { method: request.method, path },
+      "refused a malformed Content-Length",
+    )
+    return statusPage(400)
+  }
+  const contentLength = Number(header)
+  if (contentLength <= MAX_FORM_BODY_BYTES || path === WEBHOOK_PATH) {
+    return undefined
+  }
+  // Debug, and never the body: this runs before authentication, so anyone can
+  // produce one of these per request.
+  logger.debug(
+    { method: request.method, path, contentLength },
+    "refused a request body over the form limit",
+  )
+  return statusPage(413, { limitKb: MAX_FORM_BODY_BYTES / 1024 })
+}
+
+/**
+ * The single global onRequest hook: public peers first (D31), then body size.
+ *
+ * Destructured rather than taking Elysia's whole context, so its inference is
+ * not switched fully on for every request.
+ */
+export function guardRequest({
+  request,
+  server,
+}: {
+  request: Request
+  server: PeerSource | null
+}): Response | undefined {
+  return rejectPublicPeers({ request, server }) ?? limitRequestBody({ request })
+}
+
+/** Options for Elysia's .listen(), which spreads them into Bun.serve. */
+export function serveOptions(): {
+  port: number
+  hostname: string
+  maxRequestBodySize: number
+} {
+  return {
+    port: config.port,
+    hostname: bindHostname(),
+    maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
+  }
+}
+
+/**
+ * Bun's error text when a chunked body runs past maxRequestBodySize. Elysia
+ * passes it through as UNKNOWN on a route with parse "none" (the webhook).
+ */
+const BODY_CEILING_MESSAGE = "Request body exceeded maxRequestBodySize"
 
 /**
  * The global error handler.
@@ -202,6 +300,21 @@ export function handleError({
   if (code === "VALIDATION" || code === "PARSE") {
     logger.warn({ ...where, code }, "rejected a malformed request")
     return statusPage(400)
+  }
+  // Anyone can send a chunked body past the ceiling, so it must not be an
+  // error-level line per request. Bun has already answered with its own bare
+  // 413 and closed the connection by the time this runs — the page returned
+  // here is never delivered, it only keeps the handler's contract. The match is
+  // on Bun's message text: if Bun rewords it, this falls through to the
+  // error-level line below, so only a log level is lost. The message itself is
+  // still not logged, by the same rule as the branch above.
+  if (
+    code === "UNKNOWN" &&
+    error instanceof Error &&
+    error.message === BODY_CEILING_MESSAGE
+  ) {
+    logger.warn(where, "request body over the size ceiling")
+    return statusPage(413, { limitKb: MAX_REQUEST_BODY_BYTES / 1024 })
   }
   logger.error({ ...where, code, err: String(error) }, "request failed")
   return statusPage(500)

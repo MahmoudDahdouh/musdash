@@ -5,6 +5,9 @@
   <% } else if (it.status === 404) { %>
   <h1>Not found</h1>
   <p>There is nothing at this address.</p>
+  <% } else if (it.status === 413) { %>
+  <h1>That form was too large</h1>
+  <p>musdash accepts forms up to <%= it.limitKb %> KB, and nothing was saved. If you were saving environment variables, split them across the project, environment and resource levels, or remove ones that are no longer needed, then try again.</p>
   <% } else { %>
   <h1>Something went wrong</h1>
   <p>The details are in the server logs: <code>journalctl -u musdash</code>.</p>

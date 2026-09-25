@@ -2279,7 +2279,8 @@ VPS (V-3 criterion 13, target `VmHWM` ≤ 85 MB, was 128).
   handler runs, and nothing sets `maxRequestBodySize`, so Bun's 128 MB
   default applies per request. Concurrent large POSTs to `/login` can still
   buffer that much each before the gate is reached. Pre-existing, unrelated to
-  argon2, its own slice.
+  argon2, its own slice. **Fixed by D35**: bodies are now capped at 1 MiB, and
+  forms at 256 KiB before parsing.
 - **CPU.** A sustained flood keeps one core busy running argon2 back to back,
   and the owner's own sign-in may be answered 503 during it; existing sessions
   keep working.
@@ -2314,3 +2315,110 @@ and 15), and criterion 14 as written (medians timed inside the handler). An
 end-to-end stand-in with curl — 3 runs, known vs unknown email — put the
 medians within 1% (~11.6 ms each); that is not the instrumented measurement
 the criterion asks for, and the omission was accepted at the approval gate.
+
+## Request bodies are bounded (B-1, 2026-09-25)
+
+Found while reviewing V-3: nothing set `maxRequestBodySize`, so Bun's default
+of 128 MB applied to every request, and Elysia reads and parses the whole body
+before a handler runs. Measured on the compiled binary: three concurrent
+100 MiB `POST /login` requests grew RSS by **502 MiB**. Two would exhaust the
+1GB VPS; the sign-in page is public.
+
+### D35 — 1 MiB for everything, 256 KiB for forms, checked before parsing
+
+**Two limits.** Bun's `maxRequestBodySize` is server-wide, so it is set to the
+largest thing musdash legitimately receives: 1 MiB, the GitHub webhook's
+allowance. It covers every path and every peer, including private peers that
+reach :8000 directly (D31). Every other request is held to 256 KiB by a
+global `onRequest` check on `Content-Length`, which runs before Elysia parses
+the body and answers with a 413 page from `status.eta`. A `Content-Length`
+that is not a plain integer (for example Bun joining two identical headers
+into `"100, 100"`) is refused with a 400, so it cannot slip past the form
+limit. A body with no `Content-Length` (chunked) is held only to the 1 MiB
+ceiling. `src/index.ts` registers one hook, `guardRequest`, which rejects
+public peers first (D31) and checks size second.
+
+**Why these numbers.** The largest real form is the three env-var boxes:
+200 variables with a few PEM keys is 20–40 KiB before URL-encoding, so
+256 KiB is several times a heavy paste. musdash reads three fields from a
+push webhook (`ref`, `deleted`, `repository.full_name`); typical pushes are
+10–80 KiB, and 1 MiB covers a few hundred to about a thousand commits.
+GitHub's own 25 MB cap was rejected because Bun's limit is server-wide:
+allowing it for the webhook would allow it for `/login` too.
+
+**The accepted cost.** A push whose payload is over 1 MiB is refused by Bun
+before musdash sees it. It does not auto-deploy, musdash logs nothing, and
+GitHub shows a failed delivery. Realistic causes: the first push of a
+long-lived branch (up to 2048 commits) or one commit touching thousands of
+files. The Deploy button still works. RUNNING.md says so.
+
+**What Bun does, measured** (Bun 1.4.2, Elysia 1.4.29; plan reviewer's
+throwaway scripts, then the builder's harness on the compiled binary):
+
+- `Content-Length` over the ceiling: Bun's bare `413` with `Connection: close`
+  as soon as the headers arrive, before any musdash code. Exactly at the limit:
+  accepted. This bare 413 is Bun's response, not a string of ours — the one
+  accepted exception to "user-facing strings live in templates".
+- Chunked over the ceiling: also Bun's bare 413 and close. Elysia's `onError`
+  still runs afterwards, but its response is never delivered. On the webhook
+  it arrives as `UNKNOWN` with the message
+  `"Request body exceeded maxRequestBodySize"`, which used to log at error
+  level; `handleError` now matches that message and logs it at warn with only
+  `{ method, path }`. If Bun rewords it, only the log level is lost.
+- Answering early without reading the body: Bun reads and discards the rest
+  and the connection is reused (a follow-up `GET /health` on the same
+  connection returned 200). A handler that waits before reading makes Bun stop
+  reading the socket. Unread bodies are therefore not held in memory; reading
+  one costs about 1.7× its size.
+- `Content-Length` framing is enforced, and `Content-Length` together with
+  `Transfer-Encoding: chunked` gets a 400 and a close. Those are the two
+  smuggling shapes that were tried, and both were refused.
+
+**Measured after the change** (compiled binary, macOS `ps` RSS every 100 ms,
+fresh data directory). Reproduce with `scripts/measure-body-limits.ts`
+(scenarios `c10`, `c11`, `c12`; for the "before" column, pass a binary built
+from a commit before D35):
+
+| Load                                       | Before                  | After                                                             |
+| ------------------------------------------ | ----------------------- | ----------------------------------------------------------------- |
+| 3 × 100 MiB `POST /login`                  | 400 × 3, **+502.1 MiB** | 413 × 3, **+0.0 MiB**                                             |
+| 50 × 1000 KiB `POST /login`                | —                       | 413 × 50 with the template page, +11.2 MiB                        |
+| 50 × 1000 KiB webhook, bad signature       | —                       | 202 × 50 (no App registered), +19.5 MiB                           |
+| chunked 2 MiB `/login`, `/webhooks/github` | —                       | 413 each; one warn line each, no error line, no body bytes logged |
+| `bun run rss` idle, 3 runs                 | 36.8 / 39.6 / 39.8 MB   | 39.7 / 39.4 / 39.6 MB (medians equal)                             |
+
+**Many connections at once.** The worst case is now about 3.4 MiB per request
+(a 1 MiB webhook body held as buffer, string and HMAC input, plus ~0.36 MiB of
+fixed per-request cost measured under D34). That takes about 150 concurrent
+requests to exhaust the 1GB host's idle headroom, or about 44 to eat D33's
+build margin — up from two and one. No in-flight cap was added: a counter that
+fails to release would answer 503 to every POST and lock the only user out —
+D34's argument without D34's guarantee that the task always settles — and the
+threshold is now high. It is NOT true that a JavaScript counter cannot bound
+Bun's buffering: Bun does not hold unread bodies, so a gate placed before the
+read would work. For the same reason a 25 MB webhook allowance behind a
+one-at-a-time read gate is technically possible and is a follow-up, not this
+slice. The aggregate across many connections is the same residual as D34's
+"no per-IP limiting".
+
+**Caddy `request_body` rejected.** It would not cover private peers on :8000,
+so Bun's limit is needed regardless; the hook already separates forms from
+the webhook for every peer; Caddy's rejection is a bare page that bypasses the
+template; and it would mean a dashboard-only branch in `routeBody`, the code
+C-1 broke once, where a change in shape rewrites every resource route on
+upgrade. Resource routes get no body limit from musdash: user apps own theirs.
+
+**Tests.** One `describe` group in the existing `src/http.test.ts`, an area
+N-14 already added: a real Elysia app on `serveOptions()` checks both limits,
+the webhook exemption, the malformed-header 400, and the warn-level log.
+Setting the ceiling back to 128 MiB makes exactly the ceiling test fail.
+Without it, deleting `maxRequestBodySize` or a Bun upgrade that stops
+honouring it would silently bring B-1 back.
+
+### Verified, and not verified
+
+Verified locally: everything in the table, `bun run ci`, `bun test`
+(173 pass). Not verified: behaviour through Caddy on the VPS (criterion 13) —
+in particular whether Caddy relays Bun's 413 for a body over 1 MiB or reports
+a 502 after Bun closes the connection, and a real push delivery's payload
+size.

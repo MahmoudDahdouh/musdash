@@ -1,7 +1,7 @@
 import { Elysia } from "elysia"
-import { bindHostname, config } from "./config.ts"
+import { config } from "./config.ts"
 import { migrate } from "./db/migrate.ts"
-import { handleError, rejectPublicPeers } from "./http.ts"
+import { guardRequest, handleError, serveOptions } from "./http.ts"
 import { logger } from "./log.ts"
 import {
   queueSidecarBootstraps,
@@ -29,8 +29,9 @@ startReconciler()
 startScheduler()
 
 const app = new Elysia()
-  // Before anything else: a public peer gets nothing, not even /health (D31).
-  .onRequest(rejectPublicPeers)
+  // Before anything else: a public peer gets nothing, not even /health (D31),
+  // and an oversized form is refused before Elysia reads it (D35).
+  .onRequest(guardRequest)
   .onError(handleError)
   .get(
     "/assets/:file",
@@ -44,7 +45,7 @@ const app = new Elysia()
   // to /login, which GitHub records as success and never retries.
   .use(githubWebhookRoutes)
   .use(appRoutes)
-  .listen({ port: config.port, hostname: bindHostname() })
+  .listen(serveOptions())
 
 logger.info(
   {

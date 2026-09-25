@@ -434,6 +434,20 @@ Private repos work through the GitHub App connect flow under **Settings**.
 - **Logs** — live over SSE, from an in-memory ring buffer (1000 lines per
   resource) plus rotated files under `data/logs/`. Logs are never written to
   SQLite.
+- **Request size limits** (D35) — every form submission is capped at 256 KB and
+  anything musdash receives at 1 MB. That caps the body, not the memory: musdash
+  may hold a body a few times over while reading and checking it, so one
+  request costs at most a few MB instead of the hundreds it could before.
+  - A form over 256 KB gets a page saying so. The realistic way to hit it is a
+    single huge env value, such as a full CA bundle (Mozilla's is ~220 KB of
+    PEM, larger once the form encodes it). Split variables across the project,
+    environment and resource levels, or bake the file into the image instead.
+  - A GitHub push whose webhook payload is over 1 MB is refused before musdash
+    sees it, so that push does not auto-deploy and musdash logs nothing; GitHub
+    shows it as a failed delivery in the App's **Recent Deliveries**. The
+    realistic causes are the first push of a long-lived branch (GitHub includes
+    up to 2048 commits) or one commit touching thousands of files. Press
+    **Deploy** to deploy it by hand.
 
 ---
 

@@ -7,7 +7,7 @@ import {
   resourcesForPush,
   upsertInstallation,
 } from "../db/queries.ts"
-import { verifySignature } from "../github/webhook.ts"
+import { verifySignature, WEBHOOK_PATH } from "../github/webhook.ts"
 import { enqueueDeployCoalesced } from "../jobs/deploy.ts"
 import { logger } from "../log.ts"
 
@@ -113,7 +113,7 @@ function handleInstallation(body: InstallationEvent): void {
 }
 
 export const githubWebhookRoutes = new Elysia().post(
-  "/webhooks/github",
+  WEBHOOK_PATH,
   async ({ request, set }) => {
     // Order below is load-bearing: raw bytes, then secret, then signature, and
     // only then a parse. GitHub signs the bytes it sent, so anything that

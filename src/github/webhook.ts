@@ -14,6 +14,13 @@ import { safeEqual } from "../crypto.ts"
 const PREFIX = "sha256="
 
 /**
+ * Where GitHub delivers webhooks. Exported because src/http.ts exempts this
+ * path from the form body limit: a push payload is routinely larger than any
+ * form, and a literal copied into a second file would drift from the route.
+ */
+export const WEBHOOK_PATH = "/webhooks/github"
+
+/**
  * Verifies GitHub's X-Hub-Signature-256 over the RAW request body.
  *
  * Takes raw text, never a re-serialized object. JSON.stringify(JSON.parse(x))
