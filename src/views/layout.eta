@@ -13,18 +13,18 @@
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>
-    <% if (it.user) { %>
     <!--
       Icon sprite. Inline <symbol> definitions referenced by <use href="#i-...">.
       An icon library would be 625KB at the very smallest for the ~1KB of
       geometry actually used here, and would need tree-shaking — a build step
-      this project does not have. See docs/DECISIONS.md.
+      this project does not have. Geometry from Lucide (ISC licence).
+      Outside the signed-in branch because login and setup notices use it too.
 
       Two things here are load-bearing:
       - The wrapper is zero-sized and overflow-hidden rather than display:none,
         which stops <use> rendering in some engines.
       - No symbol hard-codes `stroke`, so `currentColor` on .icon inherits
-        through <use> and a danger button's icon turns red with its label.
+        through <use> and an icon follows its button's colour.
     -->
     <svg
       aria-hidden="true"
@@ -40,8 +40,12 @@
       <symbol id="i-log-out" viewBox="0 0 24 24"><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /></symbol>
       <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></symbol>
       <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 5h16" /><path d="M4 12h16" /><path d="M4 19h16" /></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></symbol>
+      <symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="m15 9-6 6" /><path d="m9 9 6 6" /></symbol>
       <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></symbol>
     </svg>
+    <% if (it.user) { %>
 
     <div
       class="shell"
@@ -50,7 +54,7 @@
     >
       <div class="mobilebar">
         <button
-          class="iconbtn"
+          class="btn btn-icon btn-quiet"
           type="button"
           aria-label="Open navigation"
           :aria-expanded="navOpen ? 'true' : 'false'"
@@ -73,7 +77,7 @@
         <div class="sidebar-head">
           <a class="brand" href="/">musdash</a>
           <button
-            class="iconbtn sidebar-close"
+            class="btn btn-icon btn-quiet sidebar-close"
             type="button"
             aria-label="Close navigation"
             @click="navOpen = false"
@@ -148,7 +152,7 @@
             data-confirm-label="Log out"
           >
             <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-            <button class="link" type="submit">
+            <button class="btn btn-quiet btn-sm" type="submit">
               <svg class="icon" aria-hidden="true"><use href="#i-log-out" /></svg>
               Log out
             </button>
@@ -158,7 +162,13 @@
 
       <main id="main" class="<%= it.wide ? 'wide' : '' %>">
         <% if (it.flash) { %>
-        <div class="flash flash-<%= it.flash.kind %>"><%= it.flash.text %></div>
+        <div
+          class="notice notice-<%= it.flash.kind %>"
+          role="<%= it.flash.kind === 'error' ? 'alert' : 'status' %>"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#i-<%= it.flash.kind === 'error' ? 'x-circle' : 'check' %>" /></svg>
+          <div><%= it.flash.text %></div>
+        </div>
         <% } %> <%~ it.body %>
       </main>
     </div>
@@ -170,18 +180,27 @@
       aria-describedby="confirm-body"
     >
       <div class="stack">
-        <h2 id="confirm-title"></h2>
+        <%/* confirmParts() finds these by id and data attribute. If any goes
+             missing, every data-confirm form submits without a prompt. A div,
+             not a header: outside <main> a header becomes a banner landmark. */%>
+        <div class="dialog-head"><h2 id="confirm-title"></h2></div>
         <p id="confirm-body" class="muted"></p>
-        <div class="row end">
-          <button type="button" data-confirm-cancel>Cancel</button>
-          <button type="button" class="primary" data-confirm-accept></button>
+        <div class="dialog-foot">
+          <button type="button" class="btn" data-confirm-cancel>Cancel</button>
+          <button type="button" class="btn btn-primary" data-confirm-accept></button>
         </div>
       </div>
     </dialog>
     <% } else { %>
     <main id="main" class="<%= it.wide ? 'wide' : '' %>">
       <% if (it.flash) { %>
-      <div class="flash flash-<%= it.flash.kind %>"><%= it.flash.text %></div>
+      <div
+        class="notice notice-<%= it.flash.kind %>"
+        role="<%= it.flash.kind === 'error' ? 'alert' : 'status' %>"
+      >
+        <svg class="icon" aria-hidden="true"><use href="#i-<%= it.flash.kind === 'error' ? 'x-circle' : 'check' %>" /></svg>
+        <div><%= it.flash.text %></div>
+      </div>
       <% } %> <%~ it.body %>
     </main>
     <% } %>

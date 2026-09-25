@@ -60,8 +60,9 @@ document.addEventListener("alpine:init", () => {
     },
   }))
 
-  /** Status pill driven by SSE, never by polling. */
-  Alpine.data("statusPill", (resourceId, initial) => ({
+  /** A resource's status, driven by SSE, never by polling. The label map
+   *  lives in views/partials/status.eta; this only holds the state. */
+  Alpine.data("resourceStatus", (resourceId, initial) => ({
     state: initial,
     init() {
       const es = new EventSource(`/r/${resourceId}/events`)
@@ -165,15 +166,12 @@ document.addEventListener("alpine:init", () => {
     },
   }))
 
-  Alpine.data("deployPill", (deploymentId, initial) => ({
-    status: initial,
-    pill: initial,
+  Alpine.data("deploymentStatus", (deploymentId, initial) => ({
+    state: initial,
     init() {
       const es = new EventSource(`/d/${deploymentId}/events`)
       es.addEventListener("deployment", (e) => {
-        const d = JSON.parse(e.data)
-        this.status = d.status
-        this.pill = d.status
+        this.state = JSON.parse(e.data).status
       })
       window.addEventListener("beforeunload", () => es.close())
     },
@@ -220,30 +218,34 @@ document.addEventListener("submit", (event) => {
     return
   }
 
-  event.preventDefault()
-
+  // With no complete dialog to confirm against, let this submission through:
+  // a button that silently does nothing is worse than a missing prompt. The
+  // check comes before preventDefault because a form cannot be re-submitted
+  // from inside its own submit event — requestSubmit() there is ignored.
   const dialog = document.getElementById("confirm-dialog")
-  // With no dialog to confirm against, submitting beats a button that
-  // silently does nothing.
-  if (!(dialog instanceof HTMLDialogElement)) {
-    confirmedForms.add(form)
-    form.requestSubmit()
-    return
-  }
+  const parts = dialog instanceof HTMLDialogElement && confirmParts(dialog)
+  if (!parts) return
+
+  event.preventDefault()
 
   // Show native validation rather than a confirm for a form that cannot post.
   if (!form.reportValidity()) return
 
-  openConfirm(dialog, form)
+  openConfirm(dialog, parts, form)
 })
 
-function openConfirm(dialog, form) {
-  const data = form.dataset
+function confirmParts(dialog) {
   const title = dialog.querySelector("#confirm-title")
   const body = dialog.querySelector("#confirm-body")
   const accept = dialog.querySelector("[data-confirm-accept]")
   const cancel = dialog.querySelector("[data-confirm-cancel]")
-  if (!title || !body || !accept || !cancel) return
+  return title && body && accept && cancel
+    ? { title, body, accept, cancel }
+    : null
+}
+
+function openConfirm(dialog, { title, body, accept, cancel }, form) {
+  const data = form.dataset
 
   title.textContent = data.confirmTitle || "Are you sure?"
   body.textContent = data.confirmBody || ""
@@ -251,7 +253,8 @@ function openConfirm(dialog, form) {
   // Assigned wholesale so the button cannot accumulate both classes across
   // successive opens. A bare `data-confirm-danger` yields "", which is falsy,
   // so presence is tested against undefined rather than truthiness.
-  accept.className = data.confirmDanger === undefined ? "primary" : "danger"
+  accept.className =
+    data.confirmDanger === undefined ? "btn btn-primary" : "btn btn-danger"
 
   const onAccept = () => {
     confirmedForms.add(form)

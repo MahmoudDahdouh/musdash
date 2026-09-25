@@ -4,10 +4,10 @@
   <%= it.environment.name %> <span>/</span> <%= it.resource.name %>
 </div>
 
-<div class="page-head" x-data="statusPill('<%= it.resource.id %>', '<%= it.state %>')">
+<div class="page-head" x-data="resourceStatus('<%= it.resource.id %>', '<%= it.state %>')">
   <div class="row gap">
     <h1><%= it.resource.name %></h1>
-    <span class="pill" :class="'pill-' + state" x-text="state"></span>
+    <%~ include("@status", { state: it.state, live: true }) %>
   </div>
   <div class="row gap">
     <form
@@ -20,7 +20,7 @@
       data-confirm-label="Deploy"
     >
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-      <button class="primary" type="submit">
+      <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-play" /></svg>
         Deploy
       </button>
@@ -36,7 +36,7 @@
       data-confirm-label="Roll back"
     >
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-      <button type="submit" title="Roll back to <%= it.resource.previousImage %>">
+      <button class="btn" type="submit" title="Roll back to <%= it.resource.previousImage %>">
         <svg class="icon" aria-hidden="true"><use href="#i-rotate-ccw" /></svg>
         Rollback
       </button>
@@ -54,7 +54,7 @@
       data-confirm-label="Stop"
     >
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-      <button type="submit">
+      <button class="btn" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-square" /></svg>
         Stop
       </button>
@@ -63,21 +63,21 @@
   </div>
 </div>
 
-<nav class="tabs">
-  <% ['overview','logs','env','domains','settings'].forEach(function (t) { %>
-  <a class="<%= it.tab === t ? 'active' : '' %>" href="/r/<%= it.resource.id %>?tab=<%= t %>"><%= t %></a>
+<nav class="tabs" aria-label="Resource sections">
+  <% [['overview', 'Overview'], ['logs', 'Logs'], ['env', 'Variables'], ['domains', 'Domains'], ['settings', 'Settings']].forEach(function (t) { %>
+  <a href="/r/<%= it.resource.id %>?tab=<%= t[0] %>" <%~ it.tab === t[0] ? 'aria-current="page"' : '' %>><%= t[1] %></a>
   <% }) %>
 </nav>
 
 <% if (it.tab === 'overview') { %>
 <div class="cols">
   <div class="card stack">
-    <h3>Image</h3>
+    <h3 class="eyebrow">Image</h3>
     <p class="mono"><%= it.image %></p>
     <% if (it.resource.previousImage) { %>
     <p class="muted">Previous: <span class="mono"><%= it.resource.previousImage %></span></p>
     <% } %>
-    <h3>URL</h3>
+    <h3 class="eyebrow">URL</h3>
     <% if (it.domains.length === 0) { %>
     <p class="muted">No domain yet. Set a container port and add a domain to expose it.</p>
     <% } else { %>
@@ -89,12 +89,12 @@
     <% } %>
   </div>
   <div class="card stack">
-    <h3>Deployments</h3>
+    <h3 class="card-title">Deployments</h3>
     <% if (it.deployments.length === 0) { %>
     <p class="muted">Never deployed. Press Deploy to pull the image and start it.</p>
     <% } else { %>
     <div class="table-scroll">
-      <table class="deployments">
+      <table class="table">
         <thead>
           <tr>
             <th>Image</th>
@@ -120,7 +120,7 @@
             <td><%= d.commitAuthor || '—' %></td>
             <td><%= d.trigger %></td>
             <td><%= d.duration %></td>
-            <td><span class="pill pill-<%= d.pill %>"><%= d.status %></span></td>
+            <td><%~ include("@status", { state: d.status, live: false }) %></td>
           </tr>
           <% }) %>
         </tbody>
@@ -134,8 +134,8 @@
 <% if (it.tab === 'logs') { %>
 <div class="card" x-data="logPanel('/r/<%= it.resource.id %>/logs')">
   <div class="row between">
-    <h3>Container logs</h3>
-    <button class="link" x-show="paused" x-cloak @click="resume()">
+    <h3 class="card-title">Container logs</h3>
+    <button class="btn btn-quiet btn-sm" x-show="paused" x-cloak @click="resume()">
       <svg class="icon" aria-hidden="true"><use href="#i-arrow-down" /></svg>
       Jump to latest
     </button>
@@ -147,7 +147,7 @@
 
 <% if (it.tab === 'env') { %>
 <div class="card stack">
-  <h3>Resolved environment</h3>
+  <h3 class="card-title">Resolved environment</h3>
   <p class="muted">
     What this resource actually gets. Project and environment variables are
     inherited; anything set here wins.
@@ -155,8 +155,13 @@
   <% if (it.resolvedEnv.length === 0) { %>
   <p class="muted">No variables at any level yet.</p>
   <% } else { %>
+  <%
+    /* Where a variable is delivered, toned so the three read apart. Origin is
+       not a status: the resource level is filled, inherited ones outlined. */
+    var scopeTone = { runtime: 'busy', build: 'warn', both: 'ok' }
+  %>
   <div class="table-scroll">
-    <table class="env-table">
+    <table class="table">
       <thead>
         <tr><th>Key</th><th>Delivered to</th><th>From</th><th>Overrides</th></tr>
       </thead>
@@ -164,8 +169,8 @@
         <% it.resolvedEnv.forEach(function (v) { %>
         <tr>
           <td class="mono"><%= v.key %></td>
-          <td><span class="pill pill-<%= v.scope %>"><%= v.scope %></span></td>
-          <td><span class="origin origin-<%= v.origin %>"><%= v.origin %></span></td>
+          <td><span class="chip chip-<%= scopeTone[v.scope] %>"><%= v.scope %></span></td>
+          <td><span class="<%= v.origin === 'resource' ? 'chip' : 'chip chip-outline' %>"><%= v.origin %></span></td>
           <!-- An em dash rather than an empty cell: a blank reads as a bug. -->
           <td class="muted"><%= v.overrides.length ? v.overrides.join(', ') : '—' %></td>
         </tr>
@@ -175,13 +180,13 @@
   </div>
   <p class="muted">
     Project and environment variables are edited on the
-    <a href="/p/<%= it.project.id %>?tab=env">project's env tab</a>.
+    <a href="/p/<%= it.project.id %>?tab=env">project's Variables tab</a>.
   </p>
   <% } %>
 </div>
 
 <div class="card stack">
-  <h3>Resource variables</h3>
+  <h3 class="card-title">Resource variables</h3>
   <p class="muted">
     One <code>KEY=value</code> per line, in the box for where it is needed.
     Runtime variables reach the container; build variables reach the build and
@@ -190,7 +195,12 @@
     <code>$</code>. Values are encrypted at rest and never shown again after
     saving.
   </p>
-  <% if (it.envError) { %><div class="flash flash-error"><%= it.envError %></div><% } %>
+  <% if (it.envError) { %>
+  <div class="notice notice-error" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+    <div><%= it.envError %></div>
+  </div>
+  <% } %>
   <form
     method="post"
     action="/r/<%= it.resource.id %>/env"
@@ -216,7 +226,7 @@
       </label>
     </div>
     <div class="row end">
-      <button class="primary" type="submit">
+      <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
         Save
       </button>
@@ -227,7 +237,7 @@
 
 <% if (it.tab === 'domains') { %>
 <div class="card stack">
-  <h3>Domains</h3>
+  <h3 class="card-title">Domains</h3>
   <% if (it.autoDomain) { %>
   <p class="muted">Automatic: <span class="mono"><%= it.autoDomain %></span></p>
   <% } else { %>
@@ -251,7 +261,7 @@
         data-confirm-label="Remove domain"
       >
         <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-        <button class="link danger" type="submit">
+        <button class="btn btn-danger btn-sm" type="submit">
           <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
           Remove
         </button>
@@ -262,7 +272,7 @@
   <form method="post" action="/r/<%= it.resource.id %>/domains" class="row gap">
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <input name="host" placeholder="app.example.com" required />
-    <button type="submit">
+    <button class="btn" type="submit">
       <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
       Add domain
     </button>
@@ -273,7 +283,7 @@
 <% if (it.tab === 'settings') { %>
 <% if (it.resource.kind === 'git') { %>
 <div class="card stack">
-  <h3>Source</h3>
+  <h3 class="card-title">Source</h3>
   <dl class="kv">
     <dt>Repository</dt>
     <dd class="mono"><%= it.resource.gitRepo || '—' %></dd>
@@ -305,7 +315,7 @@
       other branch is ignored.
     </small>
     <div class="row end">
-      <button class="primary" type="submit">
+      <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
         Save
       </button>
@@ -315,7 +325,7 @@
 <% } %>
 
 <div class="card stack">
-  <h3>Settings</h3>
+  <h3 class="card-title">Settings</h3>
   <form method="post" action="/r/<%= it.resource.id %>/settings" class="stack">
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <% if (it.resource.kind === 'git') { %>
@@ -345,7 +355,7 @@
       <small class="muted">Every container has a limit. There is no unlimited option.</small>
     </label>
     <div class="row end">
-      <button class="primary" type="submit">
+      <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
         Save
       </button>
@@ -353,8 +363,8 @@
   </form>
 </div>
 
-<div class="card stack danger-zone">
-  <h3>Delete resource</h3>
+<div class="card card-danger stack">
+  <h3 class="card-title">Delete resource</h3>
   <p class="muted">
     Stops and removes the container, its route and its volumes. This cannot be
     undone.
@@ -369,7 +379,7 @@
     data-confirm-label="Delete resource"
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <button class="danger" type="submit">
+    <button class="btn btn-danger" type="submit">
       <svg class="icon" aria-hidden="true"><use href="#i-trash" /></svg>
       Delete this resource
     </button>

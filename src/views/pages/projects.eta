@@ -1,6 +1,6 @@
 <div class="page-head">
   <h1>Projects</h1>
-  <button class="primary" onclick="document.getElementById('new-project').showModal()">
+  <button class="btn btn-primary" onclick="document.getElementById('new-project').showModal()">
     <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
     New project
   </button>
@@ -14,7 +14,7 @@
     Create one to get started — it comes with a <code>production</code>
     environment ready to use.
   </p>
-  <button class="primary" onclick="document.getElementById('new-project').showModal()">
+  <button class="btn btn-primary" onclick="document.getElementById('new-project').showModal()">
     <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
     Create your first project
   </button>
@@ -23,7 +23,7 @@
 <div class="grid">
   <% it.projects.forEach(function (p) { %>
   <a class="card project" href="/p/<%= p.project.id %>">
-    <h3><%= p.project.name %></h3>
+    <h3 class="card-title"><%= p.project.name %></h3>
     <% if (p.project.description) { %>
     <p class="muted"><%= p.project.description %></p>
     <% } %>
@@ -36,9 +36,9 @@
 </div>
 <% } %>
 
-<dialog id="new-project">
+<dialog id="new-project" aria-labelledby="new-project-title">
   <form method="post" action="/projects" class="stack">
-    <h2>New project</h2>
+    <header class="dialog-head"><h2 id="new-project-title">New project</h2></header>
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <label>
       Name
@@ -48,11 +48,11 @@
       Description <small class="muted">optional</small>
       <input name="description" maxlength="200" />
     </label>
-    <div class="row end">
-      <button type="button" onclick="this.closest('dialog').close()">
+    <div class="dialog-foot">
+      <button type="button" class="btn" onclick="this.closest('dialog').close()">
         Cancel
       </button>
-      <button type="submit" class="primary">Create</button>
+      <button type="submit" class="btn btn-primary">Create</button>
     </div>
   </form>
 </dialog>

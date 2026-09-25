@@ -3,24 +3,29 @@
 <div class="page-head">
   <h1><%= it.project.name %></h1>
   <% if (it.tab === 'resources') { %>
-  <button class="link" onclick="document.getElementById('new-env').showModal()">
+  <button class="btn btn-quiet" onclick="document.getElementById('new-env').showModal()">
     <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
     New environment
   </button>
   <% } %>
 </div>
 
-<nav class="tabs">
-  <% ['resources','env'].forEach(function (t) { %>
-  <a class="<%= it.tab === t ? 'active' : '' %>" href="/p/<%= it.project.id %>?tab=<%= t %>"><%= t %></a>
+<nav class="tabs" aria-label="Project sections">
+  <% [['resources', 'Resources'], ['env', 'Variables']].forEach(function (t) { %>
+  <a href="/p/<%= it.project.id %>?tab=<%= t[0] %>" <%~ it.tab === t[0] ? 'aria-current="page"' : '' %>><%= t[1] %></a>
   <% }) %>
 </nav>
 
 <% if (it.tab === 'env') { %>
-<% if (it.envError) { %><div class="flash flash-error"><%= it.envError %></div><% } %>
+<% if (it.envError) { %>
+<div class="notice notice-error" role="alert">
+  <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+  <div><%= it.envError %></div>
+</div>
+<% } %>
 
 <div class="card stack">
-  <h3>Project variables</h3>
+  <h3 class="card-title">Project variables</h3>
   <p class="muted">
     Inherited by every resource in every environment of this project. An
     environment or a resource can override any of them. Reference another
@@ -54,7 +59,7 @@
       </label>
     </div>
     <div class="row end">
-      <button class="primary" type="submit">
+      <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
         Save
       </button>
@@ -72,7 +77,7 @@
 %>
 <% it.environments.forEach(function (env) { %>
 <div class="card stack" id="env-<%= env.environment.id %>">
-  <h3><%= env.environment.name %> variables</h3>
+  <h3 class="card-title"><%= env.environment.name %> variables</h3>
   <p class="muted">
     Inherited by the <%= env.resources.length %> resource<%= env.resources.length === 1 ? '' : 's' %>
     in this environment, overriding anything of the same name set at the
@@ -105,7 +110,7 @@
       </label>
     </div>
     <div class="row end">
-      <button class="primary" type="submit">
+      <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
         Save
       </button>
@@ -122,14 +127,14 @@
     <h2><%= env.environment.name %></h2>
     <div class="row gap">
       <button
-        class="small"
+        class="btn btn-sm"
         onclick="document.getElementById('new-git-<%= env.environment.id %>').showModal()"
       >
         <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
         From repository
       </button>
       <button
-        class="primary small"
+        class="btn btn-primary btn-sm"
         onclick="document.getElementById('new-res-<%= env.environment.id %>').showModal()"
       >
         <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
@@ -139,7 +144,7 @@
   </div>
 
   <% if (env.resources.length === 0) { %>
-  <div class="empty card small">
+  <div class="empty empty-sm card">
     <p class="muted">
       Nothing deployed here yet. Add a resource with a public Docker image such
       as <code>nginx:alpine</code>.
@@ -150,10 +155,8 @@
     <% env.resources.forEach(function (r) { %>
     <a class="card resource" href="/r/<%= r.resource.id %>">
       <div class="row between">
-        <h3><%= r.resource.name %></h3>
-        <span class="pill pill-<%= r.state %>" data-resource="<%= r.resource.id %>">
-          <%= r.state %>
-        </span>
+        <h3 class="card-title"><%= r.resource.name %></h3>
+        <%~ include("@status", { state: r.state, live: false }) %>
       </div>
       <p class="muted mono"><%= r.image %></p>
       <div class="meta">
@@ -166,9 +169,11 @@
   <% } %>
 </section>
 
-<dialog id="new-res-<%= env.environment.id %>">
+<dialog id="new-res-<%= env.environment.id %>" aria-labelledby="new-res-<%= env.environment.id %>-title">
   <form method="post" action="/e/<%= env.environment.id %>/resources" class="stack">
-    <h2>Add resource to <%= env.environment.name %></h2>
+    <header class="dialog-head">
+      <h2 id="new-res-<%= env.environment.id %>-title">Add resource to <%= env.environment.name %></h2>
+    </header>
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <label>
       Name
@@ -192,9 +197,9 @@
       Memory limit (MB)
       <input name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.defaultMemoryMb %>" required />
     </label>
-    <div class="row end">
-      <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
-      <button type="submit" class="primary">Create</button>
+    <div class="dialog-foot">
+      <button type="button" class="btn" onclick="this.closest('dialog').close()">Cancel</button>
+      <button type="submit" class="btn btn-primary">Create</button>
     </div>
   </form>
 </dialog>
@@ -205,14 +210,22 @@
   filters what is already in the DOM and copies a default branch into the text
   input. It fetches nothing.
 -->
-<dialog id="new-git-<%= env.environment.id %>" class="wide-dialog">
+<dialog
+  id="new-git-<%= env.environment.id %>"
+  class="dialog-wide"
+  aria-labelledby="new-git-<%= env.environment.id %>-title"
+>
   <form
     method="post"
     action="/e/<%= env.environment.id %>/resources/git"
     class="stack"
     x-data="repoPicker()"
   >
-    <h2>Deploy from a repository into <%= env.environment.name %></h2>
+    <header class="dialog-head">
+      <h2 id="new-git-<%= env.environment.id %>-title">
+        Deploy from a repository into <%= env.environment.name %>
+      </h2>
+    </header>
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
 
     <label>
@@ -231,11 +244,14 @@
     <input type="hidden" name="repo" :value="repo" />
 
     <% if (!it.gitPicker.connected) { %>
-    <div class="flash flash-error">
-      No GitHub App is connected, so there are no repositories to choose from.
-      Connect one under <a href="/settings">Settings</a>, install it on the
-      account that owns the repository, then come back here. You can still build
-      from a local directory using the option at the bottom of this form.
+    <div class="notice notice-info" role="status">
+      <svg class="icon" aria-hidden="true"><use href="#i-info" /></svg>
+      <div>
+        No GitHub App is connected, so there are no repositories to choose from.
+        Connect one under <a href="/settings">Settings</a>, install it on the
+        account that owns the repository, then come back here. You can still
+        build from a local directory using the option at the bottom of this form.
+      </div>
     </div>
     <% } else { %>
 
@@ -252,14 +268,18 @@
     <% it.gitPicker.installations.forEach(function (i) { %>
     <% if (i.error) { %>
     <div
-      class="flash flash-error"
+      class="notice notice-error"
+      role="alert"
       data-installation="<%= i.installationId %>"
       x-show="installationId === $el.dataset.installation"
       x-cloak
     >
-      <%= i.error %> That usually means the App was uninstalled or its access was
-      revoked on GitHub. Re-install it, then press Sync installations under
-      Settings.
+      <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+      <div>
+        <%= i.error %> That usually means the App was uninstalled or its access
+        was revoked on GitHub. Re-install it, then press Sync installations under
+        Settings.
+      </div>
     </div>
     <% } %>
     <% }) %>
@@ -300,7 +320,7 @@
               @change="pick($el.dataset.defaultBranch)"
             />
             <span class="mono"><%= r.fullName %></span>
-            <% if (r.private) { %><span class="pill pill-stopped">private</span><% } %>
+            <% if (r.private) { %><span class="chip">private</span><% } %>
           </label>
         </li>
         <% }) %>
@@ -379,25 +399,25 @@
       </label>
     </details>
 
-    <div class="row end">
-      <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
-      <button type="submit" class="primary">Create</button>
+    <div class="dialog-foot">
+      <button type="button" class="btn" onclick="this.closest('dialog').close()">Cancel</button>
+      <button type="submit" class="btn btn-primary">Create</button>
     </div>
   </form>
 </dialog>
 <% }) %>
 
-<dialog id="new-env">
+<dialog id="new-env" aria-labelledby="new-env-title">
   <form method="post" action="/p/<%= it.project.id %>/environments" class="stack">
-    <h2>New environment</h2>
+    <header class="dialog-head"><h2 id="new-env-title">New environment</h2></header>
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <label>
       Name
       <input name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="staging" autofocus />
     </label>
-    <div class="row end">
-      <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
-      <button type="submit" class="primary">Create</button>
+    <div class="dialog-foot">
+      <button type="button" class="btn" onclick="this.closest('dialog').close()">Cancel</button>
+      <button type="submit" class="btn btn-primary">Create</button>
     </div>
   </form>
 </dialog>

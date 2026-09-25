@@ -5,12 +5,18 @@
 </div>
 
 <% if (it.flash) { %>
-<div class="flash flash-<%= it.flash.kind %>"><%= it.flash.text %></div>
+<div
+  class="notice notice-<%= it.flash.kind %>"
+  role="<%= it.flash.kind === 'error' ? 'alert' : 'status' %>"
+>
+  <svg class="icon" aria-hidden="true"><use href="#i-<%= it.flash.kind === 'error' ? 'x-circle' : 'check' %>" /></svg>
+  <div><%= it.flash.text %></div>
+</div>
 <% } %>
 
 <% if (it.restarting) { %>
 <div class="card stack" x-data x-init="setTimeout(() => location.reload(), 6000)">
-  <h3>Restarting musdash</h3>
+  <h3 class="card-title">Restarting musdash</h3>
   <p class="muted">
     This page reloads in a few seconds. If it does not,
     <a href="/settings">reload it yourself</a>.
@@ -19,7 +25,7 @@
 <% } %>
 
 <div class="card stack">
-  <h3>Dashboard address</h3>
+  <h3 class="card-title">Dashboard address</h3>
 
   <% if (!it.host.host) { %>
   <p class="muted">
@@ -40,43 +46,58 @@
   <% } %>
 
   <% if (it.host.applyPending) { %>
-  <div class="flash flash-ok">
-    Saved. Applying it to the proxy — reload in a moment to see the result.
+  <div class="notice notice-ok" role="status">
+    <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+    <div>
+      Saved. Applying it to the proxy — reload in a moment to see the result.
+    </div>
   </div>
   <% } %>
 
   <% if (it.host.envHostShadowed) { %>
-  <div class="flash flash-error">
-    <code>MUSDASH_DASHBOARD_HOST</code> is also set in
-    <code>musdash.env</code>. This page wins now, so that line is ignored and
-    you can delete it.
+  <div class="notice notice-error" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+    <div>
+      <code>MUSDASH_DASHBOARD_HOST</code> is also set in
+      <code>musdash.env</code>. This page wins now, so that line is ignored and
+      you can delete it.
+    </div>
   </div>
   <% } %>
 
   <% if (it.host.check && it.host.check.dns === "mismatch") { %>
-  <div class="flash flash-error">
-    <strong><%= it.host.host %></strong> resolves to
-    <%= it.host.check.resolved.join(", ") %>, but this server answers on
-    <%= it.host.check.local.join(", ") %>. Caddy cannot obtain a certificate
-    until DNS points here. Nothing is blocked — the name is saved either way,
-    and this check cannot see an address that reaches you through NAT or a
-    proxying CDN.
+  <div class="notice notice-error" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+    <div>
+      <strong><%= it.host.host %></strong> resolves to
+      <%= it.host.check.resolved.join(", ") %>, but this server answers on
+      <%= it.host.check.local.join(", ") %>. Caddy cannot obtain a certificate
+      until DNS points here. Nothing is blocked — the name is saved either way,
+      and this check cannot see an address that reaches you through NAT or a
+      proxying CDN.
+    </div>
   </div>
   <% } else if (it.host.check && it.host.check.dns === "unresolved") { %>
-  <div class="flash flash-error">
-    <strong><%= it.host.host %></strong> does not resolve yet. DNS changes can
-    take a few minutes to propagate; the name is saved and will start working on
-    its own.
+  <div class="notice notice-error" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+    <div>
+      <strong><%= it.host.host %></strong> does not resolve yet. DNS changes can
+      take a few minutes to propagate; the name is saved and will start working on
+      its own.
+    </div>
   </div>
   <% } %>
 
   <% if (it.host.check && !it.host.check.reachable) { %>
-  <div class="flash flash-error">
-    <strong>The proxy cannot reach this dashboard.</strong>
-    <%= it.host.check.reachError %>. This is almost always the host firewall
-    dropping traffic from the Docker bridge. On Ubuntu:
-    <pre><code>ufw allow in on docker0 to any port 8000 proto tcp
+  <div class="notice notice-error" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+    <div>
+      <strong>The proxy cannot reach this dashboard.</strong>
+      <%= it.host.check.reachError %>. This is almost always the host firewall
+      dropping traffic from the Docker bridge. On Ubuntu:
+      <pre><code>ufw allow in on docker0 to any port 8000 proto tcp
 ufw deny 8000/tcp</code></pre>
+    </div>
   </div>
   <% } %>
 
@@ -98,7 +119,7 @@ ufw deny 8000/tcp</code></pre>
       </small>
     </label>
     <div class="row end">
-      <button class="primary" type="submit">
+      <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
         Save
       </button>
@@ -113,7 +134,7 @@ ufw deny 8000/tcp</code></pre>
 </div>
 
 <div class="card stack">
-  <h3>Restart musdash</h3>
+  <h3 class="card-title">Restart musdash</h3>
   <p class="muted">
     The dashboard address above applies without one. A restart is how you pick
     up the settings that still live in <code>musdash.env</code> — the ACME
@@ -121,8 +142,11 @@ ufw deny 8000/tcp</code></pre>
   </p>
 
   <% if (it.host.restart.blockedReason) { %>
-  <div class="flash flash-error">
-    Not right now: <%= it.host.restart.blockedReason %>.
+  <div class="notice notice-error" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+    <div>
+      Not right now: <%= it.host.restart.blockedReason %>.
+    </div>
   </div>
   <% } %>
 
@@ -136,7 +160,7 @@ ufw deny 8000/tcp</code></pre>
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <button
-      class="primary"
+      class="btn btn-primary"
       type="submit"
       <%= it.host.restart.available && !it.host.restart.blockedReason ? '' : 'disabled' %>
     >
@@ -157,20 +181,23 @@ ufw deny 8000/tcp</code></pre>
 </div>
 
 <div class="card stack">
-  <h3>GitHub</h3>
+  <h3 class="card-title">GitHub</h3>
   <p class="muted">
     Connecting a GitHub App lets musdash read your repositories, build them from
     source, and deploy automatically when you push.
   </p>
 
   <% if (!it.publicUrl) { %>
-  <div class="flash flash-error">
-    <strong>This dashboard has no domain yet.</strong>
-    GitHub has to reach this instance to deliver the registration callback and
-    push webhooks, and it cannot do that over a bare IP address. Set a domain
-    you have pointed at this server under <em>Dashboard address</em> above —
-    a certificate follows within a few seconds, and GitHub can be connected
-    straight after. No restart needed.
+  <div class="notice notice-error" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+    <div>
+      <strong>This dashboard has no domain yet.</strong>
+      GitHub has to reach this instance to deliver the registration callback and
+      push webhooks, and it cannot do that over a bare IP address. Set a domain
+      you have pointed at this server under <em>Dashboard address</em> above —
+      a certificate follows within a few seconds, and GitHub can be connected
+      straight after. No restart needed.
+    </div>
   </div>
   <% } %>
 
@@ -183,7 +210,7 @@ ufw deny 8000/tcp</code></pre>
   </p>
   <form method="post" action="/settings/github/connect">
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <button class="primary" type="submit" <%= it.publicUrl ? '' : 'disabled' %>>
+    <button class="btn btn-primary" type="submit" <%= it.publicUrl ? '' : 'disabled' %>>
       <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
       Connect GitHub
     </button>
@@ -213,7 +240,7 @@ ufw deny 8000/tcp</code></pre>
     </a>
     <form method="post" action="/settings/github/sync" class="inline">
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-      <button type="submit">
+      <button class="btn" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-rotate-ccw" /></svg>
         Sync installations
       </button>
@@ -246,8 +273,8 @@ ufw deny 8000/tcp</code></pre>
 </div>
 
 <% if (it.app) { %>
-<div class="card stack danger-zone">
-  <h3>Disconnect GitHub</h3>
+<div class="card card-danger stack">
+  <h3 class="card-title">Disconnect GitHub</h3>
   <p class="muted">
     Removes the App and its installations from musdash. Existing resources keep
     their repository and branch, but lose their link to GitHub: they can no
@@ -273,7 +300,7 @@ ufw deny 8000/tcp</code></pre>
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <input type="hidden" name="confirm" value="disconnect" />
-    <button class="danger" type="submit">
+    <button class="btn btn-danger" type="submit">
       <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
       Disconnect GitHub
     </button>

@@ -1,6 +1,11 @@
 <div class="narrow">
   <h1>Sign in</h1>
-  <% if (it.error) { %><div class="flash flash-error"><%= it.error %></div><% } %>
+  <% if (it.error) { %>
+  <div class="notice notice-error" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+    <div><%= it.error %></div>
+  </div>
+  <% } %>
   <form method="post" action="/login" class="card stack">
     <label>
       Email
@@ -10,6 +15,6 @@
       Password
       <input type="password" name="password" required autocomplete="current-password" />
     </label>
-    <button type="submit" class="primary">Sign in</button>
+    <button type="submit" class="btn btn-primary">Sign in</button>
   </form>
 </div>

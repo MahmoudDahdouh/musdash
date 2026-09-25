@@ -1,0 +1,33 @@
+<%
+  /*
+   * The one place a status becomes words. The JSON states stay as the server
+   * sends them; this maps them for display, both at first paint and — with
+   * `live` — as SSE moves the Alpine `state` on.
+   *
+   * The live span swaps its class through x-effect rather than :class: a
+   * string :class binding never removes a class the server rendered, which is
+   * how a deployment used to end up both running and succeeded at once.
+   * Callers always pass `state`: an include inherits the page's own `it`.
+   */
+  var labels = {
+    healthy: "Healthy",
+    deploying: "Deploying",
+    unhealthy: "Unhealthy",
+    failed: "Failed",
+    stopped: "Stopped",
+    queued: "Queued",
+    running: "Deploying",
+    succeeded: "Succeeded",
+    cancelled: "Cancelled",
+  }
+  var label = labels[it.state] || it.state
+%>
+<% if (it.live) { %>
+<span
+  class="status status-<%= it.state %>"
+  x-effect="$el.className = 'status status-' + state"
+  x-text="<%= JSON.stringify(labels) %>[state] || state"
+><%= label %></span>
+<% } else { %>
+<span class="status status-<%= it.state %>"><%= label %></span>
+<% } %>
