@@ -1,42 +1,95 @@
-/* musdash — handwritten, no build step. Custom properties + prefers-color-scheme. */
+/* musdash — handwritten, no build step. Colours, type sizes, spacing, radii
+   and durations are tokens in :root (docs/UI-UX-PLAN.md §6); layout widths,
+   hairlines and weights are the only literals below it. */
 
+/*
+ * One block for both themes: light-dark() keeps each token's two values side
+ * by side, so they cannot drift apart. It is also the browser floor (Chrome
+ * 123, Safari 17.5, Firefox 120) — below it every colour is the UA default.
+ * Chromatic colour means status (§5); the primary action is ink.
+ */
 :root {
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --border: #e2e5ea;
-  --text: #16181d;
-  --muted: #666e7a;
-  --accent: #2563eb;
-  --accent-text: #ffffff;
-  --danger: #dc2626;
-  --danger-fill: #dc2626;
-  --ok: #16a34a;
-  --warn: #d97706;
-  --pending: #8b93a1;
-  --deploying: #2563eb;
-  --radius: 8px;
-  --sidebar-w: 236px;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light dark;
+
+  /* Neutral scale — hue 250, very low chroma, cool. */
+  --bg: light-dark(oklch(97.5% 0.003 250), oklch(15% 0.008 250));
+  --surface: light-dark(oklch(100% 0 0), oklch(19% 0.008 250));
+  --surface-2: light-dark(oklch(96% 0.004 250), oklch(23% 0.008 250));
+  --border: light-dark(oklch(90% 0.006 250), oklch(28% 0.01 250));
+  --border-2: light-dark(oklch(82% 0.008 250), oklch(36% 0.01 250));
+  /* Form control outlines must reach 3:1 against what surrounds them;
+     --border is decorative and sits near 1.3:1. */
+  --border-control: light-dark(oklch(62% 0.01 250), oklch(55% 0.01 250));
+  --text: light-dark(oklch(20% 0.01 250), oklch(93% 0.005 250));
+  --text-2: light-dark(oklch(48% 0.015 250), oklch(72% 0.01 250));
+
+  /* Ink: the primary action. */
+  --ink: light-dark(oklch(22% 0.02 250), oklch(95% 0 0));
+  --on-ink: light-dark(oklch(98% 0 0), oklch(15% 0.008 250));
+
+  /* Status — the only chromatic colour in the chrome. */
+  --ok: light-dark(oklch(55% 0.16 150), oklch(72% 0.17 150));
+  --warn: light-dark(oklch(62% 0.16 75), oklch(78% 0.16 80));
+  --danger: light-dark(oklch(52% 0.2 25), oklch(68% 0.19 25));
+  /* White on the lighter dark-mode red is under 3:1, so dark mode writes dark
+     text on the fill, the same way ink flips. */
+  --on-danger: light-dark(oklch(100% 0 0), oklch(15% 0.008 250));
+  --busy: light-dark(oklch(52% 0.18 255), oklch(72% 0.15 255));
+  --idle: var(--text-2);
+
+  /* Focus ring, distinct from every status hue. */
+  --ring: light-dark(oklch(55% 0.2 290), oklch(75% 0.16 290));
+
+  /* Fixed in both themes: a scrim darkens whatever is under it, and a
+     terminal is dark. */
+  --scrim: oklch(0% 0 0 / 0.45);
+  --term-bg: oklch(16% 0.006 265);
+  --term-fg: oklch(89% 0.008 255);
+  --term-err: oklch(82% 0.1 20);
+
+  /* Space: 4px base. */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 48px;
+
+  /* Type. */
+  --t-xs: 12px;
+  --t-sm: 13px;
+  --t-md: 14px;
+  --t-lg: 16px;
+  --t-xl: 20px;
+  --t-2xl: 24px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* light-dark() accepts only colours, so it wraps the shadow colour; dark
+     mode takes its depth from the surface steps instead. */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-full: 999px;
+  --shadow-1: 0 1px 2px light-dark(oklch(0% 0 0 / 0.06), transparent);
+  --shadow-2: 0 2px 8px -2px light-dark(oklch(0% 0 0 / 0.12), transparent);
+  --shadow-3: 0 12px 32px -8px light-dark(oklch(0% 0 0 / 0.25), transparent);
+
+  /* Motion. */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --d-fast: 120ms;
+  --d-base: 180ms;
+  --d-page: 200ms;
+
+  --sidebar-w: 240px;
+  --content-w: 1120px;
+  --prose-w: 68ch;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1115;
-    --surface: #171a21;
-    --border: #272c36;
-    --text: #e6e8ec;
-    --muted: #98a0ad;
-    --accent: #3b82f6;
-    --danger: #ef4444;
-    /* Filled buttons need a deeper red than the text colour: white on
-       #ef4444 is only 3.76:1, below WCAG AA. This is 4.93:1. */
-    --danger-fill: #d92626;
-    --ok: #22c55e;
-    --warn: #f59e0b;
-    --pending: #6b7280;
-    --deploying: #3b82f6;
-  }
-}
+/* Tints mix in oklab, never oklch: oklch interpolates hue, so a green tint on
+   the hue-250 dark surface would come out blue. */
 
 * {
   box-sizing: border-box;
@@ -45,40 +98,80 @@
   display: none !important;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font:
-    15px/1.5 system-ui,
-    -apple-system,
-    "Segoe UI",
-    Roboto,
-    sans-serif;
+  font: var(--t-md) / 1.5 var(--font);
+  text-rendering: optimizeLegibility;
 }
 
 main {
-  max-width: 1100px;
+  max-width: var(--content-w);
   margin: 0 auto;
-  padding: 24px 20px 64px;
+  padding: var(--s-6) var(--s-5) calc(var(--s-7) * 2);
 }
 main.wide {
   max-width: 1400px;
 }
 .narrow {
   max-width: 420px;
-  margin: 60px auto;
+  margin: calc(var(--s-8) + var(--s-3)) auto;
+}
+
+/* ------------------------------------------------------------ focus, skip */
+
+/* One ring for everything a keyboard can reach. It is violet so it can never
+   be mistaken for a status colour. */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+/* A field already has a box; the ring hugs it and the border joins in. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline-offset: 0;
+  border-color: var(--ring);
+}
+
+/* Visually hidden until a keyboard user reaches it, then pinned in view. */
+.skip {
+  position: fixed;
+  top: var(--s-2);
+  left: var(--s-2);
+  z-index: 30;
+  padding: var(--s-2) var(--s-3);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  text-decoration: none;
+  translate: 0 calc(-100% - var(--s-4));
+}
+.skip:focus {
+  translate: none;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--busy) 25%, transparent);
+}
+::placeholder {
+  color: var(--text-2);
+  opacity: 1;
 }
 
 /* ---------------------------------------------------------------- shell */
 
 /*
- * The sidebar is a grid column, not `position: fixed`, so `main` never needs
- * a magic left margin that has to be kept in sync with the sidebar width.
- *
- * The content column is `minmax(0, 1fr)` rather than `1fr`: a grid track's
- * default `min-width: auto` lets the log <pre> push the column wider than the
- * viewport, which would scroll the whole page sideways.
+ * The sidebar is a grid column, not fixed, so main needs no margin kept in
+ * sync with its width. minmax(0, 1fr), not 1fr: a track's default min-width
+ * lets the log <pre> widen the column past the viewport.
  */
 .shell {
   display: grid;
@@ -86,16 +179,12 @@ main.wide {
   min-height: 100vh;
 }
 
-/*
- * Inside the shell, main is a grid item that already owns the whole content
- * column, so the centering the bare `main` rule applies for the chromeless
- * login/setup pages would only shrink it and push it off-centre. Reset both
- * here rather than editing `main`, which those pages still depend on.
- */
+/* The bare `main` rule centres login/setup; in the shell's column that
+   would only shrink it off-centre. */
 .shell > main {
   max-width: none;
   margin: 0;
-  padding: 28px 32px 64px;
+  padding: var(--s-7) var(--s-7) calc(var(--s-7) * 2);
 }
 
 .sidebar {
@@ -112,8 +201,9 @@ main.wide {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 14px 16px;
+  gap: var(--s-2);
+  min-height: 56px;
+  padding: 0 var(--s-4);
   border-bottom: 1px solid var(--border);
 }
 
@@ -121,7 +211,7 @@ main.wide {
 .sidebar-nav {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 8px;
+  padding: var(--s-3) var(--s-2);
   /* A column so Settings can be pushed to the bottom of the nav area when the
      project tree is short, and scroll with it when the tree is long. */
   display: flex;
@@ -133,37 +223,51 @@ main.wide {
 }
 .nav-settings {
   margin-top: auto;
-  padding-top: 12px;
+  padding-top: var(--s-3);
   border-top: 1px solid var(--border);
   border-radius: 0;
   /* Overrides .nav-top's display:block so the gear sits on the text baseline.
      .icon is already sized in em and carries flex:none, so it needs nothing. */
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--s-2);
 }
 
 .sidebar-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 12px 16px;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
   border-top: 1px solid var(--border);
-  font-size: 13px;
+  font-size: var(--t-sm);
 }
 .nav-email {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.rss {
+  display: flex;
+  gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-2) var(--s-4);
+  border-top: 1px solid var(--border);
+  font-size: var(--t-xs);
+  color: var(--text-2);
+}
+.rss-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
 
 .nav-top,
 .nav-project,
 .nav-env {
   display: block;
-  padding: 6px 10px;
-  border-radius: 6px;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
   text-decoration: none;
   color: var(--text);
   overflow: hidden;
@@ -172,92 +276,113 @@ main.wide {
 }
 .nav-top {
   font-weight: 550;
-  margin-bottom: 8px;
+  margin-bottom: var(--s-2);
 }
 .nav-project {
   font-weight: 550;
-  font-size: 14px;
 }
 .nav-env {
-  color: var(--muted);
-  font-size: 13px;
+  position: relative;
+  color: var(--text-2);
+  font-size: var(--t-sm);
+}
+/* Worst resource state, toned by .status-*; blank slot when empty. */
+.nav-env::before {
+  content: "";
+  display: inline-block;
+  box-sizing: border-box;
+  width: 6px;
+  height: 6px;
+  margin-inline-end: var(--s-2);
+  vertical-align: middle;
+  border-radius: var(--r-full);
+  background: var(--tone, transparent);
 }
 .nav-top:hover,
 .nav-project:hover,
 .nav-env:hover {
-  background: var(--bg);
+  background: var(--surface-2);
 }
+/* Active: an ink bar, not a hue; square on that side so the bar is straight. */
 .nav-top.active,
 .nav-project.active,
 .nav-env.active {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent);
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--ink);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+.nav-settings.active {
+  border-radius: 0;
 }
 
 .nav-tree > li {
-  margin-bottom: 6px;
+  margin-bottom: var(--s-2);
 }
 .nav-envs {
   /* Indent under the project, with a rail so the nesting reads at a glance. */
-  margin: 2px 0 0 10px;
-  padding-left: 8px;
+  margin: 2px 0 0 var(--s-3);
+  padding-left: var(--s-2);
   border-left: 1px solid var(--border);
   gap: 1px;
 }
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .nav-empty {
-  padding: 6px 10px;
-  font-size: 13px;
+  padding: var(--s-2) var(--s-3);
+  font-size: var(--t-sm);
 }
 
-.iconbtn {
-  background: none;
-  border: none;
-  color: var(--text);
-  font-size: 18px;
-  line-height: 1;
-  padding: 6px 8px;
-  cursor: pointer;
-}
-.iconbtn:hover {
-  border-color: transparent;
-  background: var(--bg);
-  border-radius: 6px;
-}
-
-/* The mobile bar and the drawer scrim exist only below the breakpoint. */
+/* The mobile bar, scrim and close button exist only below the breakpoint.
+   .btn.sidebar-close outranks .btn's own display. */
 .mobilebar,
 .nav-scrim,
-.sidebar-close {
+.btn.sidebar-close {
   display: none;
 }
 
 @media (max-width: 760px) {
+  /* The scrollbar is hidden, so a fade at the end says more tabs are there. */
+  .tabs {
+    padding-inline-end: var(--s-6);
+    scroll-padding-inline-end: var(--s-6);
+    mask-image: linear-gradient(to left, transparent, var(--text) var(--s-6));
+  }
   .shell {
     grid-template-columns: minmax(0, 1fr);
-    /*
-     * The bar sizes to its content and main takes the rest. Without explicit
-     * rows, min-height: 100vh plus grid's default `align-content: stretch`
-     * splits the viewport evenly between the two in-flow rows, and the bar
-     * renders ~360px tall instead of ~45px. The sidebar and scrim are
-     * position: fixed here, so they are not grid items and not counted.
-     */
+    /* Explicit rows: otherwise min-height: 100vh and the default stretch
+       split the viewport between bar and main, and the bar grows ~360px.
+       The sidebar and scrim are fixed here, so not grid items. */
     grid-template-rows: auto 1fr;
   }
   /* Narrow screens cannot spare 32px a side. */
   .shell > main {
-    padding: 20px 16px 48px;
+    padding: var(--s-5) var(--s-4) var(--s-8);
   }
   .mobilebar {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
+    gap: var(--s-3);
+    min-height: 56px;
+    padding: 0 var(--s-4);
     background: var(--surface);
     border-bottom: 1px solid var(--border);
   }
-  .sidebar-close {
-    display: block;
+  .btn.sidebar-close {
+    display: inline-flex;
   }
+  /*
+   * A closed drawer is off screen, but transform alone leaves its links in the
+   * tab order, so visibility takes them out. Closing transitions it, so the
+   * drawer stays visible for the whole slide out; opening switches it at once,
+   * or the Close button would still be hidden when open() focuses it.
+   */
   .sidebar {
     position: fixed;
     top: 0;
@@ -265,122 +390,233 @@ main.wide {
     width: min(var(--sidebar-w), 82vw);
     z-index: 20;
     transform: translateX(-100%);
-    transition: transform 0.18s ease;
+    visibility: hidden;
+    transition:
+      transform var(--d-base) var(--ease),
+      visibility var(--d-base);
   }
   .sidebar.open {
     transform: translateX(0);
+    visibility: visible;
+    transition: transform var(--d-base) var(--ease);
+    box-shadow: var(--shadow-3);
   }
   .nav-scrim {
     display: block;
     position: fixed;
     inset: 0;
     z-index: 10;
-    background: rgb(0 0 0 / 0.45);
+    background: var(--scrim);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sidebar {
+  .sidebar,
+  .sidebar.open {
     transition: none;
   }
 }
 
 .brand {
-  font-weight: 650;
-  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-lg);
+  font-weight: 600;
+  letter-spacing: -0.02em;
   color: var(--text);
-  letter-spacing: -0.01em;
+  text-decoration: none;
 }
 
-h1 {
-  font-size: 24px;
+/* Semibold, never bold; sizes from the scale. */
+h1,
+h2,
+h3 {
   margin: 0;
+  font-weight: 600;
+  text-wrap: balance;
+}
+h1 {
+  font-size: var(--t-2xl);
+  line-height: 1.2;
   letter-spacing: -0.02em;
 }
 h2 {
-  font-size: 18px;
-  margin: 0;
+  font-size: var(--t-lg);
+  line-height: 1.3;
 }
 h3 {
-  font-size: 14px;
-  margin: 0;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
+  font-size: var(--t-md);
+  line-height: 1.4;
+}
+.card-title {
+  font-size: var(--t-lg);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+p {
+  text-wrap: pretty;
 }
 
-a {
-  color: var(--accent);
+/* Links are the text colour, underlined — blue is reserved for "deploying".
+   Zero specificity through :where(), so every link-shaped component (nav
+   items, cards, tabs, the brand) keeps the colour and decoration it sets. */
+:where(a) {
+  color: var(--text);
+  text-decoration-line: underline;
+  text-underline-offset: 2px;
+}
+:where(a:hover) {
+  color: var(--text-2);
 }
 .muted {
-  color: var(--muted);
+  color: var(--text-2);
 }
 .mono {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--t-sm);
+}
+/* Image references can be one unbroken token; block-level mono text breaks
+   anywhere so it never widens the page. Not applied to table cells: it would
+   shrink their min-content width and let the columns collapse. */
+p.mono {
+  overflow-wrap: anywhere;
 }
 code {
   font-family: var(--mono);
-  font-size: 0.92em;
+  font-size: var(--t-sm);
   background: var(--bg);
-  padding: 1px 5px;
-  border-radius: 4px;
+  padding: 1px var(--s-1);
+  border-radius: var(--r-sm);
 }
 
+/* Crumbs, then title and status, then actions. The actions drop to their own
+   row by the head's width, not the viewport's: the sidebar takes 240px. */
 .page-head {
+  container: page-head / inline-size;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  margin: 20px 0;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3) var(--s-4);
+  margin: 0 0 var(--s-5);
 }
-.breadcrumbs {
-  color: var(--muted);
-  font-size: 13px;
-  margin-bottom: 4px;
+.crumbs {
+  flex-basis: 100%;
 }
-.breadcrumbs span {
-  margin: 0 6px;
+.crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--t-sm);
+  color: var(--text-2);
+}
+.crumbs li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* Empty alt text: a screen reader reads the list, not the slashes. */
+.crumbs li + li::before {
+  content: "/" / "";
+  margin-inline-end: var(--s-2);
+}
+.crumbs [aria-current="page"] {
+  color: var(--text);
+}
+.link-quiet {
+  color: var(--text-2);
+  text-decoration: none;
+}
+.link-quiet:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+.page-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  min-width: 0;
+}
+.page-title h1 {
+  overflow-wrap: anywhere;
+}
+.page-title > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+.kv-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3) var(--s-6);
+  margin: 0 0 var(--s-5);
+}
+.kv-strip dt {
+  font-size: var(--t-xs);
+  color: var(--text-2);
+}
+.kv-strip dd {
+  margin: 0;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+@container page-head (width < 600px) {
+  .actions {
+    flex-basis: 100%;
+  }
 }
 
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
+  border-radius: var(--r-md);
+  padding: var(--s-5);
+  box-shadow: var(--shadow-1);
 }
-.card.small {
-  padding: 12px;
+/* Stacked cards only: inside .grid or .cols the gap spaces them, and a
+   margin there would push one grid item out of line with its row. */
+main > .card + .card {
+  margin-top: var(--s-4);
+}
+.card-danger {
+  border-color: color-mix(in oklab, var(--danger) 40%, var(--border));
 }
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--s-3);
 }
 .row {
   display: flex;
   align-items: center;
 }
 .row.gap {
-  gap: 10px;
+  gap: var(--s-3);
 }
 .row.between {
   justify-content: space-between;
 }
 .row.end {
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--s-2);
 }
+/* Two columns only when each gets 360px; the fixed minimum also stops a wide
+   table from stretching its track past the page. */
 .cols {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: var(--s-4);
 }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 14px;
+  gap: var(--s-4);
 }
 .inline {
   display: inline;
@@ -391,54 +627,116 @@ code {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-@media (max-width: 760px) {
-  .cols {
-    grid-template-columns: 1fr;
-  }
+  gap: var(--s-2);
 }
 
 a.card {
   text-decoration: none;
   color: inherit;
-  transition: border-color 0.12s;
 }
 a.card:hover {
-  border-color: var(--accent);
+  border-color: var(--border-2);
+  box-shadow: var(--shadow-2);
+}
+/* Motion only for those who have not asked for less: the card hover, and a
+   cross-fade between pages where the browser supports it. */
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition {
+    navigation: auto;
+  }
+  ::view-transition-group(root) {
+    animation-duration: var(--d-page);
+  }
+  a.card {
+    transition:
+      border-color var(--d-fast) var(--ease),
+      box-shadow var(--d-fast) var(--ease);
+  }
 }
 .card .meta {
   display: flex;
-  gap: 12px;
-  color: var(--muted);
-  font-size: 13px;
-  margin-top: 10px;
+  gap: var(--s-3);
+  color: var(--text-2);
+  font-size: var(--t-sm);
+  margin-top: var(--s-3);
 }
 
-button,
-.btn {
+button {
   font: inherit;
-  padding: 7px 13px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-  /* Inline-flex so an <svg class="icon"> sits on the label's optical centre
-     instead of its baseline, and so `gap` spaces the two. A button label is a
-     name, not prose — nowrap keeps "Add domain" on one line when the icon
-     pushes it against a flex sibling. */
+}
+/* Every button, and every link that reads as one, is a .btn: the variants
+   are classes, so no rule has to outrank a type selector. Inline-flex centres
+   an icon on the label; nowrap because a label is a name, not prose. */
+.btn {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  justify-content: center;
+  gap: var(--s-2);
+  min-height: 32px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 500;
+  text-decoration: none;
   white-space: nowrap;
+  cursor: pointer;
+}
+/* :where() keeps :not(:disabled) from adding specificity, so each variant's
+   hover below still wins on source order. */
+.btn:hover:not(:where(:disabled)) {
+  border-color: var(--border-2);
+  background: var(--surface-2);
+}
+.btn-primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-ink);
+}
+/* A brightness filter barely moves near-white ink in dark mode, so hover
+   mixes the ink toward the surface instead; the change reads in both. */
+.btn-primary:hover:not(:where(:disabled)) {
+  background: color-mix(in oklab, var(--ink) 85%, var(--surface));
+  border-color: color-mix(in oklab, var(--ink) 85%, var(--surface));
+}
+/* Filled, never outlined: the confirm dialog swaps this against
+   .btn-primary, and an outline would make the destructive choice look like
+   the least important one. */
+.btn-danger,
+.btn-danger:hover:not(:where(:disabled)) {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--on-danger);
+}
+.btn-danger:hover:not(:where(:disabled)) {
+  filter: brightness(1.08);
+}
+.btn-quiet,
+.btn-quiet:hover:not(:where(:disabled)) {
+  border-color: transparent;
+}
+.btn-quiet {
+  background: transparent;
+}
+.btn-sm {
+  min-height: 28px;
+  font-size: var(--t-sm);
+}
+.btn-icon {
+  width: 32px;
+  padding: 0;
+  font-size: var(--t-lg);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /*
- * Sized in em, so the font-size already set by .small and .iconbtn drives the
- * icon too and no per-variant rule is needed. stroke: currentColor is what
- * makes an icon follow its button's colour through <use>.
+ * Sized in em, so the font-size of .btn-sm or .btn-icon drives the icon too.
+ * No sprite symbol sets stroke, so currentColor here reaches through <use>
+ * and an icon follows its button's colour.
  */
 .icon {
   width: 1em;
@@ -450,211 +748,307 @@ button,
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-button:hover {
-  border-color: var(--muted);
-}
-button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-text);
-}
-button.primary:hover {
-  filter: brightness(1.08);
-}
-button.small {
-  padding: 4px 10px;
-  font-size: 13px;
-}
-button.link {
-  background: none;
-  border: none;
-  color: var(--accent);
-  padding: 4px;
-}
-button.danger,
-.danger {
-  color: var(--danger);
-}
-/*
- * Filled, not outlined. The confirm dialog swaps this class against .primary,
- * and an outline would render the destructive choice weaker than the harmless
- * one — the most dangerous button in the app reading as the least important.
- */
-button.danger {
-  background: var(--danger-fill);
-  border-color: var(--danger-fill);
-  color: var(--accent-text);
-}
-button.danger:hover {
-  filter: brightness(1.08);
-}
-/* .link strips the border and padding for a text-style button; a filled
-   danger button needs its box back or Remove becomes a cramped red pill. */
-button.link.danger {
-  padding: 7px 13px;
-  border: 1px solid var(--danger-fill);
-}
 
 input,
 textarea,
 select {
   font: inherit;
-  padding: 8px 10px;
+  padding: var(--s-2) var(--s-3);
   width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
+  border: 1px solid var(--border-control);
+  border-radius: var(--r-sm);
+  background: var(--surface);
   color: var(--text);
+}
+input:not([type="checkbox"], [type="radio"]),
+select {
+  min-height: 36px;
+  padding-block: 0;
+}
+/* :user-invalid waits until the user has touched the field, so a fresh form
+   is never red; the browser's own validation drives it, no script. */
+:is(input, textarea, select):user-invalid {
+  border-color: var(--danger);
 }
 textarea {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--t-sm);
   resize: vertical;
 }
-label {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: 14px;
+
+/* A dot plus a label: the dot carries the hue, the label the meaning, so
+   nothing is said by colour alone. Resource labels come from
+   views/partials/status.eta; Settings writes its own strip labels. */
+.status {
+  --tone: var(--idle);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-sm);
+  font-weight: 500;
+  color: var(--text);
 }
-label small {
-  font-weight: 400;
+.status::before {
+  content: "";
+  flex: none;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-full);
+  background: var(--tone);
+}
+.status-healthy,
+.status-succeeded {
+  --tone: var(--ok);
+}
+.status-unhealthy {
+  --tone: var(--warn);
+}
+.status-failed {
+  --tone: var(--danger);
+}
+.status-deploying,
+.status-running {
+  --tone: var(--busy);
+}
+/* Not running is hollow, so it never reads as a healthy green at a glance. */
+:is(.status-queued, .status-stopped, .status-cancelled)::before {
+  background: transparent;
+  border: 2px solid var(--idle);
+}
+@media (prefers-reduced-motion: no-preference) {
+  :is(.status-deploying, .status-queued, .status-running)::before {
+    animation: pulse 1.6s var(--ease) infinite;
+  }
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 
-.pill {
+/* Tints with same-hue text: white on a saturated fill fails 4.5:1. */
+.chip {
+  --tone: var(--idle);
   display: inline-block;
-  padding: 2px 9px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 550;
-  text-transform: lowercase;
-  background: var(--pending);
-  color: #fff;
+  padding: 1px var(--s-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-full);
+  font-size: var(--t-xs);
+  background: color-mix(in oklab, var(--tone) 14%, var(--surface));
+  color: color-mix(in oklab, var(--tone) 60%, var(--text));
 }
-.pill-queued {
-  background: var(--pending);
+.chip-ok {
+  --tone: var(--ok);
 }
-.pill-deploying,
-.pill-running {
-  background: var(--deploying);
+.chip-warn {
+  --tone: var(--warn);
 }
-.pill-healthy,
-.pill-succeeded {
-  background: var(--ok);
+.chip-busy {
+  --tone: var(--busy);
 }
-.pill-failed {
-  background: var(--danger);
-}
-.pill-unhealthy {
-  background: var(--warn);
-}
-.pill-stopped {
-  background: var(--pending);
+.chip-outline {
+  background: transparent;
+  border-color: var(--border-2);
+  color: var(--text-2);
 }
 
+/* The bar scrolls sideways on a phone instead of widening the page. An
+   overflow box would clip a tab's -1px overlap onto a border-bottom, so the
+   1px rule is an inset shadow drawn inside the box, under each tab's 2px line. */
 .tabs {
   display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 18px;
+  gap: var(--s-1);
+  box-shadow: inset 0 -1px 0 var(--border);
+  margin-bottom: var(--s-5);
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 .tabs a {
-  padding: 8px 14px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 var(--s-4);
   text-decoration: none;
-  color: var(--muted);
-  text-transform: capitalize;
+  color: var(--text-2);
   border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
 }
-.tabs a.active {
+.tabs a[aria-current="page"] {
   color: var(--text);
-  border-bottom-color: var(--accent);
+  border-bottom-color: var(--ink);
+}
+/* The bar is a scroll container, which clips anything drawn outside a tab, so
+   the ring goes inside. */
+.tabs a:focus-visible {
+  outline-offset: -2px;
 }
 
+/* Dark in both themes, so its scrollbar must be drawn for a dark background. */
 .logs {
-  background: #0b0d11;
-  color: #d6dae0;
+  color-scheme: dark;
+  background: var(--term-bg);
+  color: var(--term-fg);
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: var(--t-sm);
   line-height: 1.55;
-  padding: 12px;
-  border-radius: 6px;
-  height: 460px;
+  padding: var(--s-3);
+  border-radius: var(--r-sm);
+  height: min(60vh, 560px);
   overflow-y: auto;
-  margin: 10px 0 0;
+  scrollbar-gutter: stable;
+  margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.logs-lg {
+  height: min(70vh, 720px);
+}
+/* In the UI face, so it never reads as a line of output; hidden by the first
+   real line, with no script. */
+.logs-empty {
+  font-family: var(--font);
+  color: color-mix(in oklab, var(--term-fg) 75%, var(--term-bg));
+}
+.logs-empty:not(:only-child) {
+  display: none;
+}
+.logs-wrap {
+  position: relative;
+}
+.logs-wrap > .btn {
+  position: absolute;
+  right: var(--s-5);
+  bottom: var(--s-3);
 }
 .logs span {
   display: block;
 }
 .logs .stderr {
-  color: #fca5a5;
+  color: var(--term-err);
 }
 
-.flash {
-  padding: 10px 14px;
-  border-radius: 6px;
-  margin-bottom: 16px;
-  border: 1px solid transparent;
+/* The text is the body colour, not the tone: tone-coloured text on its own
+   tint fails contrast. The tint, border and icon carry the tone. Info is
+   neutral, because blue already means "deploying". */
+.notice {
+  --tone: var(--idle);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-sm);
+  margin-bottom: var(--s-4);
+  border: 1px solid color-mix(in oklab, var(--tone) 40%, var(--surface));
+  background: color-mix(in oklab, var(--tone) 12%, var(--surface));
+  color: var(--text);
 }
-.flash-error {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  border-color: var(--danger);
-  color: var(--danger);
+/* Centred on the first line of a 1.5 line-height. */
+.notice > .icon {
+  margin-top: 0.25em;
 }
-.flash-ok {
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-  border-color: var(--ok);
-  color: var(--ok);
+/* A flex item's auto minimum would let a <pre> inside widen the page. */
+.notice > div {
+  min-width: 0;
+}
+.notice pre {
+  overflow-x: auto;
+}
+.notice-ok {
+  --tone: var(--ok);
+}
+.notice-warn {
+  --tone: var(--warn);
+}
+.notice-error {
+  --tone: var(--danger);
+}
+
+/* Sign-in and setup: the mark above one card; .narrow stays for other pages.
+   Here, after the type and notice rules, so no selector descends in specificity. */
+.narrow.auth {
+  max-width: 400px;
+}
+.auth-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: var(--s-5);
+  text-align: center;
+}
+.auth .brand,
+.auth h1 {
+  font-size: var(--t-xl);
+}
+.auth p,
+.auth .notice {
+  margin: 0;
 }
 
 .empty {
   text-align: center;
-  padding: 40px 24px;
+  padding: var(--s-8) var(--s-6);
 }
 .empty h2 {
-  margin-bottom: 8px;
+  margin-bottom: var(--s-2);
+}
+.empty > .icon {
+  display: block;
+  width: var(--s-7);
+  height: var(--s-7);
+  margin: 0 auto var(--s-3);
+  color: var(--text-2);
 }
 .empty p {
-  max-width: 460px;
-  margin: 0 auto 16px;
+  max-width: var(--prose-w);
+  margin: 0 auto var(--s-4);
+}
+.empty-sm {
+  padding: var(--s-3);
+}
+.empty-sm p {
+  margin-bottom: 0;
 }
 
 .env {
-  margin-bottom: 32px;
+  margin-bottom: var(--s-7);
 }
 .env-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-4);
+  margin-bottom: var(--s-3);
 }
 
-table.deployments {
+.table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13.5px;
+  font-size: var(--t-sm);
+  font-variant-numeric: tabular-nums;
 }
-table.deployments th {
+.table th {
   text-align: left;
-  color: var(--muted);
-  font-weight: 550;
-  padding: 6px 8px;
+  color: var(--text-2);
+  font-weight: 500;
+}
+.table :is(th, td) {
+  padding: var(--s-2);
   border-bottom: 1px solid var(--border);
 }
-table.deployments td {
-  padding: 7px 8px;
-  border-bottom: 1px solid var(--border);
+/* A cell's height is a minimum. */
+.table td {
+  height: 40px;
 }
-
-dialog {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text);
-  padding: 20px;
-  width: min(460px, 92vw);
+/* A row whose first cell links somewhere is clickable as a whole (app.js);
+   only those rows highlight, so a static table never looks clickable. */
+.table tbody tr:has(> td:first-child a[href]) {
+  cursor: pointer;
+}
+.table tbody tr:has(> td:first-child a[href]):hover {
+  background: var(--surface-2);
 }
 
 /* Fade up on open, fade down on close — pure CSS, no animation library.
@@ -663,13 +1057,23 @@ dialog {
    the top layer until the exit transition finishes. Browsers without support
    show the dialog instantly, which is the old behaviour. */
 dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  padding: var(--s-6);
+  box-shadow: var(--shadow-3);
+  width: min(460px, 92vw);
+  /* Capped in vh so a long form scrolls rather than overflowing a laptop. */
+  max-height: 88vh;
+  overflow-y: auto;
   opacity: 0;
-  translate: 0 12px;
+  translate: 0 var(--s-3);
   transition:
-    opacity 0.18s ease-out,
-    translate 0.18s ease-out,
-    overlay 0.18s allow-discrete,
-    display 0.18s allow-discrete;
+    opacity var(--d-base) var(--ease),
+    translate var(--d-base) var(--ease),
+    overlay var(--d-base) allow-discrete,
+    display var(--d-base) allow-discrete;
 }
 dialog[open] {
   opacity: 1;
@@ -678,23 +1082,25 @@ dialog[open] {
 @starting-style {
   dialog[open] {
     opacity: 0;
-    translate: 0 12px;
+    translate: 0 var(--s-3);
   }
 }
 
+/* var(--scrim) reaches ::backdrop because it inherits from its dialog
+   (Chrome 122, Safari 17.4); older engines show no dimming, not a broken page. */
 dialog::backdrop {
-  background: rgb(0 0 0 / 0);
+  background: transparent;
   transition:
-    background-color 0.18s ease-out,
-    overlay 0.18s allow-discrete,
-    display 0.18s allow-discrete;
+    background-color var(--d-base) var(--ease),
+    overlay var(--d-base) allow-discrete,
+    display var(--d-base) allow-discrete;
 }
 dialog[open]::backdrop {
-  background: rgb(0 0 0 / 0.45);
+  background: var(--scrim);
 }
 @starting-style {
   dialog[open]::backdrop {
-    background: rgb(0 0 0 / 0);
+    background: transparent;
   }
 }
 /* Must follow the rules above: same specificity, so source order decides. */
@@ -708,27 +1114,18 @@ dialog[open]::backdrop {
 dialog.confirm {
   width: min(420px, 92vw);
 }
-dialog.confirm h2 {
-  font-size: 17px;
-}
 dialog.confirm p {
   margin: 0;
 }
-
-.danger-zone {
-  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
-  margin-top: 20px;
-}
-
-/* An <a class="btn"> is a link that reads as a button; the base rule above
-   styles the box but leaves the underline an anchor brings with it. */
-a.btn {
-  text-decoration: none;
+.dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
 }
 
 .row.wrap {
   flex-wrap: wrap;
-  row-gap: 8px;
+  row-gap: var(--s-2);
 }
 
 /* Label/value pairs. Grid rather than the browser's default dl indent, so the
@@ -736,28 +1133,54 @@ a.btn {
 .kv {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 4px 16px;
+  gap: var(--s-1) var(--s-4);
   margin: 0;
-  font-size: 14px;
 }
 .kv dt {
-  color: var(--muted);
+  color: var(--text-2);
 }
 .kv dd {
   margin: 0;
   overflow-wrap: anywhere;
 }
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 
-/* A group that behaves like a <label> but wraps controls a label cannot own —
-   a listbox is not a labelable element. */
+/* A label, its control and a hint as siblings: a hint inside the <label>
+   became part of the field's accessible name. The hint is tied back with
+   aria-describedby. The error line is not — the browser's own validation
+   bubble already announces the message. */
 .field {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  font-size: 14px;
+  gap: var(--s-1);
 }
-.field-label {
-  font-size: 14px;
+.label {
+  font-weight: 500;
+}
+.opt {
+  font-weight: 400;
+  font-size: var(--t-sm);
+  color: var(--text-2);
+}
+.hint,
+.error {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--text-2);
+}
+.error {
+  display: none;
+  color: var(--danger);
+}
+.field:has(:user-invalid) .error {
+  display: block;
 }
 
 /* The repository list is scrolled rather than paged: every repository the
@@ -769,14 +1192,14 @@ a.btn {
   overflow-y: auto;
   gap: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: var(--bg);
 }
 .repo-option {
-  flex-direction: row;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
   cursor: pointer;
 }
 .repo-option:hover {
@@ -788,11 +1211,11 @@ a.btn {
   margin: 0;
 }
 
-/* A checkbox is a row, not the stacked column every other label uses. */
+/* A label is inline; a checkbox row needs flex to centre the box on its text. */
 .checkline {
-  flex-direction: row;
+  display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--s-2);
 }
 .checkline input[type="checkbox"] {
   width: auto;
@@ -809,65 +1232,22 @@ a.btn {
   white-space: nowrap;
 }
 
-.local-source summary {
+summary {
   cursor: pointer;
-  font-size: 14px;
-  color: var(--muted);
+  color: var(--text-2);
 }
-.local-source > * + * {
-  margin-top: 8px;
+details > * + * {
+  margin-top: var(--s-2);
+}
+/* Settings reads as prose, so its cards stop at a readable measure. */
+.card-prose {
+  max-width: var(--prose-w);
 }
 
-/* The git dialog carries a repository list and eight fields, which is more than
-   the 460px every other dialog needs. Still capped in vh so it scrolls rather
-   than overflowing on a laptop. */
-dialog.wide-dialog {
+/* The git dialog carries a repository list and eight fields, more than the
+   460px every other dialog needs. */
+.dialog-wide {
   width: min(560px, 94vw);
-  max-height: 88vh;
-  overflow-y: auto;
-}
-
-/* Env var scoping and resolution (PHASES.md §26). */
-.pill-runtime {
-  background: var(--deploying);
-}
-.pill-build {
-  background: var(--warn);
-}
-.pill-both {
-  background: var(--ok);
-}
-
-/* Which level a resolved variable came from. Outlined rather than filled, so
-   the origin never competes with the delivery pill beside it. */
-.origin {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--muted);
-}
-.origin-resource {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-table.env-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13.5px;
-}
-table.env-table th {
-  text-align: left;
-  color: var(--muted);
-  font-weight: 550;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-}
-table.env-table td {
-  padding: 7px 8px;
-  border-bottom: 1px solid var(--border);
 }
 
 /* The table can outgrow a narrow viewport; it scrolls inside its own box
@@ -876,15 +1256,61 @@ table.env-table td {
   overflow-x: auto;
 }
 
+/* Three boxes side by side only when the form itself has room: auto-fit gave
+   a lopsided 2+1 at mid widths, and the viewport is the wrong measure. */
+form:has(> .scope-boxes) {
+  container: scope / inline-size;
+}
 .scope-boxes {
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--s-3);
 }
-.scope-boxes label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--muted);
+@container scope (width >= 640px) {
+  .scope-boxes {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Pending after submit (app.js): a spinner takes the icon's place. */
+.btn[aria-busy="true"] > .icon {
+  display: none;
+}
+.btn[aria-busy="true"]::before {
+  content: "";
+  flex: none;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--r-full);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .btn[aria-busy="true"]::before {
+    animation: spin 0.8s linear infinite;
+  }
+}
+@keyframes spin {
+  to {
+    rotate: 1turn;
+  }
+}
+
+/* Touch targets: 44px where the pointer is a finger. Last in the file so it
+   outranks .btn-sm on source order. Nav links stay block for their ellipsis,
+   so they grow by line-height rather than min-height. */
+@media (pointer: coarse) {
+  .btn,
+  .tabs a,
+  .repo-option {
+    min-height: 44px;
+  }
+  .btn-icon {
+    min-width: 44px;
+  }
+  .nav-top,
+  .nav-project,
+  .nav-env {
+    line-height: calc(44px - 2 * var(--s-2));
+  }
 }

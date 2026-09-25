@@ -1,7 +1,9 @@
 import { and, desc, eq, sql } from "drizzle-orm"
 import { decrypt, encrypt } from "../crypto.ts"
 import { interpolate } from "../env/interpolate.ts"
+import type { ResourceState } from "../events.ts"
 import { nowIso, ulid } from "../ids.ts"
+import { resourceState, worstState } from "../resource-state.ts"
 import { orm } from "./drizzle.ts"
 import { db } from "./index.ts"
 import {
@@ -1021,7 +1023,8 @@ export function findResourceByNameInEnv(
 export interface NavProject {
   id: string
   name: string
-  environments: { id: string; name: string }[]
+  /** `state` is the worst of the environment's resources; null when it has none. */
+  environments: { id: string; name: string; state: ResourceState | null }[]
 }
 
 /**
@@ -1039,26 +1042,55 @@ export function navTree(): NavProject[] {
       projectName: projects.name,
       environmentId: environments.id,
       environmentName: environments.name,
+      resourceId: resources.id,
+      desiredState: resources.desiredState,
+      containerId: resources.containerId,
+      currentDeploymentId: resources.currentDeploymentId,
+      // Same ordering as listDeployments, so the dot and the resource page
+      // agree on which deployment is the latest.
+      latest: sql<DeploymentStatus | null>`(
+        SELECT ${deployments.status} FROM ${deployments}
+        WHERE ${deployments.resourceId} = ${resources.id}
+        ORDER BY ${deployments.createdAt} DESC LIMIT 1)`,
     })
     .from(projects)
     .leftJoin(environments, eq(environments.projectId, projects.id))
-    .orderBy(desc(projects.createdAt), environments.createdAt)
+    .leftJoin(resources, eq(resources.environmentId, environments.id))
+    // The ids break created_at ties, so one project's rows stay contiguous.
+    .orderBy(
+      desc(projects.createdAt),
+      projects.id,
+      environments.createdAt,
+      environments.id,
+    )
     .all()
 
   const out: NavProject[] = []
-  let current: NavProject | undefined
+  let project: NavProject | undefined
+  let env: NavProject["environments"][number] | undefined
   for (const row of rows) {
-    if (!current || current.id !== row.projectId) {
-      current = { id: row.projectId, name: row.projectName, environments: [] }
-      out.push(current)
+    if (!project || project.id !== row.projectId) {
+      project = { id: row.projectId, name: row.projectName, environments: [] }
+      out.push(project)
+      env = undefined
     }
-    // A leftJoin yields a null environment row for a project that has none.
-    if (row.environmentId !== null && row.environmentName !== null) {
-      current.environments.push({
-        id: row.environmentId,
-        name: row.environmentName,
-      })
+    // A leftJoin yields null columns for a project with no environments and
+    // for an environment with no resources.
+    if (row.environmentId === null || row.environmentName === null) continue
+    if (!env || env.id !== row.environmentId) {
+      env = { id: row.environmentId, name: row.environmentName, state: null }
+      project.environments.push(env)
     }
+    if (row.resourceId === null || row.desiredState === null) continue
+    const state = resourceState(
+      {
+        desiredState: row.desiredState,
+        containerId: row.containerId,
+        currentDeploymentId: row.currentDeploymentId,
+      },
+      row.latest,
+    )
+    env.state = worstState(env.state, state)
   }
   return out
 }

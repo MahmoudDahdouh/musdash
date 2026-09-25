@@ -221,7 +221,8 @@ dropped, regardless of how much users want it. The Validator checks every one.
 ```bash
 bun run dev            # watch-mode server (src/index.ts) on port 8000
 bun run check          # format + lint with warnings as errors — run before committing
-bun run ci             # non-mutating equivalent (prettier --check + biome ci)
+bun run ci             # non-mutating equivalent (prettier --check + biome ci + tsc + asset gate)
+bun run gate:assets    # app.css ≤ 32 KB, app.js ≤ 16 KB (both ci and check run it)
 bun run format         # prettier --write .
 bun run lint:fix       # biome lint --write .
 bun test               # all tests

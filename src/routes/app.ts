@@ -21,6 +21,7 @@ import {
   deleteSetting,
   domainExists,
   findResourceByNameInEnv,
+  getDeployment,
   getEnvironment,
   getGithubApp,
   getProject,
@@ -45,6 +46,7 @@ import {
   type EnvVarInput,
 } from "../db/queries.ts"
 import { parseEnvText } from "../env/parse.ts"
+import { deployLogTail } from "../events.ts"
 import { buildManifest } from "../github/manifest.ts"
 import {
   convertManifestCode,
@@ -67,6 +69,7 @@ import {
   restartBlockedReason,
   restartCapability,
 } from "../restart.ts"
+import { resourceState } from "../resource-state.ts"
 import { dashboardHostView } from "../settings-view.ts"
 import {
   getDashboardHost,
@@ -74,7 +77,7 @@ import {
   SETTING_GITHUB_MANIFEST_STATE,
   setDashboardHost,
 } from "../settings.ts"
-import { renderPage } from "../views/render.ts"
+import { type LayoutData, renderPage } from "../views/render.ts"
 
 const html = (body: string) =>
   new Response(body, {
@@ -249,7 +252,12 @@ export const appRoutes = new Elysia()
       resources: listResources(environment.id).map((resource) => ({
         resource,
         image: resourceImage(resource),
-        state: uiState(resource.desiredState, resource.containerId),
+        // One query per resource, like domainCount: a project page holds a
+        // handful, and navTree already does the whole tree in one statement.
+        state: resourceState(
+          resource,
+          listDeployments(resource.id, 1)[0]?.status ?? null,
+        ),
         domainCount: listDomains(resource.id).length,
       })),
     }))
@@ -442,7 +450,6 @@ export const appRoutes = new Elysia()
     const deployments = listDeployments(resource.id).map((d) => ({
       ...d,
       duration: formatDuration(d.startedAt, d.finishedAt),
-      pill: d.status,
     }))
 
     return html(
@@ -454,7 +461,7 @@ export const appRoutes = new Elysia()
           project,
           tab,
           image: resourceImage(resource),
-          state: uiState(resource.desiredState, resource.containerId),
+          state: resourceState(resource, deployments[0]?.status ?? null),
           deployments,
           domains: listDomains(resource.id),
           autoDomain: autoDomainFor(resource.name, environment.name),
@@ -699,23 +706,25 @@ export const appRoutes = new Elysia()
   )
 
   .get("/d/:deploymentId", ({ params, session, status }) => {
-    const deployment = deploymentWithResource(params.deploymentId)
-    if (!deployment) return status(404, "deployment not found")
-    // This page has no project context of its own; resolve it from the
-    // resource so the sidebar highlights the branch the user came from.
-    const ctx = getResourceContext(deployment.resource.id)
+    const deployment = getDeployment(params.deploymentId)
+    // The page has no context of its own: the breadcrumb and the sidebar
+    // highlight both come from the resource it belongs to.
+    const ctx = deployment && getResourceContext(deployment.resourceId)
+    if (!deployment || !ctx) return status(404, "deployment not found")
     return html(
       renderPage(
         "deployment",
         {
-          deployment: deployment.deployment,
-          resource: deployment.resource,
-          pill: deployment.deployment.status,
-          lines: deployLines(params.deploymentId),
+          deployment,
+          resource: ctx.resource,
+          environment: ctx.environment,
+          project: ctx.project,
+          duration: formatDuration(deployment.startedAt, deployment.finishedAt),
+          lines: deployLogTail(params.deploymentId),
         },
         layout(session, "Deployment", {
-          activeProjectId: ctx?.project.id,
-          activeEnvironmentId: ctx?.environment.id,
+          activeProjectId: ctx.project.id,
+          activeEnvironmentId: ctx.environment.id,
         }),
       ),
     )
@@ -754,7 +763,12 @@ export const appRoutes = new Elysia()
           // unrelated flash no longer hides the note (N-11).
           hostJustSaved: query.saved === "host",
         },
-        layout(session, "Settings", { activeSettings: true }),
+        // The layout renders the flash, above the page head. Settings is the
+        // first route to hand it one; the page no longer renders its own.
+        {
+          ...layout(session, "Settings", { activeSettings: true }),
+          flash: view.flash,
+        },
       ),
     )
   })
@@ -1089,7 +1103,7 @@ function layout(
   session: SessionUser | null,
   title: string,
   options: LayoutOptions = {},
-) {
+): LayoutData {
   return {
     title,
     user: session ? { email: session.email } : null,
@@ -1102,15 +1116,13 @@ function layout(
     activeEnvironmentId: options.activeEnvironmentId,
     activeSettings: options.activeSettings,
     wide: options.wide,
+    // Read fresh on every render and never stored: the sidebar instrument is a
+    // spot reading, and a cached one would report a number that is not true.
+    // MiB, the unit scripts/measure-rss.ts gates on, so the two never disagree.
+    rssMb: session
+      ? Math.round(process.memoryUsage.rss() / 1048576)
+      : undefined,
   }
-}
-
-function uiState(
-  desired: "running" | "stopped",
-  containerId: string | null,
-): string {
-  if (desired === "stopped") return "stopped"
-  return containerId ? "healthy" : "queued"
 }
 
 function formatDuration(
@@ -1124,19 +1136,4 @@ function formatDuration(
     Math.round((end - new Date(startedAt).getTime()) / 1000),
   )
   return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`
-}
-
-import { getDeployment, getResource } from "../db/queries.ts"
-import { deployLogTail } from "../events.ts"
-
-function deploymentWithResource(id: string) {
-  const deployment = getDeployment(id)
-  if (!deployment) return null
-  const resource = getResource(deployment.resourceId)
-  if (!resource) return null
-  return { deployment, resource }
-}
-
-function deployLines(deploymentId: string): string[] {
-  return deployLogTail(deploymentId)
 }

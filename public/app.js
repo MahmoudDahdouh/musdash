@@ -1,5 +1,5 @@
-/* musdash client behaviour. Alpine components plus one delegated DOM
-   listener — no framework, no router. */
+/* musdash client behaviour. Alpine components plus a few delegated DOM
+   listeners — no framework, no router. */
 
 document.addEventListener("alpine:init", () => {
   /**
@@ -60,8 +60,9 @@ document.addEventListener("alpine:init", () => {
     },
   }))
 
-  /** Status pill driven by SSE, never by polling. */
-  Alpine.data("statusPill", (resourceId, initial) => ({
+  /** A resource's status, driven by SSE, never by polling. The label map
+   *  lives in views/partials/status.eta; this only holds the state. */
+  Alpine.data("resourceStatus", (resourceId, initial) => ({
     state: initial,
     init() {
       const es = new EventSource(`/r/${resourceId}/events`)
@@ -107,12 +108,10 @@ document.addEventListener("alpine:init", () => {
     },
 
     /**
-     * The same test, reading the row's own data attributes.
-     *
-     * The template calls this rather than passing a repository name into an
-     * Alpine expression: HTML escaping does not escape an apostrophe for a
-     * JavaScript string literal, and repository and branch names are chosen by
-     * whoever owns the repository.
+     * The same test, reading the row's own data attributes. The template calls
+     * this rather than passing a repository name into an Alpine expression:
+     * HTML escaping does not escape an apostrophe for JavaScript, and a
+     * repository's owner chooses its name.
      */
     matchesEl(el) {
       return this.matches(
@@ -122,20 +121,18 @@ document.addEventListener("alpine:init", () => {
     },
 
     /**
-     * How many rows survive the filter.
-     *
-     * Read off the server-rendered data attributes rather than from a copy of
-     * the repository list held in this component — there is no second source of
-     * truth here. Applying matches() rather than inspecting computed styles
-     * keeps this independent of when Alpine happens to have flushed x-show.
+     * How many rows survive the filter, read off the server-rendered data
+     * attributes — this component holds no copy of the list. Applying
+     * matches() rather than reading computed styles keeps it independent of
+     * when Alpine flushes x-show.
      */
     visibleCount() {
       const list = this.$el.querySelector(".repo-list")
       if (!list) return 0
       let n = 0
-      for (const li of list.children) {
-        const installationId = li.dataset.installation || ""
-        const fullName = li.dataset.fullName || ""
+      for (const row of list.children) {
+        const installationId = row.dataset.installation || ""
+        const fullName = row.dataset.fullName || ""
         if (this.matches(installationId, fullName)) n += 1
       }
       return n
@@ -165,17 +162,32 @@ document.addEventListener("alpine:init", () => {
     },
   }))
 
-  Alpine.data("deployPill", (deploymentId, initial) => ({
-    status: initial,
-    pill: initial,
+  Alpine.data("deploymentStatus", (deploymentId, initial) => ({
+    state: initial,
     init() {
       const es = new EventSource(`/d/${deploymentId}/events`)
       es.addEventListener("deployment", (e) => {
-        const d = JSON.parse(e.data)
-        this.status = d.status
-        this.pill = d.status
+        this.state = JSON.parse(e.data).status
       })
       window.addEventListener("beforeunload", () => es.close())
+    },
+  }))
+
+  // Focus follows the drawer, so Escape never strands it on <body>.
+  Alpine.data("drawer", () => ({
+    navOpen: false,
+    open() {
+      this.navOpen = true
+      this.$nextTick(() => this.$refs.close.focus())
+    },
+    close() {
+      if (!this.navOpen) return
+      this.navOpen = false
+      this.$refs.menu.focus()
+    },
+    // A modal dialog owns its own Escape; the drawer under it stays open.
+    escape(event) {
+      if (!event.target.closest("dialog")) this.close()
     },
   }))
 })
@@ -183,10 +195,8 @@ document.addEventListener("alpine:init", () => {
 // --------------------------------------------------------- confirm dialog
 
 /**
- * Forms marked confirmed by the user, so the second pass through the submit
- * listener lets them through. A WeakSet holds no strong reference, so a form
- * removed from the DOM stays collectable — which matters in a codebase with an
- * explicit memory budget.
+ * Forms the user confirmed, so the second pass through the submit listener
+ * lets them through. A WeakSet, so a removed form stays collectable.
  */
 const confirmedForms = new WeakSet()
 
@@ -198,17 +208,13 @@ const confirmedForms = new WeakSet()
  * hold no Alpine state, so a resource with eight removable domains still has
  * one dialog and one listener rather than eight components.
  *
- * All copy travels as HTML attributes and is written with textContent. Nothing
- * is ever interpolated into a JavaScript string, which is what the old
- * `onsubmit="return confirm('...')"` did — it escaped for HTML and then landed
- * in a JS literal, a mismatch that only stayed safe because resource names are
- * restricted to [a-z0-9-].
+ * All copy travels as HTML attributes and is written with textContent, never
+ * interpolated into a JavaScript string: HTML escaping does not make a value
+ * safe inside a JS literal.
  *
- * This is plain DOM rather than an Alpine component: it needs no reactivity,
- * and living outside `alpine:init` means it still works if Alpine fails to
- * boot. If the script does not run at all the form simply submits without a
- * prompt — failing open, because a fail-closed confirm would leave a user
- * unable to log out.
+ * Plain DOM, outside `alpine:init`, so it works even if Alpine fails to boot.
+ * Without the script the form submits unprompted — failing open, because a
+ * fail-closed confirm would leave a user unable to log out.
  */
 document.addEventListener("submit", (event) => {
   const form = event.target
@@ -220,30 +226,34 @@ document.addEventListener("submit", (event) => {
     return
   }
 
-  event.preventDefault()
-
+  // With no complete dialog to confirm against, let this submission through:
+  // a button that silently does nothing is worse than a missing prompt. The
+  // check comes before preventDefault because a form cannot be re-submitted
+  // from inside its own submit event — requestSubmit() there is ignored.
   const dialog = document.getElementById("confirm-dialog")
-  // With no dialog to confirm against, submitting beats a button that
-  // silently does nothing.
-  if (!(dialog instanceof HTMLDialogElement)) {
-    confirmedForms.add(form)
-    form.requestSubmit()
-    return
-  }
+  const parts = dialog instanceof HTMLDialogElement && confirmParts(dialog)
+  if (!parts) return
+
+  event.preventDefault()
 
   // Show native validation rather than a confirm for a form that cannot post.
   if (!form.reportValidity()) return
 
-  openConfirm(dialog, form)
+  openConfirm(dialog, parts, form)
 })
 
-function openConfirm(dialog, form) {
-  const data = form.dataset
+function confirmParts(dialog) {
   const title = dialog.querySelector("#confirm-title")
   const body = dialog.querySelector("#confirm-body")
   const accept = dialog.querySelector("[data-confirm-accept]")
   const cancel = dialog.querySelector("[data-confirm-cancel]")
-  if (!title || !body || !accept || !cancel) return
+  return title && body && accept && cancel
+    ? { title, body, accept, cancel }
+    : null
+}
+
+function openConfirm(dialog, { title, body, accept, cancel }, form) {
+  const data = form.dataset
 
   title.textContent = data.confirmTitle || "Are you sure?"
   body.textContent = data.confirmBody || ""
@@ -251,7 +261,8 @@ function openConfirm(dialog, form) {
   // Assigned wholesale so the button cannot accumulate both classes across
   // successive opens. A bare `data-confirm-danger` yields "", which is falsy,
   // so presence is tested against undefined rather than truthiness.
-  accept.className = data.confirmDanger === undefined ? "primary" : "danger"
+  accept.className =
+    data.confirmDanger === undefined ? "btn btn-primary" : "btn btn-danger"
 
   const onAccept = () => {
     confirmedForms.add(form)
@@ -326,4 +337,74 @@ document.addEventListener("click", (event) => {
     target.close()
   }
   pressedOutside = false
+})
+
+// ---------------------------------------------------------- pending state
+
+/**
+ * A submitted form's button turns busy and disabled, so a double click cannot
+ * post twice. Deferred a tick so the confirm listener has already decided,
+ * whatever the listener order; the form data is built by then, so disabling
+ * the button changes nothing posted. Feedback only: no timer re-enables it.
+ */
+document.addEventListener("submit", (event) => {
+  const form = event.target
+  if (!(form instanceof HTMLFormElement)) return
+  // A confirmed form resubmits through requestSubmit() with no submitter.
+  const button =
+    event.submitter ??
+    form.querySelector('button[type="submit"], button:not([type])')
+  setTimeout(() => {
+    if (event.defaultPrevented || form.method === "dialog") return
+    if (!(button instanceof HTMLButtonElement)) return
+    button.setAttribute("aria-busy", "true")
+    button.disabled = true
+  })
+})
+
+// The back/forward cache restores a page as it was left, busy buttons too.
+window.addEventListener("pageshow", () => {
+  for (const button of document.querySelectorAll('[aria-busy="true"]')) {
+    button.removeAttribute("aria-busy")
+    button.disabled = false
+  }
+})
+
+// --------------------------------------------------------- dialog openers
+
+// `commandfor`/`command` open and close dialogs with no script. This is the
+// fallback where Invoker Commands are missing, and it stands aside where they
+// exist so a dialog is never told to open twice.
+document.addEventListener("click", (event) => {
+  if ("command" in HTMLButtonElement.prototype) return
+  const target = event.target
+  if (!(target instanceof Element)) return
+  const opener = target.closest("[data-open]")
+  if (opener instanceof HTMLElement) {
+    const dialog = document.getElementById(opener.dataset.open || "")
+    if (dialog instanceof HTMLDialogElement && !dialog.open) dialog.showModal()
+    return
+  }
+  if (target.closest("[data-close]")) target.closest("dialog")?.close()
+})
+
+// -------------------------------------------------------------- row links
+
+// A row whose first cell links somewhere navigates from anywhere in it; the
+// link stays the real target. Controls and `.copy` cells are left alone: the
+// first click of a double-click would navigate before a SHA is selected.
+document.addEventListener("click", (event) => {
+  const target = event.target
+  if (!(target instanceof Element)) return
+  if (
+    target.closest("a, button, input, select, textarea, label, summary, .copy")
+  )
+    return
+  const row = target.closest(".table tbody tr")
+  const link = row?.querySelector(":scope > td:first-child a[href]")
+  if (!(link instanceof HTMLAnchorElement)) return
+  if (!window.getSelection()?.isCollapsed) return
+  if (event.ctrlKey || event.metaKey)
+    window.open(link.href, "_blank", "noopener")
+  else if (!event.shiftKey && !event.altKey) location.assign(link.href)
 })

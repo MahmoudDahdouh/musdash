@@ -1,20 +1,23 @@
 <div class="page-head">
-  <h1>Projects</h1>
-  <button class="primary" onclick="document.getElementById('new-project').showModal()">
-    <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
-    New project
-  </button>
+  <div class="page-title"><h1>Projects</h1></div>
+  <div class="actions">
+    <button type="button" class="btn btn-primary" data-open="new-project" commandfor="new-project" command="show-modal">
+      <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+      New project
+    </button>
+  </div>
 </div>
 
 <% if (it.projects.length === 0) { %>
 <div class="empty card">
+  <svg class="icon" aria-hidden="true"><use href="#i-mark" /></svg>
   <h2>No projects yet</h2>
   <p class="muted">
     A project holds environments, and an environment holds the apps you deploy.
     Create one to get started — it comes with a <code>production</code>
     environment ready to use.
   </p>
-  <button class="primary" onclick="document.getElementById('new-project').showModal()">
+  <button type="button" class="btn btn-primary" data-open="new-project" commandfor="new-project" command="show-modal">
     <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
     Create your first project
   </button>
@@ -23,7 +26,7 @@
 <div class="grid">
   <% it.projects.forEach(function (p) { %>
   <a class="card project" href="/p/<%= p.project.id %>">
-    <h3><%= p.project.name %></h3>
+    <h2 class="card-title"><%= p.project.name %></h2>
     <% if (p.project.description) { %>
     <p class="muted"><%= p.project.description %></p>
     <% } %>
@@ -36,23 +39,22 @@
 </div>
 <% } %>
 
-<dialog id="new-project">
+<dialog id="new-project" aria-labelledby="new-project-title">
   <form method="post" action="/projects" class="stack">
-    <h2>New project</h2>
+    <header class="dialog-head"><h2 id="new-project-title">New project</h2></header>
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <label>
-      Name
-      <input name="name" required pattern="[A-Za-z0-9 _\-]{1,60}" autofocus />
-    </label>
-    <label>
-      Description <small class="muted">optional</small>
-      <input name="description" maxlength="200" />
-    </label>
-    <div class="row end">
-      <button type="button" onclick="this.closest('dialog').close()">
-        Cancel
-      </button>
-      <button type="submit" class="primary">Create</button>
+    <div class="field">
+      <label class="label" for="new-project-name">Name</label>
+      <input id="new-project-name" name="name" required pattern="[A-Za-z0-9 _\-]{1,60}" autofocus />
+      <p class="error">Use letters, digits, spaces, dashes and underscores, up to 60 characters.</p>
+    </div>
+    <div class="field">
+      <label class="label" for="new-project-description">Description <span class="opt">optional</span></label>
+      <input id="new-project-description" name="description" maxlength="200" />
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn" data-close commandfor="new-project" command="close">Cancel</button>
+      <button type="submit" class="btn btn-primary">Create</button>
     </div>
   </form>
 </dialog>

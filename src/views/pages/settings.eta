@@ -1,16 +1,10 @@
-<div class="breadcrumbs">Settings</div>
-
 <div class="page-head">
-  <h1>Settings</h1>
+  <div class="page-title"><h1>Settings</h1></div>
 </div>
 
-<% if (it.flash) { %>
-<div class="flash flash-<%= it.flash.kind %>"><%= it.flash.text %></div>
-<% } %>
-
 <% if (it.restarting) { %>
-<div class="card stack" x-data x-init="setTimeout(() => location.reload(), 6000)">
-  <h3>Restarting musdash</h3>
+<div class="card card-prose stack" x-data x-init="setTimeout(() => location.reload(), 6000)">
+  <h2 class="card-title">Restarting musdash</h2>
   <p class="muted">
     This page reloads in a few seconds. If it does not,
     <a href="/settings">reload it yourself</a>.
@@ -18,115 +12,169 @@
 </div>
 <% } %>
 
-<div class="card stack">
-  <h3>Dashboard address</h3>
+<%
+  /*
+   * The strip answers what someone opens Settings to check, from values the
+   * page already has. "On" means applied, DNS pointing here and the proxy
+   * reaching the dashboard — musdash never sees the certificate itself.
+   * Applying is shown only for a host saved here: the bootstrap applies an
+   * env-set host without recording it, so that case would pulse forever.
+   */
+  var check = it.host.check
+  var applying = it.host.source === 'database' && it.host.applyPending
+  var https = !it.host.host ? ['stopped', 'Off']
+    : applying ? ['queued', 'Applying']
+    : !check ? ['stopped', 'Not checked']
+    : !check.reachable ? ['failed', 'Unreachable']
+    : check.dns === 'skipped' ? ['stopped', 'Not checked']
+    : check.dns === 'mismatch' ? ['unhealthy', 'DNS points elsewhere']
+    : check.dns === 'unresolved' ? ['unhealthy', 'Waiting for DNS']
+    : ['healthy', 'On']
+%>
+<div class="card card-prose">
+  <dl class="kv">
+    <dt>Dashboard address</dt>
+    <dd>
+      <% if (it.host.host) { %><span class="status status-healthy">Set</span> <span class="mono"><%= it.host.host %></span><% } else { %><span class="status status-stopped">Not set</span><% } %>
+    </dd>
+    <dt>HTTPS</dt>
+    <dd><span class="status status-<%= https[0] %>"><%= https[1] %></span></dd>
+    <dt>GitHub</dt>
+    <dd>
+      <% if (it.app) { %><span class="status status-healthy">Connected</span> <span class="mono"><%= it.app.slug %></span><% } else { %><span class="status status-stopped">Not connected</span><% } %>
+    </dd>
+  </dl>
+</div>
+
+<div class="card card-prose stack">
+  <h2 class="card-title">Dashboard address</h2>
 
   <% if (!it.host.host) { %>
   <p class="muted">
-    musdash currently answers on this server's address over plain HTTP. No
-    certificate authority issues certificates for a bare IP address, so there is
-    no HTTPS to be had until you give it a name. Point a DNS A record at this
-    server, enter the name below, and Caddy obtains a certificate automatically.
+    musdash currently answers on this server's address over plain HTTP.
   </p>
   <% } else { %>
   <p class="muted">
     Reachable at
     <a href="https://<%= it.host.host %>/" rel="noreferrer">https://<%= it.host.host %>/</a><%
       %><% if (it.host.source === "environment") { %>, from
-    <code>MUSDASH_DASHBOARD_HOST</code><% } %>. This server's own address keeps
-    working over plain HTTP as a fallback, so a DNS or certificate problem
-    cannot lock you out.
+    <code>MUSDASH_DASHBOARD_HOST</code><% } %>.
   </p>
   <% } %>
 
-  <%/* Not straight after the save: its redirect already says this, and the
+  <%/* Not straight after the save: its flash already says this, and the
        note is for a later visit that finds the change still being applied. */%>
-  <% if (it.host.applyPending && !it.hostJustSaved) { %>
-  <div class="flash flash-ok">
-    Saved. Applying it to the proxy — reload in a moment to see the result.
+  <% if (applying && !it.hostJustSaved) { %>
+  <div class="notice notice-info" role="status">
+    <svg class="icon" aria-hidden="true"><use href="#i-info" /></svg>
+    <div>
+      Applying this address to the proxy — reload in a moment to see the result.
+    </div>
   </div>
   <% } %>
 
   <% if (it.host.envHostShadowed) { %>
-  <div class="flash flash-error">
-    <code>MUSDASH_DASHBOARD_HOST</code> is also set in
-    <code>musdash.env</code>. This page wins now, so that line is ignored and
-    you can delete it.
+  <div class="notice notice-warn" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-alert" /></svg>
+    <div>
+      <code>MUSDASH_DASHBOARD_HOST</code> is also set in
+      <code>musdash.env</code>. This page wins now, so that line is ignored and
+      you can delete it.
+    </div>
   </div>
   <% } %>
 
-  <% if (it.host.check && it.host.check.dns === "mismatch") { %>
-  <div class="flash flash-error">
-    <strong><%= it.host.host %></strong> resolves to
-    <%= it.host.check.resolved.join(", ") %>, but this server answers on
-    <%= it.host.check.local.join(", ") %>. Caddy cannot obtain a certificate
-    until DNS points here. Nothing is blocked — the name is saved either way,
-    and this check cannot see an address that reaches you through NAT or a
-    proxying CDN.
+  <% if (check && check.dns === "mismatch") { %>
+  <div class="notice notice-error" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+    <div>
+      <strong><%= it.host.host %></strong> resolves to
+      <%= check.resolved.join(", ") %>, but this server answers on
+      <%= check.local.join(", ") %>. Caddy cannot obtain a certificate
+      until DNS points here. Nothing is blocked — the name is saved either way,
+      and this check cannot see an address that reaches you through NAT or a
+      proxying CDN.
+    </div>
   </div>
-  <% } else if (it.host.check && it.host.check.dns === "unresolved") { %>
-  <div class="flash flash-error">
-    <strong><%= it.host.host %></strong> does not resolve yet. DNS changes can
-    take a few minutes to propagate; the name is saved and will start working on
-    its own.
+  <% } else if (check && check.dns === "unresolved") { %>
+  <div class="notice notice-warn" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-alert" /></svg>
+    <div>
+      <strong><%= it.host.host %></strong> does not resolve yet. DNS changes can
+      take a few minutes to propagate; the name is saved and will start working on
+      its own.
+    </div>
   </div>
   <% } %>
 
-  <% if (it.host.check && !it.host.check.reachable) { %>
-  <div class="flash flash-error">
-    <strong>The proxy cannot reach this dashboard.</strong>
-    <%= it.host.check.reachError %>. This is almost always the host firewall
-    dropping traffic from the Docker bridge. On Ubuntu:
-    <pre><code>ufw allow in on docker0 to any port 8000 proto tcp
+  <% if (check && !check.reachable) { %>
+  <div class="notice notice-error" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+    <div>
+      <strong>The proxy cannot reach this dashboard.</strong>
+      <%= check.reachError %>. This is almost always the host firewall
+      dropping traffic from the Docker bridge. On Ubuntu:
+      <pre><code>ufw allow in on docker0 to any port 8000 proto tcp
 ufw deny 8000/tcp</code></pre>
+    </div>
   </div>
   <% } %>
 
   <form method="post" action="/settings/dashboard-host" class="stack">
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <label>
-      Hostname
+    <div class="field">
+      <label class="label" for="dashboard-host">Hostname</label>
       <input
+        id="dashboard-host"
         name="host"
         value="<%= it.host.host || '' %>"
         placeholder="mus.example.com"
         autocomplete="off"
         spellcheck="false"
+        aria-describedby="dashboard-host-hint"
       />
-      <small class="muted">
+      <p class="hint" id="dashboard-host-hint">
         The A record must already point at this server. Leave it empty to go
         back to answering on the bare address. Applies immediately — no restart
         needed.
-      </small>
-    </label>
+      </p>
+    </div>
     <div class="row end">
-      <button class="primary" type="submit">
+      <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
         Save
       </button>
     </div>
   </form>
 
-  <p class="muted">
-    Listening on <code><%= it.host.bindAddress %></code>. That port is reachable
-    from every interface, so your firewall — not the bind address — is what
-    keeps it off the internet.
-  </p>
+  <details>
+    <summary>How this works</summary>
+    <% if (!it.host.host) { %>
+    <p class="muted">
+      No certificate authority issues certificates for a bare IP address, so
+      there is no HTTPS to be had until you give it a name. Point a DNS A record
+      at this server, enter the name above, and Caddy obtains a certificate
+      automatically.
+    </p>
+    <% } else { %>
+    <p class="muted">
+      This server's own address keeps working over plain HTTP as a fallback, so
+      a DNS or certificate problem cannot lock you out.
+    </p>
+    <% } %>
+    <p class="muted">
+      Listening on <code><%= it.host.bindAddress %></code>. That port is reachable
+      from every interface, so your firewall — not the bind address — is what
+      keeps it off the internet.
+    </p>
+  </details>
 </div>
 
-<div class="card stack">
-  <h3>Restart musdash</h3>
-  <p class="muted">
-    The dashboard address above applies without one. A restart is how you pick
-    up the settings that still live in <code>musdash.env</code> — the ACME
-    email, the wildcard domain, the public URL. It takes about three seconds.
-  </p>
-
-  <% if (it.host.restart.blockedReason) { %>
-  <div class="flash flash-error">
-    Not right now: <%= it.host.restart.blockedReason %>.
-  </div>
-  <% } %>
+<%
+  var restartOk = it.host.restart.available && !it.host.restart.blockedReason
+%>
+<div class="card card-prose stack">
+  <h2 class="card-title">Restart musdash</h2>
 
   <form
     method="post"
@@ -138,63 +186,86 @@ ufw deny 8000/tcp</code></pre>
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <button
-      class="primary"
+      class="btn btn-primary"
       type="submit"
-      <%= it.host.restart.available && !it.host.restart.blockedReason ? '' : 'disabled' %>
+      aria-describedby="restart-hint"
+      <%= restartOk ? '' : 'disabled' %>
     >
       <svg class="icon" aria-hidden="true"><use href="#i-rotate-ccw" /></svg>
       Restart musdash
     </button>
   </form>
 
-  <p class="muted">
+  <p class="hint" id="restart-hint">
     <% if (!it.host.restart.available) { %>
     Nothing is supervising this process, so the button would stop it rather than
     restart it. Restart it the way you started it, or over SSH:
-    <% } else { %>
-    Or over SSH:
-    <% } %>
     <code><%= it.host.restart.command %></code>
+    <% } else if (it.host.restart.blockedReason) { %>
+    Not right now: <%= it.host.restart.blockedReason %>.
+    <% } else { %>
+    Or over SSH: <code><%= it.host.restart.command %></code>
+    <% } %>
   </p>
+
+  <details>
+    <summary>How this works</summary>
+    <p class="muted">
+      The dashboard address above applies without one. A restart is how you pick
+      up the settings that still live in <code>musdash.env</code> — the ACME
+      email, the wildcard domain, the public URL. It takes about three seconds.
+    </p>
+  </details>
 </div>
 
-<div class="card stack">
-  <h3>GitHub</h3>
+<div class="card card-prose stack">
+  <h2 class="card-title">GitHub</h2>
   <p class="muted">
     Connecting a GitHub App lets musdash read your repositories, build them from
     source, and deploy automatically when you push.
   </p>
 
   <% if (!it.publicUrl) { %>
-  <div class="flash flash-error">
-    <strong>This dashboard has no domain yet.</strong>
-    GitHub has to reach this instance to deliver the registration callback and
-    push webhooks, and it cannot do that over a bare IP address. Set a domain
-    you have pointed at this server under <em>Dashboard address</em> above —
-    a certificate follows within a few seconds, and GitHub can be connected
-    straight after. No restart needed.
+  <div class="notice notice-info" role="status">
+    <svg class="icon" aria-hidden="true"><use href="#i-info" /></svg>
+    <div>
+      <strong>This dashboard has no domain yet.</strong>
+      GitHub has to reach this instance to deliver the registration callback and
+      push webhooks, and it cannot do that over a bare IP address. Set a domain
+      you have pointed at this server under <em>Dashboard address</em> above —
+      a certificate follows within a few seconds, and GitHub can be connected
+      straight after. No restart needed.
+    </div>
   </div>
   <% } %>
 
   <% if (!it.app) { %>
-  <p class="muted">
-    No GitHub App is connected. Creating one sends you to GitHub, where you
-    confirm the App and choose which repositories it may read. musdash never
-    asks for your GitHub password and stores only the credentials GitHub hands
-    back, encrypted at rest.
-  </p>
   <form method="post" action="/settings/github/connect">
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <button class="primary" type="submit" <%= it.publicUrl ? '' : 'disabled' %>>
+    <button
+      class="btn btn-primary"
+      type="submit"
+      <%~ it.publicUrl ? '' : 'disabled aria-describedby="github-connect-hint"' %>
+    >
       <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
       Connect GitHub
     </button>
   </form>
   <% if (!it.publicUrl) { %>
-  <p class="muted">
-    <small>Connecting stays unavailable until a public URL is configured.</small>
+  <p class="hint" id="github-connect-hint">
+    Connecting stays unavailable until a public URL is configured.
   </p>
   <% } %>
+
+  <details>
+    <summary>How this works</summary>
+    <p class="muted">
+      No GitHub App is connected. Creating one sends you to GitHub, where you
+      confirm the App and choose which repositories it may read. musdash never
+      asks for your GitHub password and stores only the credentials GitHub hands
+      back, encrypted at rest.
+    </p>
+  </details>
 
   <% } else { %>
   <dl class="kv">
@@ -215,41 +286,46 @@ ufw deny 8000/tcp</code></pre>
     </a>
     <form method="post" action="/settings/github/sync" class="inline">
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-      <button type="submit">
+      <button class="btn" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-rotate-ccw" /></svg>
         Sync installations
       </button>
     </form>
   </div>
-  <p class="muted">
-    <small>
-      Install the App on the accounts and repositories you want to deploy from,
-      then sync so musdash sees them.
-    </small>
+  <p class="hint">
+    Install the App on the accounts and repositories you want to deploy from,
+    then sync so musdash sees them.
   </p>
 
-  <h4>Installations</h4>
+  <h3 id="installations-title">Installations</h3>
   <% if (it.installations.length === 0) { %>
   <p class="muted">
     No installations yet. Install the App on an account, then press Sync
     installations.
   </p>
   <% } else { %>
-  <ul class="plain installations">
-    <% it.installations.forEach(function (i) { %>
-    <li class="row between">
-      <span class="mono"><%= i.accountLogin %></span>
-      <span class="muted"><small>installation <%= i.installationId %></small></span>
-    </li>
-    <% }) %>
-  </ul>
+  <div class="table-scroll">
+    <table class="table" aria-labelledby="installations-title">
+      <thead>
+        <tr><th>Account</th><th>Installation ID</th></tr>
+      </thead>
+      <tbody>
+        <% it.installations.forEach(function (i) { %>
+        <tr>
+          <td class="mono"><%= i.accountLogin %></td>
+          <td class="mono"><%= i.installationId %></td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
   <% } %>
   <% } %>
 </div>
 
 <% if (it.app) { %>
-<div class="card stack danger-zone">
-  <h3>Disconnect GitHub</h3>
+<div class="card card-danger card-prose stack">
+  <h2 class="card-title">Disconnect GitHub</h2>
   <p class="muted">
     Removes the App and its installations from musdash. Existing resources keep
     their repository and branch, but lose their link to GitHub: they can no
@@ -275,7 +351,7 @@ ufw deny 8000/tcp</code></pre>
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <input type="hidden" name="confirm" value="disconnect" />
-    <button class="danger" type="submit">
+    <button class="btn btn-danger" type="submit">
       <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
       Disconnect GitHub
     </button>

@@ -5,30 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title><%= it.title %> · musdash</title>
     <link rel="stylesheet" href="/assets/app.css" />
+    <%/* The mark (i-mark below), inline so it costs no request and no route.
+         A data: URI cannot reach the page sprite, so the geometry repeats;
+         no # or % in it, which a data: URI would need escaped. */%>
     <link
       rel="icon"
-      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='14'>▲</text></svg>"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' color='oklch(0.22 0.02 250)'><style>@media (prefers-color-scheme:dark){svg{color:oklch(0.95 0 0)}}</style><rect x='3' y='3' width='18' height='18' rx='4'/><rect x='9' y='9' width='6' height='6' rx='1' fill='currentColor'/></svg>"
     />
     <script defer src="/assets/alpine.js"></script>
   </head>
   <body>
-    <% if (it.user) { %>
+    <a class="skip" href="#main">Skip to content</a>
     <!--
       Icon sprite. Inline <symbol> definitions referenced by <use href="#i-...">.
       An icon library would be 625KB at the very smallest for the ~1KB of
       geometry actually used here, and would need tree-shaking — a build step
-      this project does not have. See docs/DECISIONS.md.
+      this project does not have. Geometry from Lucide (ISC licence).
+      Outside the signed-in branch because login and setup notices use it too.
 
       Two things here are load-bearing:
       - The wrapper is zero-sized and overflow-hidden rather than display:none,
         which stops <use> rendering in some engines.
       - No symbol hard-codes `stroke`, so `currentColor` on .icon inherits
-        through <use> and a danger button's icon turns red with its label.
+        through <use> and an icon follows its button's colour.
     -->
     <svg
       aria-hidden="true"
       style="position: absolute; width: 0; height: 0; overflow: hidden"
     >
+      <symbol id="i-mark" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="4" /><rect width="6" height="6" x="9" y="9" rx="1" fill="currentColor" /></symbol>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14" /><path d="M12 5v14" /></symbol>
       <symbol id="i-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" /></symbol>
       <symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></symbol>
@@ -39,49 +44,57 @@
       <symbol id="i-log-out" viewBox="0 0 24 24"><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /></symbol>
       <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></symbol>
       <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 5h16" /><path d="M4 12h16" /><path d="M4 19h16" /></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></symbol>
+      <symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="m15 9-6 6" /><path d="m9 9 6 6" /></symbol>
       <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></symbol>
     </svg>
+    <% if (it.user) { %>
 
-    <div
-      class="shell"
-      x-data="{ navOpen: false }"
-      @keydown.escape.window="navOpen = false"
-    >
+    <div class="shell" x-data="drawer" @keydown.escape.window="escape($event)">
       <div class="mobilebar">
         <button
-          class="iconbtn"
+          class="btn btn-icon btn-quiet"
           type="button"
           aria-label="Open navigation"
           :aria-expanded="navOpen ? 'true' : 'false'"
-          @click="navOpen = true"
+          x-ref="menu"
+          @click="open()"
         >
           <svg class="icon" aria-hidden="true"><use href="#i-menu" /></svg>
         </button>
-        <a class="brand" href="/">musdash</a>
+        <a class="brand" href="/"><svg class="icon" aria-hidden="true"><use href="#i-mark" /></svg>musdash</a>
       </div>
 
       <div
         class="nav-scrim"
         x-show="navOpen"
         x-cloak
-        @click="navOpen = false"
+        @click="close()"
         aria-hidden="true"
       ></div>
 
       <aside class="sidebar" :class="navOpen ? 'open' : ''">
         <div class="sidebar-head">
-          <a class="brand" href="/">musdash</a>
+          <a class="brand" href="/"><svg class="icon" aria-hidden="true"><use href="#i-mark" /></svg>musdash</a>
           <button
-            class="iconbtn sidebar-close"
+            class="btn btn-icon btn-quiet sidebar-close"
             type="button"
             aria-label="Close navigation"
-            @click="navOpen = false"
+            x-ref="close"
+            @click="close()"
           >
             <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
           </button>
         </div>
 
-        <nav class="sidebar-nav" aria-label="Main">
+        <%/* A same-page #env- link would otherwise leave the drawer covering
+             the section it just scrolled to. */%>
+        <nav
+          class="sidebar-nav"
+          aria-label="Main"
+          @click="$event.target.closest('a') && (navOpen = false)"
+        >
           <a
             class="nav-top <%= !it.activeProjectId && !it.activeSettings ? 'active' : '' %>"
             href="/"
@@ -108,11 +121,12 @@
                 <% p.environments.forEach(function (e) { %>
                 <li>
                   <a
-                    class="nav-env <%= it.activeEnvironmentId === e.id ? 'active' : '' %>"
+                    class="nav-env<%= e.state ? ' status-' + e.state : '' %> <%= it.activeEnvironmentId === e.id ? 'active' : '' %>"
                     href="/p/<%= p.id %>#env-<%= e.id %>"
                     <%~ it.activeEnvironmentId === e.id ? 'aria-current="true"' : '' %>
                   >
                     <%= e.name %>
+                    <% if (e.state) { %><%~ include("@status", { state: e.state, live: false, srOnly: true }) %><% } %>
                   </a>
                 </li>
                 <% }) %>
@@ -147,17 +161,29 @@
             data-confirm-label="Log out"
           >
             <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-            <button class="link" type="submit">
+            <button class="btn btn-quiet btn-sm" type="submit">
               <svg class="icon" aria-hidden="true"><use href="#i-log-out" /></svg>
               Log out
             </button>
           </form>
         </div>
+        <p
+          class="rss"
+          title="Memory used by the musdash process. Caddy and BuildKit run in their own containers and are not counted."
+        >
+          <span>dashboard</span> <span class="rss-value"><%= it.rssMb %> MB</span>
+        </p>
       </aside>
 
-      <main class="<%= it.wide ? 'wide' : '' %>">
+      <main id="main" class="<%= it.wide ? 'wide' : '' %>">
         <% if (it.flash) { %>
-        <div class="flash flash-<%= it.flash.kind %>"><%= it.flash.text %></div>
+        <div
+          class="notice notice-<%= it.flash.kind %>"
+          role="<%= it.flash.kind === 'error' ? 'alert' : 'status' %>"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#i-<%= it.flash.kind === 'error' ? 'x-circle' : 'check' %>" /></svg>
+          <div><%= it.flash.text %></div>
+        </div>
         <% } %> <%~ it.body %>
       </main>
     </div>
@@ -169,18 +195,27 @@
       aria-describedby="confirm-body"
     >
       <div class="stack">
-        <h2 id="confirm-title"></h2>
+        <%/* confirmParts() finds these by id and data attribute. If any goes
+             missing, every data-confirm form submits without a prompt. A div,
+             not a header: outside <main> a header becomes a banner landmark. */%>
+        <div class="dialog-head"><h2 id="confirm-title"></h2></div>
         <p id="confirm-body" class="muted"></p>
-        <div class="row end">
-          <button type="button" data-confirm-cancel>Cancel</button>
-          <button type="button" class="primary" data-confirm-accept></button>
+        <div class="dialog-foot">
+          <button type="button" class="btn" data-confirm-cancel>Cancel</button>
+          <button type="button" class="btn btn-primary" data-confirm-accept></button>
         </div>
       </div>
     </dialog>
     <% } else { %>
-    <main class="<%= it.wide ? 'wide' : '' %>">
+    <main id="main" class="<%= it.wide ? 'wide' : '' %>">
       <% if (it.flash) { %>
-      <div class="flash flash-<%= it.flash.kind %>"><%= it.flash.text %></div>
+      <div
+        class="notice notice-<%= it.flash.kind %>"
+        role="<%= it.flash.kind === 'error' ? 'alert' : 'status' %>"
+      >
+        <svg class="icon" aria-hidden="true"><use href="#i-<%= it.flash.kind === 'error' ? 'x-circle' : 'check' %>" /></svg>
+        <div><%= it.flash.text %></div>
+      </div>
       <% } %> <%~ it.body %>
     </main>
     <% } %>

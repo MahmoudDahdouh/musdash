@@ -1,4 +1,5 @@
 import { Eta } from "eta"
+import type { ResourceState } from "../events.ts"
 
 // Templates and assets are imported statically as text, NOT read from disk at
 // render time.
@@ -18,11 +19,15 @@ import resourceSrc from "./pages/resource.eta" with { type: "text" }
 import settingsSrc from "./pages/settings.eta" with { type: "text" }
 import setupSrc from "./pages/setup.eta" with { type: "text" }
 import statusSrc from "./pages/status.eta" with { type: "text" }
+import statusPartialSrc from "./partials/status.eta" with { type: "text" }
 import appCss from "../../public/app.css" with { type: "text" }
 import appJs from "../../public/app.js" with { type: "text" }
 import alpineJs from "../../public/alpine.js" with { type: "text" }
 
 const eta = new Eta({ autoEscape: true, cache: true })
+// Registered by name so pages can `include("@status", …)`. An "@" name never
+// reaches Eta's file loader, which is what keeps it working in the binary.
+eta.loadTemplate("@status", statusPartialSrc)
 
 const PAGES = {
   setup: setupSrc,
@@ -50,6 +55,8 @@ export const assets = {
 export interface NavEnvironment {
   id: string
   name: string
+  /** The worst state among its resources; null when it has none. */
+  state: ResourceState | null
 }
 
 /**
@@ -74,6 +81,8 @@ export interface LayoutData {
   activeEnvironmentId?: string
   /** Highlights the sidebar's Settings link. */
   activeSettings?: boolean
+  /** This process's resident memory in MiB. Set only for a signed-in render. */
+  rssMb?: number
 }
 
 export function renderPage(

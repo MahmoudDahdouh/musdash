@@ -1,34 +1,55 @@
-<div class="breadcrumbs"><a href="/">Projects</a> <span>/</span> <%= it.project.name %></div>
-
 <div class="page-head">
-  <h1><%= it.project.name %></h1>
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <ol>
+      <li><a class="link-quiet" href="/">Projects</a></li>
+      <li aria-current="page"><%= it.project.name %></li>
+    </ol>
+  </nav>
+  <div class="page-title"><h1><%= it.project.name %></h1></div>
   <% if (it.tab === 'resources') { %>
-  <button class="link" onclick="document.getElementById('new-env').showModal()">
-    <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
-    New environment
-  </button>
+  <div class="actions">
+    <button type="button" class="btn btn-quiet" data-open="new-env" commandfor="new-env" command="show-modal">
+      <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+      New environment
+    </button>
+  </div>
   <% } %>
 </div>
 
-<nav class="tabs">
-  <% ['resources','env'].forEach(function (t) { %>
-  <a class="<%= it.tab === t ? 'active' : '' %>" href="/p/<%= it.project.id %>?tab=<%= t %>"><%= t %></a>
+<nav class="tabs" aria-label="Project sections">
+  <% [['resources', 'Resources'], ['env', 'Variables']].forEach(function (t) { %>
+  <a href="/p/<%= it.project.id %>?tab=<%= t[0] %>" <%~ it.tab === t[0] ? 'aria-current="page"' : '' %>><%= t[1] %></a>
   <% }) %>
 </nav>
 
 <% if (it.tab === 'env') { %>
-<% if (it.envError) { %><div class="flash flash-error"><%= it.envError %></div><% } %>
+<% if (it.envError) { %>
+<div class="notice notice-error" role="alert">
+  <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+  <div><%= it.envError %></div>
+</div>
+<% } %>
 
 <div class="card stack">
-  <h3>Project variables</h3>
+  <h2 class="card-title">Project variables</h2>
   <p class="muted">
     Inherited by every resource in every environment of this project. An
     environment or a resource can override any of them. Reference another
     variable with <code>${OTHER}</code>, and write <code>$$</code> for a
     literal <code>$</code>.
-    Currently set:
-    <span class="mono"><%= it.projectEnv.length ? it.projectEnv.map(function (v) { return v.key }).join(', ') : 'none' %></span>
   </p>
+  <dl class="kv">
+    <dt>Currently set</dt>
+    <dd>
+      <% if (it.projectEnv.length) { %>
+      <ul class="chips" role="list">
+        <% it.projectEnv.forEach(function (v) { %><li><code class="chip"><%= v.key %></code></li><% }) %>
+      </ul>
+      <% } else { %>
+      <span class="muted">Nothing yet</span>
+      <% } %>
+    </dd>
+  </dl>
   <form
     method="post"
     action="/p/<%= it.project.id %>/env"
@@ -40,23 +61,23 @@
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <div class="scope-boxes">
-      <label>
-        Runtime only
-        <textarea name="runtime" rows="6" spellcheck="false" placeholder="LOG_LEVEL=info"></textarea>
-      </label>
-      <label>
-        Build only
-        <textarea name="build" rows="6" spellcheck="false" placeholder="NPM_TOKEN=..."></textarea>
-      </label>
-      <label>
-        Both
-        <textarea name="both" rows="6" spellcheck="false" placeholder="NODE_ENV=production"></textarea>
-      </label>
+      <div class="field">
+        <label class="label" for="project-vars-runtime">Runtime only</label>
+        <textarea id="project-vars-runtime" name="runtime" rows="6" spellcheck="false" placeholder="LOG_LEVEL=info"></textarea>
+      </div>
+      <div class="field">
+        <label class="label" for="project-vars-build">Build only</label>
+        <textarea id="project-vars-build" name="build" rows="6" spellcheck="false" placeholder="NPM_TOKEN=..."></textarea>
+      </div>
+      <div class="field">
+        <label class="label" for="project-vars-both">Both</label>
+        <textarea id="project-vars-both" name="both" rows="6" spellcheck="false" placeholder="NODE_ENV=production"></textarea>
+      </div>
     </div>
     <div class="row end">
-      <button class="primary" type="submit">
+      <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
-        Save
+        Save variables
       </button>
     </div>
   </form>
@@ -72,14 +93,24 @@
 %>
 <% it.environments.forEach(function (env) { %>
 <div class="card stack" id="env-<%= env.environment.id %>">
-  <h3><%= env.environment.name %> variables</h3>
+  <h2 class="card-title"><%= env.environment.name %> variables</h2>
   <p class="muted">
     Inherited by the <%= env.resources.length %> resource<%= env.resources.length === 1 ? '' : 's' %>
     in this environment, overriding anything of the same name set at the
     project level.
-    Currently set:
-    <span class="mono"><%= env.sharedEnv.length ? env.sharedEnv.map(function (v) { return v.key }).join(', ') : 'none' %></span>
   </p>
+  <dl class="kv">
+    <dt>Currently set</dt>
+    <dd>
+      <% if (env.sharedEnv.length) { %>
+      <ul class="chips" role="list">
+        <% env.sharedEnv.forEach(function (v) { %><li><code class="chip"><%= v.key %></code></li><% }) %>
+      </ul>
+      <% } else { %>
+      <span class="muted">Nothing yet</span>
+      <% } %>
+    </dd>
+  </dl>
   <form
     method="post"
     action="/e/<%= env.environment.id %>/env"
@@ -91,23 +122,23 @@
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <div class="scope-boxes">
-      <label>
-        Runtime only
-        <textarea name="runtime" rows="6" spellcheck="false" placeholder="DATABASE_URL=postgres://..."></textarea>
-      </label>
-      <label>
-        Build only
-        <textarea name="build" rows="6" spellcheck="false"></textarea>
-      </label>
-      <label>
-        Both
-        <textarea name="both" rows="6" spellcheck="false"></textarea>
-      </label>
+      <div class="field">
+        <label class="label" for="env-vars-<%= env.environment.id %>-runtime">Runtime only</label>
+        <textarea id="env-vars-<%= env.environment.id %>-runtime" name="runtime" rows="6" spellcheck="false" placeholder="DATABASE_URL=postgres://..."></textarea>
+      </div>
+      <div class="field">
+        <label class="label" for="env-vars-<%= env.environment.id %>-build">Build only</label>
+        <textarea id="env-vars-<%= env.environment.id %>-build" name="build" rows="6" spellcheck="false"></textarea>
+      </div>
+      <div class="field">
+        <label class="label" for="env-vars-<%= env.environment.id %>-both">Both</label>
+        <textarea id="env-vars-<%= env.environment.id %>-both" name="both" rows="6" spellcheck="false"></textarea>
+      </div>
     </div>
     <div class="row end">
-      <button class="primary" type="submit">
+      <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
-        Save
+        Save variables
       </button>
     </div>
   </form>
@@ -116,22 +147,22 @@
 <% } %>
 
 <% if (it.tab === 'resources') { %>
+<%
+  /* One error line for every resource or environment name field; the
+     server's own check says the same thing. */
+  var nameError = 'Use lowercase letters, digits and dashes, up to 32 characters.'
+%>
 <% it.environments.forEach(function (env) { %>
+<% var res = 'new-res-' + env.environment.id, git = 'new-git-' + env.environment.id %>
 <section class="env" id="env-<%= env.environment.id %>">
   <div class="env-head">
     <h2><%= env.environment.name %></h2>
     <div class="row gap">
-      <button
-        class="small"
-        onclick="document.getElementById('new-git-<%= env.environment.id %>').showModal()"
-      >
+      <button type="button" class="btn btn-sm" data-open="<%= git %>" commandfor="<%= git %>" command="show-modal">
         <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
         From repository
       </button>
-      <button
-        class="primary small"
-        onclick="document.getElementById('new-res-<%= env.environment.id %>').showModal()"
-      >
+      <button type="button" class="btn btn-primary btn-sm" data-open="<%= res %>" commandfor="<%= res %>" command="show-modal">
         <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
         Add resource
       </button>
@@ -139,7 +170,7 @@
   </div>
 
   <% if (env.resources.length === 0) { %>
-  <div class="empty card small">
+  <div class="empty empty-sm card">
     <p class="muted">
       Nothing deployed here yet. Add a resource with a public Docker image such
       as <code>nginx:alpine</code>.
@@ -149,16 +180,14 @@
   <div class="grid">
     <% env.resources.forEach(function (r) { %>
     <a class="card resource" href="/r/<%= r.resource.id %>">
-      <div class="row between">
-        <h3><%= r.resource.name %></h3>
-        <span class="pill pill-<%= r.state %>" data-resource="<%= r.resource.id %>">
-          <%= r.state %>
-        </span>
+      <div class="row between gap">
+        <h3 class="card-title"><%= r.resource.name %></h3>
+        <%~ include("@status", { state: r.state, live: false }) %>
       </div>
       <p class="muted mono"><%= r.image %></p>
       <div class="meta">
         <% if (r.domainCount > 0) { %><span><%= r.domainCount %> domain<%= r.domainCount === 1 ? '' : 's' %></span><% } %>
-        <span><%= r.resource.memoryLimitMb %>MB</span>
+        <span><%= r.resource.memoryLimitMb %> MB</span>
       </div>
     </a>
     <% }) %>
@@ -166,35 +195,38 @@
   <% } %>
 </section>
 
-<dialog id="new-res-<%= env.environment.id %>">
+<dialog id="<%= res %>" aria-labelledby="<%= res %>-title">
   <form method="post" action="/e/<%= env.environment.id %>/resources" class="stack">
-    <h2>Add resource to <%= env.environment.name %></h2>
+    <header class="dialog-head">
+      <h2 id="<%= res %>-title">Add resource to <%= env.environment.name %></h2>
+    </header>
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <label>
-      Name
-      <input name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="web" />
-      <small class="muted">Lowercase letters, digits and dashes. Becomes a DNS label.</small>
-    </label>
-    <label>
-      Docker image
-      <input name="image" required placeholder="nginx:alpine" />
-    </label>
-    <label>
-      Container port <small class="muted">optional</small>
-      <input name="containerPort" type="number" min="1" max="65535" placeholder="80" />
-      <small class="muted">The port the app listens on. Required to expose it over HTTPS.</small>
-    </label>
-    <label>
-      Health path <small class="muted">optional</small>
-      <input name="healthPath" placeholder="/health" />
-    </label>
-    <label>
-      Memory limit (MB)
-      <input name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.defaultMemoryMb %>" required />
-    </label>
-    <div class="row end">
-      <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
-      <button type="submit" class="primary">Create</button>
+    <div class="field">
+      <label class="label" for="<%= res %>-name">Name</label>
+      <input id="<%= res %>-name" name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="web" aria-describedby="<%= res %>-name-hint" />
+      <p class="hint" id="<%= res %>-name-hint">Lowercase letters, digits and dashes. Becomes a DNS label.</p>
+      <p class="error"><%= nameError %></p>
+    </div>
+    <div class="field">
+      <label class="label" for="<%= res %>-image">Docker image</label>
+      <input id="<%= res %>-image" name="image" required placeholder="nginx:alpine" />
+    </div>
+    <div class="field">
+      <label class="label" for="<%= res %>-port">Container port <span class="opt">optional</span></label>
+      <input id="<%= res %>-port" name="containerPort" type="number" min="1" max="65535" placeholder="80" aria-describedby="<%= res %>-port-hint" />
+      <p class="hint" id="<%= res %>-port-hint">The port the app listens on. Required to expose it over HTTPS.</p>
+    </div>
+    <div class="field">
+      <label class="label" for="<%= res %>-health">Health path <span class="opt">optional</span></label>
+      <input id="<%= res %>-health" name="healthPath" placeholder="/health" />
+    </div>
+    <div class="field">
+      <label class="label" for="<%= res %>-memory">Memory limit (MB)</label>
+      <input id="<%= res %>-memory" name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.defaultMemoryMb %>" required />
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn" data-close commandfor="<%= res %>" command="close">Cancel</button>
+      <button type="submit" class="btn btn-primary">Create</button>
     </div>
   </form>
 </dialog>
@@ -205,21 +237,24 @@
   filters what is already in the DOM and copies a default branch into the text
   input. It fetches nothing.
 -->
-<dialog id="new-git-<%= env.environment.id %>" class="wide-dialog">
+<dialog id="<%= git %>" class="dialog-wide" aria-labelledby="<%= git %>-title">
   <form
     method="post"
     action="/e/<%= env.environment.id %>/resources/git"
     class="stack"
     x-data="repoPicker()"
   >
-    <h2>Deploy from a repository into <%= env.environment.name %></h2>
+    <header class="dialog-head">
+      <h2 id="<%= git %>-title">Deploy from a repository into <%= env.environment.name %></h2>
+    </header>
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
 
-    <label>
-      Name
-      <input name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="api" />
-      <small class="muted">Lowercase letters, digits and dashes. Becomes a DNS label.</small>
-    </label>
+    <div class="field">
+      <label class="label" for="<%= git %>-name">Name</label>
+      <input id="<%= git %>-name" name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="api" aria-describedby="<%= git %>-name-hint" />
+      <p class="hint" id="<%= git %>-name-hint">Lowercase letters, digits and dashes. Becomes a DNS label.</p>
+      <p class="error"><%= nameError %></p>
+    </div>
 
     <!--
       The two fields the server actually reads are hidden and written by the
@@ -231,52 +266,67 @@
     <input type="hidden" name="repo" :value="repo" />
 
     <% if (!it.gitPicker.connected) { %>
-    <div class="flash flash-error">
-      No GitHub App is connected, so there are no repositories to choose from.
-      Connect one under <a href="/settings">Settings</a>, install it on the
-      account that owns the repository, then come back here. You can still build
-      from a local directory using the option at the bottom of this form.
+    <div class="notice notice-info" role="status">
+      <svg class="icon" aria-hidden="true"><use href="#i-info" /></svg>
+      <div>
+        No GitHub App is connected, so there are no repositories to choose from.
+        Connect one under <a href="/settings">Settings</a>, install it on the
+        account that owns the repository, then come back here. You can still
+        build from a local directory using the option at the bottom of this form.
+      </div>
     </div>
     <% } else { %>
 
-    <label>
-      GitHub account
-      <select x-model="installationId" @change="onInstallationChange()">
+    <div class="field">
+      <label class="label" for="<%= git %>-account">GitHub account</label>
+      <select id="<%= git %>-account" x-model="installationId" @change="onInstallationChange()">
         <option value="">Choose an account…</option>
         <% it.gitPicker.installations.forEach(function (i) { %>
         <option value="<%= i.installationId %>"><%= i.accountLogin %></option>
         <% }) %>
       </select>
-    </label>
+    </div>
 
     <% it.gitPicker.installations.forEach(function (i) { %>
     <% if (i.error) { %>
     <div
-      class="flash flash-error"
+      class="notice notice-error"
+      role="alert"
       data-installation="<%= i.installationId %>"
       x-show="installationId === $el.dataset.installation"
       x-cloak
     >
-      <%= i.error %> That usually means the App was uninstalled or its access was
-      revoked on GitHub. Re-install it, then press Sync installations under
-      Settings.
+      <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+      <div>
+        <%= i.error %> That usually means the App was uninstalled or its access
+        was revoked on GitHub. Re-install it, then press Sync installations under
+        Settings.
+      </div>
     </div>
     <% } %>
     <% }) %>
 
-    <label x-show="installationId !== ''" x-cloak>
-      Filter repositories
+    <div class="field" x-show="installationId !== ''" x-cloak>
+      <label class="label" for="<%= git %>-filter">Filter repositories</label>
       <input
+        id="<%= git %>-filter"
         type="search"
         x-model="filter"
         placeholder="Type to narrow the list"
         autocomplete="off"
       />
-    </label>
+    </div>
 
+    <%
+      /* A radiogroup of divs rather than a list: the group role replaces the
+         list's, which would leave list items without a list. A listbox is
+         wrong too — its children would have to be options, not radios. The
+         shared name is what makes it a group (arrow keys, one Tab stop); the
+         server reads the hidden repo field and drops this one. */
+    %>
     <div class="field" x-show="installationId !== ''" x-cloak>
-      <span class="field-label">Repository</span>
-      <ul class="plain repo-list" role="listbox">
+      <span class="label" id="<%= git %>-repo-label">Repository</span>
+      <div class="repo-list" role="radiogroup" aria-labelledby="<%= git %>-repo-label">
         <% it.gitPicker.installations.forEach(function (i) { %>
         <% i.repos.forEach(function (r) { %>
         <!--
@@ -286,7 +336,7 @@
           safe: HTML escaping does not escape an apostrophe for JavaScript, and
           a repository owner chooses their own branch names.
         -->
-        <li
+        <div
           data-installation="<%= i.installationId %>"
           data-full-name="<%= r.fullName.toLowerCase() %>"
           x-show="matchesEl($el)"
@@ -294,110 +344,110 @@
           <label class="repo-option">
             <input
               type="radio"
+              name="repoPick"
               x-model="repo"
               value="<%= r.fullName %>"
               data-default-branch="<%= r.defaultBranch %>"
               @change="pick($el.dataset.defaultBranch)"
             />
             <span class="mono"><%= r.fullName %></span>
-            <% if (r.private) { %><span class="pill pill-stopped">private</span><% } %>
+            <% if (r.private) { %><span class="chip">private</span><% } %>
           </label>
-        </li>
+        </div>
         <% }) %>
         <% }) %>
-      </ul>
-      <small class="muted" x-show="visibleCount() === 0" x-cloak>
+      </div>
+      <p class="hint" x-show="visibleCount() === 0" x-cloak>
         No repository here matches that filter. If one is missing entirely, the
         App does not have access to it — grant it on GitHub and press Sync
         installations under Settings.
-      </small>
+      </p>
       <% var repoTotal = it.gitPicker.installations.reduce(function (n, i) { return n + i.repos.length }, 0) %>
       <% if (repoTotal >= 200) { %>
-      <small class="muted">
+      <p class="hint">
         All <%= repoTotal %> repositories these installations grant are listed
         here, which is why this page took a moment to load. If that becomes
         annoying, narrow the App's access on GitHub to the repositories you
         actually deploy.
-      </small>
+      </p>
       <% } %>
     </div>
     <% } %>
 
-    <label>
-      Branch
-      <input name="branch" x-model="branch" required placeholder="main" />
-      <small class="muted">Filled in from the repository's default branch when you pick one.</small>
-    </label>
+    <div class="field">
+      <label class="label" for="<%= git %>-branch">Branch</label>
+      <input id="<%= git %>-branch" name="branch" x-model="branch" required placeholder="main" aria-describedby="<%= git %>-branch-hint" />
+      <p class="hint" id="<%= git %>-branch-hint">Filled in from the repository's default branch when you pick one.</p>
+    </div>
 
-    <label>
-      Build pack
-      <select name="pack">
+    <div class="field">
+      <label class="label" for="<%= git %>-pack">Build pack</label>
+      <select id="<%= git %>-pack" name="pack">
         <option value="railpack">Detect automatically (Railpack)</option>
         <option value="dockerfile">Dockerfile</option>
       </select>
-    </label>
+    </div>
 
-    <label>
-      Dockerfile path <small class="muted">optional</small>
-      <input name="dockerfilePath" placeholder="Dockerfile" />
-    </label>
+    <div class="field">
+      <label class="label" for="<%= git %>-dockerfile">Dockerfile path <span class="opt">optional</span></label>
+      <input id="<%= git %>-dockerfile" name="dockerfilePath" placeholder="Dockerfile" />
+    </div>
 
-    <label>
-      Build context <small class="muted">optional</small>
-      <input name="buildContext" placeholder="." />
-      <small class="muted">A subdirectory to build from, for a monorepo.</small>
-    </label>
+    <div class="field">
+      <label class="label" for="<%= git %>-context">Build context <span class="opt">optional</span></label>
+      <input id="<%= git %>-context" name="buildContext" placeholder="." aria-describedby="<%= git %>-context-hint" />
+      <p class="hint" id="<%= git %>-context-hint">A subdirectory to build from, for a monorepo.</p>
+    </div>
 
-    <label>
-      Container port <small class="muted">optional</small>
-      <input name="containerPort" type="number" min="1" max="65535" placeholder="3000" />
-      <small class="muted">The port the app listens on. Required to expose it over HTTPS.</small>
-    </label>
+    <div class="field">
+      <label class="label" for="<%= git %>-port">Container port <span class="opt">optional</span></label>
+      <input id="<%= git %>-port" name="containerPort" type="number" min="1" max="65535" placeholder="3000" aria-describedby="<%= git %>-port-hint" />
+      <p class="hint" id="<%= git %>-port-hint">The port the app listens on. Required to expose it over HTTPS.</p>
+    </div>
 
-    <label>
-      Health path <small class="muted">optional</small>
-      <input name="healthPath" placeholder="/health" />
-    </label>
+    <div class="field">
+      <label class="label" for="<%= git %>-health">Health path <span class="opt">optional</span></label>
+      <input id="<%= git %>-health" name="healthPath" placeholder="/health" />
+    </div>
 
-    <label>
-      Memory limit (MB)
-      <input name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.defaultMemoryMb %>" required />
-    </label>
+    <div class="field">
+      <label class="label" for="<%= git %>-memory">Memory limit (MB)</label>
+      <input id="<%= git %>-memory" name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.defaultMemoryMb %>" required />
+    </div>
 
     <details class="local-source">
       <summary>Build from a local directory instead</summary>
-      <p class="muted">
-        <small>
+      <div class="field">
+        <label class="label" for="<%= git %>-local">Local path</label>
+        <input id="<%= git %>-local" placeholder="/srv/sources/my-app" @input="useLocal($event.target.value)" aria-describedby="<%= git %>-local-hint" />
+        <p class="hint" id="<%= git %>-local-hint">
           For testing on the server itself. Typing a path here clears the GitHub
           account above and musdash builds that directory on this host rather
           than fetching from GitHub. Give an absolute path.
-        </small>
-      </p>
-      <label>
-        Local path
-        <input placeholder="/srv/sources/my-app" @input="useLocal($event.target.value)" />
-      </label>
+        </p>
+      </div>
     </details>
 
-    <div class="row end">
-      <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
-      <button type="submit" class="primary">Create</button>
+    <div class="dialog-foot">
+      <button type="button" class="btn" data-close commandfor="<%= git %>" command="close">Cancel</button>
+      <button type="submit" class="btn btn-primary">Create</button>
     </div>
   </form>
 </dialog>
 <% }) %>
 
-<dialog id="new-env">
+<dialog id="new-env" aria-labelledby="new-env-title">
   <form method="post" action="/p/<%= it.project.id %>/environments" class="stack">
-    <h2>New environment</h2>
+    <header class="dialog-head"><h2 id="new-env-title">New environment</h2></header>
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <label>
-      Name
-      <input name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="staging" autofocus />
-    </label>
-    <div class="row end">
-      <button type="button" onclick="this.closest('dialog').close()">Cancel</button>
-      <button type="submit" class="primary">Create</button>
+    <div class="field">
+      <label class="label" for="new-env-name">Name</label>
+      <input id="new-env-name" name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="staging" autofocus />
+      <p class="error"><%= nameError %></p>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn" data-close commandfor="new-env" command="close">Cancel</button>
+      <button type="submit" class="btn btn-primary">Create</button>
     </div>
   </form>
 </dialog>
