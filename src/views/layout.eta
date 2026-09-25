@@ -121,11 +121,12 @@
                 <% p.environments.forEach(function (e) { %>
                 <li>
                   <a
-                    class="nav-env <%= it.activeEnvironmentId === e.id ? 'active' : '' %>"
+                    class="nav-env<%= e.state ? ' status-' + e.state : '' %> <%= it.activeEnvironmentId === e.id ? 'active' : '' %>"
                     href="/p/<%= p.id %>#env-<%= e.id %>"
                     <%~ it.activeEnvironmentId === e.id ? 'aria-current="true"' : '' %>
                   >
                     <%= e.name %>
+                    <% if (e.state) { %><%~ include("@status", { state: e.state, live: false, srOnly: true }) %><% } %>
                   </a>
                 </li>
                 <% }) %>

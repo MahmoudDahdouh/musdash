@@ -282,17 +282,28 @@ select:focus-visible {
   font-weight: 550;
 }
 .nav-env {
+  position: relative;
   color: var(--text-2);
   font-size: var(--t-sm);
+}
+/* Worst resource state, toned by .status-*; blank slot when empty. */
+.nav-env::before {
+  content: "";
+  display: inline-block;
+  box-sizing: border-box;
+  width: 6px;
+  height: 6px;
+  margin-inline-end: var(--s-2);
+  vertical-align: middle;
+  border-radius: var(--r-full);
+  background: var(--tone, transparent);
 }
 .nav-top:hover,
 .nav-project:hover,
 .nav-env:hover {
   background: var(--surface-2);
 }
-/* The active item is marked by an ink bar on its left edge, not by a hue.
-   Square on that side so the inset shadow draws a straight bar, not a sliver
-   bent by the corner radius. */
+/* Active: an ink bar, not a hue; square on that side so the bar is straight. */
 .nav-top.active,
 .nav-project.active,
 .nav-env.active {
@@ -314,6 +325,14 @@ select:focus-visible {
   padding-left: var(--s-2);
   border-left: 1px solid var(--border);
   gap: 1px;
+}
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .nav-empty {
   padding: var(--s-2) var(--s-3);

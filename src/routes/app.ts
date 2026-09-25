@@ -67,6 +67,7 @@ import {
   restartBlockedReason,
   restartCapability,
 } from "../restart.ts"
+import { resourceState } from "../resource-state.ts"
 import { dashboardHostView } from "../settings-view.ts"
 import {
   getPublicUrl,
@@ -248,7 +249,12 @@ export const appRoutes = new Elysia()
       resources: listResources(environment.id).map((resource) => ({
         resource,
         image: resourceImage(resource),
-        state: uiState(resource.desiredState, resource.containerId),
+        // One query per resource, like domainCount: a project page holds a
+        // handful, and navTree already does the whole tree in one statement.
+        state: resourceState(
+          resource,
+          listDeployments(resource.id, 1)[0]?.status ?? null,
+        ),
         domainCount: listDomains(resource.id).length,
       })),
     }))
@@ -453,7 +459,7 @@ export const appRoutes = new Elysia()
           project,
           tab,
           image: resourceImage(resource),
-          state: uiState(resource.desiredState, resource.containerId),
+          state: resourceState(resource, deployments[0]?.status ?? null),
           deployments,
           domains: listDomains(resource.id),
           autoDomain: autoDomainFor(resource.name, environment.name),
@@ -1086,14 +1092,6 @@ function layout(
       ? Math.round(process.memoryUsage.rss() / 1048576)
       : undefined,
   }
-}
-
-function uiState(
-  desired: "running" | "stopped",
-  containerId: string | null,
-): string {
-  if (desired === "stopped") return "stopped"
-  return containerId ? "healthy" : "queued"
 }
 
 function formatDuration(

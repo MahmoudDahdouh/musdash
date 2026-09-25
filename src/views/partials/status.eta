@@ -7,7 +7,9 @@
    * The live span swaps its class through x-effect rather than :class: a
    * string :class binding never removes a class the server rendered, which is
    * how a deployment used to end up both running and succeeded at once.
-   * Callers always pass `state`: an include inherits the page's own `it`.
+   * Callers always pass `state`: an include inherits the page's own `it`, so
+   * a page must never carry its own `live` or `srOnly` key either.
+   * `srOnly` renders just the words, for the sidebar's colour-only dot.
    */
   var labels = {
     healthy: "Healthy",
@@ -22,7 +24,9 @@
   }
   var label = labels[it.state] || it.state
 %>
-<% if (it.live) { %>
+<% if (it.srOnly) { %>
+<span class="vh">(<%= label %>)</span>
+<% } else if (it.live) { %>
 <span
   class="status status-<%= it.state %>"
   x-effect="$el.className = 'status status-' + state"

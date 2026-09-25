@@ -1,4 +1,5 @@
 import { Eta } from "eta"
+import type { ResourceState } from "../events.ts"
 
 // Templates and assets are imported statically as text, NOT read from disk at
 // render time.
@@ -51,6 +52,8 @@ export const assets = {
 export interface NavEnvironment {
   id: string
   name: string
+  /** The worst state among its resources; null when it has none. */
+  state: ResourceState | null
 }
 
 /**
