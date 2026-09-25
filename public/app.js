@@ -279,3 +279,51 @@ function openConfirm(dialog, form) {
   // us Escape-to-close, a focus trap, and focus restored to the trigger.
   cancel.focus()
 }
+
+// --------------------------------------------------------- backdrop close
+
+/**
+ * Close any modal <dialog> when the user clicks its backdrop.
+ *
+ * A backdrop click lands on the <dialog> element itself, but so does a click
+ * in the dialog's own padding, so the target alone cannot tell them apart —
+ * the pointer is compared against the dialog's box instead.
+ *
+ * The press must also start outside. Dragging a text selection out of an
+ * input and releasing over the backdrop fires `click` on the dialog, and
+ * losing a half-typed form to a sloppy selection would be worse than having
+ * no backdrop close at all.
+ *
+ * close() fires `close`, so the confirm dialog's own unwinding runs exactly as
+ * it does for Cancel or Escape, and its form is not submitted.
+ */
+let pressedOutside = false
+
+function isOutside(dialog, event) {
+  const box = dialog.getBoundingClientRect()
+  return (
+    event.clientX < box.left ||
+    event.clientX > box.right ||
+    event.clientY < box.top ||
+    event.clientY > box.bottom
+  )
+}
+
+document.addEventListener("pointerdown", (event) => {
+  const target = event.target
+  pressedOutside =
+    target instanceof HTMLDialogElement && isOutside(target, event)
+})
+
+document.addEventListener("click", (event) => {
+  const target = event.target
+  if (
+    target instanceof HTMLDialogElement &&
+    target.open &&
+    pressedOutside &&
+    isOutside(target, event)
+  ) {
+    target.close()
+  }
+  pressedOutside = false
+})
