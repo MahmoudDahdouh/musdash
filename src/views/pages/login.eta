@@ -7,14 +7,14 @@
   </div>
   <% } %>
   <form method="post" action="/login" class="card stack">
-    <label>
-      Email
-      <input type="email" name="email" required autofocus autocomplete="username" />
-    </label>
-    <label>
-      Password
-      <input type="password" name="password" required autocomplete="current-password" />
-    </label>
+    <div class="field">
+      <label class="label" for="login-email">Email</label>
+      <input id="login-email" type="email" name="email" required autofocus autocomplete="username" autocapitalize="none" spellcheck="false" />
+    </div>
+    <div class="field">
+      <label class="label" for="login-password">Password</label>
+      <input id="login-password" type="password" name="password" required autocomplete="current-password" />
+    </div>
     <button type="submit" class="btn btn-primary">Sign in</button>
   </form>
 </div>

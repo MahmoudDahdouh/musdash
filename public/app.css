@@ -671,21 +671,23 @@ select {
   width: 100%;
   border: 1px solid var(--border-control);
   border-radius: var(--r-sm);
-  background: var(--bg);
+  background: var(--surface);
   color: var(--text);
+}
+input:not([type="checkbox"], [type="radio"]),
+select {
+  min-height: 36px;
+  padding-block: 0;
+}
+/* :user-invalid waits until the user has touched the field, so a fresh form
+   is never red; the browser's own validation drives it, no script. */
+:is(input, textarea, select):user-invalid {
+  border-color: var(--danger);
 }
 textarea {
   font-family: var(--mono);
   font-size: var(--t-sm);
   resize: vertical;
-}
-label {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-1);
-}
-label small {
-  font-weight: 400;
 }
 
 /* A dot plus a label: the dot carries the hue, the label the meaning, so
@@ -900,9 +902,12 @@ label small {
 .table td {
   height: 40px;
 }
-/* Only rows that lead somewhere highlight, so a static table never looks
-   clickable. */
-.table tbody tr:has(a[href]):hover {
+/* A row whose first cell links somewhere is clickable as a whole (app.js);
+   only those rows highlight, so a static table never looks clickable. */
+.table tbody tr:has(> td:first-child a[href]) {
+  cursor: pointer;
+}
+.table tbody tr:has(> td:first-child a[href]):hover {
   background: var(--surface-2);
 }
 
@@ -999,12 +1004,35 @@ dialog.confirm p {
   overflow-wrap: anywhere;
 }
 
-/* A group that behaves like a <label> but wraps controls a label cannot own —
-   a listbox is not a labelable element. */
+/* A label, its control and a hint as siblings: a hint inside the <label>
+   became part of the field's accessible name. The hint is tied back with
+   aria-describedby. The error line is not — the browser's own validation
+   bubble already announces the message. */
 .field {
   display: flex;
   flex-direction: column;
   gap: var(--s-1);
+}
+.label {
+  font-weight: 500;
+}
+.opt {
+  font-weight: 400;
+  font-size: var(--t-sm);
+  color: var(--text-2);
+}
+.hint,
+.error {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--text-2);
+}
+.error {
+  display: none;
+  color: var(--danger);
+}
+.field:has(:user-invalid) .error {
+  display: block;
 }
 
 /* The repository list is scrolled rather than paged: every repository the
@@ -1020,7 +1048,7 @@ dialog.confirm p {
   background: var(--bg);
 }
 .repo-option {
-  flex-direction: row;
+  display: flex;
   align-items: center;
   gap: var(--s-2);
   padding: var(--s-2) var(--s-3);
@@ -1035,9 +1063,9 @@ dialog.confirm p {
   margin: 0;
 }
 
-/* A checkbox is a row, not the stacked column every other label uses. */
+/* A label is inline; a checkbox row needs flex to centre the box on its text. */
 .checkline {
-  flex-direction: row;
+  display: flex;
   align-items: center;
   gap: var(--s-2);
 }
@@ -1082,9 +1110,36 @@ dialog.confirm p {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 .scope-boxes label {
+  display: flex;
+  flex-direction: column;
   gap: var(--s-2);
   font-size: var(--t-sm);
   color: var(--text-2);
+}
+
+/* Pending after submit (app.js): a spinner takes the icon's place. */
+.btn[aria-busy="true"] > .icon {
+  display: none;
+}
+.btn[aria-busy="true"]::before {
+  content: "";
+  flex: none;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--r-full);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .btn[aria-busy="true"]::before {
+    animation: spin 0.8s linear infinite;
+  }
+}
+@keyframes spin {
+  to {
+    rotate: 1turn;
+  }
 }
 
 /* Touch targets: 44px where the pointer is a finger. Last in the file so it

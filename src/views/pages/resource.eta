@@ -115,8 +115,8 @@
               these three render an em dash rather than an empty cell — a blank
               column reads as a bug, and "null" reads as a worse one.
             -->
-            <td class="mono"><%= d.commitSha ? d.commitSha.slice(0, 7) : '—' %></td>
-            <td class="commit-message" title="<%= d.commitMessage || '' %>"><%= d.commitMessage ? d.commitMessage.split('\n')[0] : '—' %></td>
+            <td class="mono copy"><%= d.commitSha ? d.commitSha.slice(0, 7) : '—' %></td>
+            <td class="commit-message copy" title="<%= d.commitMessage || '' %>"><%= d.commitMessage ? d.commitMessage.split('\n')[0] : '—' %></td>
             <td><%= d.commitAuthor || '—' %></td>
             <td><%= d.trigger %></td>
             <td><%= d.duration %></td>
@@ -295,9 +295,8 @@
 
   <!--
     An unchecked checkbox submits nothing at all, which is exactly how "off" is
-    expressed here — the handler reads an absent `enabled` as off. Submitting on
-    change rather than behind a Save button keeps the control honest: what is
-    drawn is what is stored, because the page reloads from the database.
+    expressed here — the handler reads an absent `enabled` as off. The page
+    reloads from the database after Save, so what is drawn is what is stored.
   -->
   <form
     method="post"
@@ -305,15 +304,17 @@
     class="stack"
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <label class="checkline">
-      <input type="checkbox" name="enabled" value="on" <%= it.resource.autoDeploy ? 'checked' : '' %> />
-      Deploy automatically when someone pushes to
-      <span class="mono"><%= it.resource.gitBranch || 'the tracked branch' %></span>
-    </label>
-    <small class="muted">
-      Requires the GitHub App's webhook to reach this instance. A push to any
-      other branch is ignored.
-    </small>
+    <div class="field">
+      <label class="checkline">
+        <input type="checkbox" name="enabled" value="on" aria-describedby="res-auto-hint" <%= it.resource.autoDeploy ? 'checked' : '' %> />
+        Deploy automatically when someone pushes to
+        <span class="mono"><%= it.resource.gitBranch || 'the tracked branch' %></span>
+      </label>
+      <p class="hint" id="res-auto-hint">
+        Requires the GitHub App's webhook to reach this instance. A push to any
+        other branch is ignored.
+      </p>
+    </div>
     <div class="row end">
       <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
@@ -342,18 +343,24 @@
       there is nothing to set here.
     </p>
     <% } else { %>
-    <label>Docker image<input name="image" value="<%= it.image %>" required /></label>
+    <div class="field">
+      <label class="label" for="res-image">Docker image</label>
+      <input id="res-image" name="image" value="<%= it.image %>" required />
+    </div>
     <% } %>
-    <label>
-      Container port
-      <input name="containerPort" type="number" min="1" max="65535" value="<%= it.resource.containerPort || '' %>" />
-    </label>
-    <label>Health path<input name="healthPath" value="<%= it.resource.healthPath || '' %>" /></label>
-    <label>
-      Memory limit (MB)
-      <input name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.resource.memoryLimitMb %>" required />
-      <small class="muted">Every container has a limit. There is no unlimited option.</small>
-    </label>
+    <div class="field">
+      <label class="label" for="res-port">Container port <span class="opt">optional</span></label>
+      <input id="res-port" name="containerPort" type="number" min="1" max="65535" value="<%= it.resource.containerPort || '' %>" />
+    </div>
+    <div class="field">
+      <label class="label" for="res-health">Health path <span class="opt">optional</span></label>
+      <input id="res-health" name="healthPath" value="<%= it.resource.healthPath || '' %>" />
+    </div>
+    <div class="field">
+      <label class="label" for="res-memory">Memory limit (MB)</label>
+      <input id="res-memory" name="memoryLimitMb" type="number" min="16" max="65536" value="<%= it.resource.memoryLimitMb %>" required aria-describedby="res-memory-hint" />
+      <p class="hint" id="res-memory-hint">Every container has a limit. There is no unlimited option.</p>
+    </div>
     <div class="row end">
       <button class="btn btn-primary" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>

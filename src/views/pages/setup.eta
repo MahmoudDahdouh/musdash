@@ -11,21 +11,15 @@
   </div>
   <% } %>
   <form method="post" action="/setup" class="card stack">
-    <label>
-      Email
-      <input type="email" name="email" required autofocus autocomplete="username" />
-    </label>
-    <label>
-      Password
-      <input
-        type="password"
-        name="password"
-        required
-        minlength="12"
-        autocomplete="new-password"
-      />
-      <small class="muted">At least 12 characters.</small>
-    </label>
+    <div class="field">
+      <label class="label" for="setup-email">Email</label>
+      <input id="setup-email" type="email" name="email" required autofocus autocomplete="username" autocapitalize="none" spellcheck="false" />
+    </div>
+    <div class="field">
+      <label class="label" for="setup-password">Password</label>
+      <input id="setup-password" type="password" name="password" required minlength="12" autocomplete="new-password" aria-describedby="setup-password-hint" />
+      <p class="hint" id="setup-password-hint">At least 12 characters.</p>
+    </div>
     <button type="submit" class="btn btn-primary">Create account</button>
   </form>
 </div>
