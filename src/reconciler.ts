@@ -5,10 +5,12 @@ import { LABEL_MANAGED, LABEL_RESOURCE, LABEL_ROLE } from "./docker/client.ts"
 import { docker } from "./docker/impl.ts"
 import {
   getResource,
+  listDeployments,
   listRunningResources,
   resourceImage,
   updateResource,
 } from "./db/queries.ts"
+import type { Deployment } from "./db/schema.ts"
 import { publishStatus, type ResourceState } from "./events.ts"
 import { refreshTrustedSubnets } from "./http.ts"
 import { enqueueDeploy } from "./jobs/deploy.ts"
@@ -30,6 +32,9 @@ let timer: Timer | null = null
 let buildkitReported = false
 
 export async function reconcileOnce(): Promise<void> {
+  // Taken before the listing: a deploy that finishes after this moment may have
+  // started a container the listing below cannot show. See redeployPlan.
+  const listedAt = Date.now()
   const containers = await docker
     .listManagedContainers()
     .catch((err: unknown) => {
@@ -69,10 +74,32 @@ export async function reconcileOnce(): Promise<void> {
     // nothing to redeploy, and building here would race the deploy that is
     // presumably already failing.
     if (!image) continue
-    logger.info(
-      { resourceId: resource.id, name: resource.name },
-      "reconcile: no running container, redeploying",
+
+    const plan = redeployPlan(
+      listDeployments(resource.id),
+      Date.now(),
+      listedAt,
     )
+    if (plan.kind === "wait") continue
+    if (plan.streak === 0) {
+      logger.info(
+        { resourceId: resource.id, name: resource.name },
+        "reconcile: no running container, redeploying",
+      )
+    } else {
+      // Once per attempt, not per tick: a skipped tick logs nothing, so a
+      // resource that stays broken costs a line every half hour at most.
+      logger.warn(
+        {
+          resourceId: resource.id,
+          name: resource.name,
+          attempt: plan.streak + 1,
+          // If this one fails too: the wait before attempt streak + 2.
+          nextRetryS: backoffMs(plan.streak + 2) / 1000,
+        },
+        "reconcile: the container keeps going away; redeploying again, backing off",
+      )
+    }
     enqueueDeploy(resource.id, image, "reconcile")
   }
 
@@ -133,6 +160,87 @@ export async function reconcileOnce(): Promise<void> {
       containerId: container.id,
     })
   }
+}
+
+/**
+ * How long a streak of reconcile redeploys waits before the next one.
+ *
+ * Without it, an app that dies on every start — a crash at import, a missing
+ * variable — was redeployed every 30 seconds for as long as it stayed broken:
+ * eleven deployments in seven minutes on the 512MB host, each holding the
+ * single worker for ~20 of every 30 seconds (L-2, and D44's follow-up). The
+ * first redeploy is still immediate — `docker rm -f` or a reboot must heal
+ * within one tick — and each further one in the same streak doubles the wait,
+ * up to half an hour.
+ */
+const BACKOFF_BASE_MS = INTERVAL_MS
+const BACKOFF_MAX_MS = 30 * 60 * 1000
+
+/**
+ * Two reconcile deploys further apart than this belong to separate incidents,
+ * not one streak. Twice the longest wait, so a resource failing at the cap
+ * keeps its streak; an app healed once a week never builds one up.
+ */
+const STREAK_GAP_MS = 2 * BACKOFF_MAX_MS
+
+/** The wait before the `attempt`-th redeploy of a streak (1-based). */
+export function backoffMs(attempt: number): number {
+  if (attempt <= 1) return 0
+  return Math.min(BACKOFF_BASE_MS * 2 ** (attempt - 2), BACKOFF_MAX_MS)
+}
+
+type RedeployPlan = { kind: "wait" } | { kind: "now"; streak: number }
+
+/**
+ * Whether the reconciler should redeploy a resource with no running container,
+ * from its deployments, newest first. Pure: the database is the only memory, so
+ * the backoff survives a restart of musdash.
+ *
+ * - A deploy already queued or running wins; queueing another behind it would
+ *   only redeploy the same thing twice. A row older than STREAK_GAP_MS is not
+ *   trusted to still have a job behind it, so it cannot block healing forever.
+ * - So does one that finished after `listedAt`, when the container list this
+ *   tick acts on was taken: the worker runs in this same process, so a deploy
+ *   can finish between the listing and this call, and its new container is
+ *   then missing from a list that is already stale. Seen on the 512MB host as
+ *   a reconcile deploy queued five seconds after a manual one succeeded. The
+ *   next tick lists again.
+ * - `streak` counts the newest consecutive reconcile deployments, whatever
+ *   their outcome — a redeploy that "succeeded" and died again is the same
+ *   loop. Any other trigger (Deploy, rollback, push) ends the streak: a person
+ *   or a push changed something.
+ */
+export function redeployPlan(
+  recent: readonly Pick<
+    Deployment,
+    "trigger" | "status" | "createdAt" | "finishedAt"
+  >[],
+  now: number,
+  listedAt: number,
+): RedeployPlan {
+  const inFlight = recent.some(
+    (d) =>
+      ((d.status === "queued" || d.status === "running") &&
+        now - Date.parse(d.createdAt) < STREAK_GAP_MS) ||
+      (d.finishedAt !== null && Date.parse(d.finishedAt) >= listedAt),
+  )
+  if (inFlight) return { kind: "wait" }
+
+  let streak = 0
+  let newer = now
+  for (const d of recent) {
+    if (d.trigger !== "reconcile") break
+    const at = Date.parse(d.createdAt)
+    if (newer - at > STREAK_GAP_MS) break
+    streak++
+    newer = at
+  }
+  const newest = recent[0]
+  if (streak === 0 || !newest) return { kind: "now", streak: 0 }
+  const waited = now - Date.parse(newest.createdAt)
+  return waited < backoffMs(streak + 1)
+    ? { kind: "wait" }
+    : { kind: "now", streak }
 }
 
 /**

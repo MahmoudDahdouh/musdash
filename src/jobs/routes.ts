@@ -47,7 +47,9 @@ function wantedHosts(resource: Resource): string[] {
 /**
  * Where a wanted resource's route should point, or null to leave it alone.
  *
- * The running container's current IP, on the PORT THE ROUTE ALREADY DIALS. The
+ * The running container's NAME, on the PORT THE ROUTE ALREADY DIALS — the name
+ * survives a reboot where the IP does not (L-7), and a route written before
+ * that change still dials an IP, which this rewrites on the next sync. The
  * port in the database can be ahead of the running container — changed in
  * Settings for the next deploy — and repointing a live route at a port the
  * container does not listen on yet is an outage caused by a sync. The database
@@ -70,7 +72,7 @@ async function currentUpstream(resource: Resource): Promise<string | null> {
     const state = await docker
       .inspectContainer(resource.containerId)
       .catch(() => null)
-    if (state?.running && state.ipAddress) return `${state.ipAddress}:${port}`
+    if (state?.running) return `${state.name}:${port}`
   }
   return existing
 }
@@ -85,9 +87,9 @@ async function currentUpstream(resource: Resource): Promise<string | null> {
  *
  * A resource that should be served — desired running, with a port and at least
  * one host — has its route written with the database's hosts, pointed at the
- * running container's current IP. That repairs a proxy recreated on a blank
- * config, a lost config volume, a reboot that handed the container a new IP,
- * and a domain edit. One whose container is momentarily down keeps its route
+ * running container by name. That repairs a proxy recreated on a blank config,
+ * a lost config volume, a route still dialling an IP from before L-7, and a
+ * domain edit. One whose container is momentarily down keeps its route
  * and its upstream, with the hosts still corrected: dropping the route in
  * between would only send its visitors to the dashboard.
  *

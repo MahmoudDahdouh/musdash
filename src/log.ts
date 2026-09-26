@@ -12,6 +12,14 @@ export const logger = pino({
   timestamp: pino.stdTimeFunctions.isoTime,
 })
 
+// Reported here because config cannot log: the logger reads its level from it.
+for (const { key, why } of config.obsoleteEnv) {
+  logger.warn(
+    { key },
+    `${key} is set but no longer used: ${why}. Delete the line from musdash.env`,
+  )
+}
+
 const REDACTED = "[redacted]"
 
 /**

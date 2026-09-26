@@ -93,6 +93,12 @@ export type HealthState = "healthy" | "unhealthy" | "starting" | "none"
 
 export interface ContainerState {
   id: string
+  /**
+   * The container's name, without the Engine's leading slash. Caddy dials this
+   * on the musdash network: unlike the IP it survives a reboot, which hands
+   * every container a fresh address (L-7).
+   */
+  name: string
   running: boolean
   health: HealthState
   exitCode: number | null

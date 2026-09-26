@@ -112,12 +112,33 @@ if (!parsed.success) {
 
 const env = parsed.data
 
+/**
+ * Variables earlier installs wrote to musdash.env that nothing reads any more.
+ *
+ * The installer never rewrites an existing musdash.env — it is the operator's
+ * file — so an upgraded install keeps these lines, and one that names a TCP
+ * admin port points whoever reads it at a hole that was closed (L-4). They are
+ * reported by src/log.ts, the first place a logger exists; this module cannot
+ * import it, since the logger reads its level from here.
+ */
+const OBSOLETE_ENV: Readonly<Record<string, string>> = {
+  MUSDASH_CADDY_ADMIN:
+    "the proxy's admin API is a unix socket in the data directory (D29)",
+  MUSDASH_BUILDKIT_ADDR:
+    "the build daemon listens on a unix socket in the data directory (D32)",
+}
+const obsoleteEnv = Object.entries(OBSOLETE_ENV)
+  .filter(([key]) => process.env[key] !== undefined)
+  .map(([key, why]) => ({ key, why }))
+
 const dataDir = isAbsolute(env.MUSDASH_DATA_DIR)
   ? env.MUSDASH_DATA_DIR
   : resolve(process.cwd(), env.MUSDASH_DATA_DIR)
 mkdirSync(dataDir, { recursive: true })
 
 export const config = Object.freeze({
+  /** Set but no longer read; logged once at startup by src/log.ts. */
+  obsoleteEnv,
   port: env.MUSDASH_PORT,
   dataDir,
   dbPath: resolve(dataDir, "musdash.db"),

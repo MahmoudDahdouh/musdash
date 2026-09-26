@@ -586,6 +586,7 @@ export class DockerHttpClient implements DockerClient {
 
     return {
       id: raw.Id,
+      name: raw.Name.replace(/^\//, ""),
       running: raw.State.Running,
       health: ["healthy", "unhealthy", "starting"].includes(health)
         ? health
@@ -734,6 +735,8 @@ export class DockerHttpClient implements DockerClient {
 
 interface InspectResponse {
   Id: string
+  /** Leading slash included, as the Engine returns it: "/musdash-…". */
+  Name: string
   RestartCount?: number
   State: {
     Running: boolean

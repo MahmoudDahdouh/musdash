@@ -8,7 +8,7 @@
  * by hand at 384 MiB and running a step that allocates 50 MiB a second: the
  * kernel killed that step inside the container's cgroup, the daemon stayed up,
  * and the host bottomed out at 166 MiB available with the dashboard and an app
- * answering throughout (docs/VPS-TEST-2026-09-25.md, "V-1 premise test"). So a
+ * answering throughout (the 1GB VPS re-test, "V-1 premise test", D33). So a
  * cap that is smaller than the host is enough to contain a build. The work is
  * choosing it.
  *

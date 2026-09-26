@@ -5,7 +5,12 @@ import { MIGRATE_LABEL } from "../caddy/kernel.ts"
 import { CERT_WAIT_MS, waitForCertificate } from "../caddy/tls-probe.ts"
 import { buildFromSource } from "./build.ts"
 import { config } from "../config.ts"
-import { LABEL_RESOURCE, LABEL_ROLE, managedLabels } from "../docker/client.ts"
+import {
+  type ContainerState,
+  LABEL_RESOURCE,
+  LABEL_ROLE,
+  managedLabels,
+} from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
 import {
   createDeployment,
@@ -245,8 +250,14 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     let newHosts: string[] = []
 
     if (hosts.length > 0 && resource.containerPort) {
-      const state = await docker.inspectContainer(newContainerId)
-      const upstream = `${state.ipAddress}:${resource.containerPort}`
+      // By NAME, which Caddy resolves through Docker's DNS on the musdash
+      // network — never by IP. An IP is only good until the next reboot, when
+      // the Engine hands addresses out again: Caddy resumed a route to what was
+      // now its own address, proxied every request back into itself, and was
+      // too busy to answer the admin call that would have repaired it (L-7).
+      // A name can only ever mean this container. The health gate above still
+      // dials the IP, because musdash on the host cannot use that DNS (D2).
+      const upstream = `${name}:${resource.containerPort}`
       // Flipped immediately before the Caddy call itself, not before the block:
       // everything above this line fails while nothing points at the new
       // container, so it is still safe to remove. Only once the swap is in play
@@ -407,7 +418,21 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     // redeploy loop.
     if (newContainerId && !routeSwitchAttempted) {
       await docker.removeContainer(newContainerId, true).catch(() => {})
-      emit("Removed the failed container; the previous one is still serving")
+      // Asked, not assumed: a first deploy, a stopped resource, or a reconcile
+      // after the container died has nothing serving, and saying otherwise
+      // during an outage sends the reader the wrong way. A container that
+      // cannot be inspected is gone.
+      const oldRunning = oldContainerId
+        ? await docker
+            .inspectContainer(oldContainerId)
+            .then((s) => s.running)
+            .catch(() => false)
+        : false
+      emit(
+        oldRunning
+          ? "Removed the failed container; the previous one is still serving"
+          : "Removed the failed container. Nothing is serving this resource until a deploy succeeds",
+      )
     } else if (newContainerId) {
       emit(
         "The new container is healthy but the route could not be switched, so traffic is unchanged. " +
@@ -587,6 +612,7 @@ async function healthGate(
         )
       }
       const state = await docker.inspectContainer(containerId)
+      assertNotRestarted(state)
       if (!state.running) {
         throw new Error(
           `container exited during the health check (code ${state.exitCode})`,
@@ -619,6 +645,7 @@ async function healthGate(
         )
       }
       const state = await docker.inspectContainer(containerId)
+      assertNotRestarted(state)
       if (state.health === "healthy") return
       if (state.health === "unhealthy") {
         throw new Error("container reported unhealthy")
@@ -634,9 +661,29 @@ async function healthGate(
   emit("No health check configured; requiring 5s of uptime")
   await Bun.sleep(5000)
   const state = await docker.inspectContainer(containerId)
+  assertNotRestarted(state)
   if (!state.running) {
     throw new Error(
       `container exited within 5s (code ${state.exitCode}) — check the logs above`,
+    )
+  }
+}
+
+/**
+ * Fails the gate for a container Docker has already restarted.
+ *
+ * The container was created by this deploy moments ago, so any restart means it
+ * crashed. `running` alone cannot see that: the Engine reports State.Running as
+ * true while it restarts a container under `unless-stopped`, so a crash loop
+ * read as up and "succeeded" — and the reconciler, whose container list does
+ * report the restarting state, then redeployed it every 30 seconds (L-2).
+ */
+function assertNotRestarted(state: ContainerState): void {
+  if (state.restartCount > 0) {
+    throw new Error(
+      `container crashed and Docker restarted it (${state.restartCount} ${
+        state.restartCount === 1 ? "restart" : "restarts"
+      }) — check the logs above`,
     )
   }
 }

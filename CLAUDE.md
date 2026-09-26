@@ -22,8 +22,9 @@ integration count, and battle-tested edge cases.
 Phases 1 and 2 are built: image and GitHub deploys with the zero-downtime swap,
 Caddy and BuildKit as managed sidecars, the reconciler, shared env vars, and the
 one-command installer. [docs/PHASES.md](docs/PHASES.md) is the roadmap,
-[docs/DECISIONS.md](docs/DECISIONS.md) records every deviation from it, and the
-most recent real-host run is `docs/VPS-TEST-*.md`.
+[docs/DECISIONS.md](docs/DECISIONS.md) records every deviation from it. Real-host
+test reports are removed once their fixes land; read them in git history
+(`git log --all -- 'docs/VPS-TEST-*'`).
 
 The stack is fixed, and some dependencies are forbidden outright: Prisma
 (ships a large Rust query engine), Redis-backed queues like BullMQ, Socket.io
@@ -193,7 +194,8 @@ dropped, regardless of how much users want it. The Validator checks every one.
   way to wreck both the RAM and the disk profile.
 - **Every container musdash creates has a hard memory limit** (default 512MB). A
   leaking user app must never take down the box or the dashboard, so there is no
-  "unlimited" option in the UI.
+  "unlimited" option in the UI. Sidecar caps are sized from the host (D33, D46).
+- **Caddy routes dial container names, never IPs** — a reboot reassigns IPs (D48).
 - **Every managed container carries the `musdash.*` labels** — the reconciler
   identifies live containers and orphans by them.
 - **No build step for the frontend.** Server-rendered Eta + vendored Alpine.js +

@@ -574,6 +574,11 @@ host's memory — 384 MiB on a 1GB host, about 1 GiB on 2GB, at most 8 GiB (D33)
 A build step that exceeds it is killed inside BuildKit's container instead of
 starving the host; `MUSDASH_BUILDKIT_MEMORY_MB` overrides it.
 
+Caddy's cap is sized the same way: a quarter of the host's memory, at least
+128 MiB and at most 512 MiB (D46) — 128 MiB on a 512MB host, 224 MiB on 1GB.
+If the proxy ever outgrows it, the kernel kills Caddy inside its own
+container and Docker restarts it, rather than letting it starve the whole host.
+
 On the 1 GB test host the whole idle stack — the OS, dockerd and containerd
 (~216 MB), musdash 63, Caddy 67, BuildKit 66 and two small apps — left about
 520 MB available. On a host with swap, read musdash's `VmSwap` next to its RSS
@@ -622,6 +627,18 @@ container. If that fails, the old proxy is left serving and the bootstrap's
 error says why, including the preflight's last log lines. The build daemon is
 also replaced once after an upgrade (D32), keeping its cache volume, but with no
 preflight: no traffic flows through it, so nothing is down while it restarts.
+
+The proxy is also replaced, the same way, when its memory cap no longer
+matches the host's memory: once on the upgrade that introduced the sized cap
+(D46), and again after the host is resized. The warning names which check
+failed.
+
+**Caddy logs "admin endpoint on open interface; host checking disabled"**
+Expected on every start, and not a hole. Caddy prints it for any admin endpoint
+that is not a loopback TCP address, and a unix socket is not one: host checking
+only means something for TCP. The line names the socket
+(`unix//run/musdash-caddy/admin.sock|0222`). To confirm nothing listens on TCP,
+`sudo ss -tlnp | grep -E ':(2019|1234)'` should print nothing.
 
 **A deploy log says the kernel is older than Linux 5.14**
 The zero-downtime switch relies on `net.ipv4.tcp_migrate_req` (D30), which

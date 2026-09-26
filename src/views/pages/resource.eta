@@ -80,6 +80,18 @@
       <dd>
         <% if (it.domains.length === 0) { %>
         <span class="muted">No domain yet. Set a container port and add a domain to expose it.</span>
+        <% } else if (!it.resource.containerPort) { %>
+        <%/* A deploy with no port writes no route (L-3), so these hosts do not
+             reach the app: listed, not linked. */%>
+        <ul class="plain">
+          <% it.domains.forEach(function (d) { %>
+          <li class="mono"><%= d.host %></li>
+          <% }) %>
+        </ul>
+        <p class="muted">
+          Not routed: this resource has no container port.
+          <a href="/r/<%= it.resource.id %>?tab=settings">Set one in Settings</a>, then deploy.
+        </p>
         <% } else { %>
         <ul class="plain">
           <% it.domains.forEach(function (d) { %>
@@ -254,6 +266,17 @@
 <% if (it.tab === 'domains') { %>
 <div class="card stack">
   <h2 class="card-title">Domains</h2>
+  <% if (it.domains.length > 0 && !it.resource.containerPort) { %>
+  <div class="notice notice-warn">
+    <svg class="icon" aria-hidden="true"><use href="#i-alert" /></svg>
+    <div>
+      These domains are not routed: this resource has no container port, so a
+      deploy has nothing to send their traffic to.
+      <a href="/r/<%= it.resource.id %>?tab=settings">Set one in Settings</a>,
+      then deploy.
+    </div>
+  </div>
+  <% } %>
   <% if (it.autoDomain) { %>
   <p class="muted">Automatic: <span class="mono"><%= it.autoDomain %></span></p>
   <% } else { %>

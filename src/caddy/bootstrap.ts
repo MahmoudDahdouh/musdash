@@ -12,6 +12,7 @@ import {
   MIGRATE_SYSCTL,
   supportsListenerMigration,
 } from "./kernel.ts"
+import { proxyMemoryCap } from "./memory.ts"
 import { config, HOST_ALIAS } from "../config.ts"
 import {
   type ContainerSpec,
@@ -49,12 +50,21 @@ const DATA_VOLUME = "musdash-caddy-data"
 const CONFIG_VOLUME = "musdash-caddy-config"
 
 /**
- * The proxy's cap is deliberately NOT config.defaultMemoryMb. That setting is
- * the default for user applications; lowering it to squeeze more apps onto a
- * small box must not also throttle the component every one of those apps is
- * served through.
+ * The memory cap, in MiB, the proxy was created with.
+ *
+ * The cap is sized from the Docker host (src/caddy/memory.ts, D46) and fixed at
+ * create time, and adoption never recreates — so without this label a proxy
+ * created under the old fixed 512 MiB would be adopted forever, and a host
+ * resized later would keep the cap sized for the old one.
+ *
+ * The cap is deliberately NOT config.defaultMemoryMb. That setting is the
+ * default for user applications; lowering it to squeeze more apps onto a small
+ * box must not also throttle the component every one of those apps is served
+ * through.
  */
-const CADDY_MEMORY_BYTES = 512 * 1024 * 1024
+const MEMORY_LABEL = "musdash.proxy_memory_mb"
+
+const MIB = 1024 * 1024
 
 /**
  * Which generation of the container definition a proxy was created from.
@@ -108,15 +118,24 @@ export async function ensureCaddy(): Promise<void> {
   // there and try to create a second proxy on the same ports.
   let existing = (await docker.findContainersByName(CADDY_CONTAINER))[0]
 
+  // The DAEMON's memory, never this process's /proc: once the daemon is remote
+  // they are different machines.
+  const { memTotalBytes } = await docker.info()
+  const memoryBytes = proxyMemoryCap(memTotalBytes)
+  const memoryMb = memoryBytes / MIB
+  const hostMemoryMb = Math.floor(memTotalBytes / MIB)
+
   // A current proxy that lacks the migration sysctl while the kernel now has it
   // — created before a kernel upgrade — is replaced too, through the same
   // preflight. Otherwise it would be adopted forever and every route switch
-  // would keep the hole D30 closes.
+  // would keep the hole D30 closes. So is one whose cap no longer matches the
+  // host: a cap larger than the host contains nothing (L-1).
   const canMigrate = supportsListenerMigration()
   const current =
     existing !== undefined &&
     existing.labels[SPEC_LABEL] === SPEC_VERSION &&
-    (existing.labels[MIGRATE_LABEL] === "1" || !canMigrate)
+    (existing.labels[MIGRATE_LABEL] === "1" || !canMigrate) &&
+    existing.labels[MEMORY_LABEL] === String(memoryMb)
 
   let id: string
   if (existing && current) {
@@ -162,7 +181,7 @@ export async function ensureCaddy(): Promise<void> {
           "a route switch may drop a request that arrives at that instant",
       )
     }
-    const spec = proxySpec(migrate)
+    const spec = proxySpec(migrate, memoryBytes)
 
     if (existing) {
       // An outdated proxy — including one an older install.sh created, which
@@ -181,13 +200,17 @@ export async function ensureCaddy(): Promise<void> {
       // sysctl, the bind mount, the socket's permissions — while the old proxy
       // keeps serving. A failure leaves it in place and says why (N-2).
       await preflight(spec)
+      const oldMemory = existing.labels[MEMORY_LABEL]
       logger.warn(
-        { container: CADDY_CONTAINER, id: existing.id },
-        existing.labels[SPEC_LABEL] === SPEC_VERSION
-          ? "replacing the proxy container: it was created without tcp_migrate_req, which this kernel now supports. " +
-              "Certificates are kept; sites are briefly unavailable while it restarts"
-          : "replacing the proxy container: its admin API was reachable from every app on the musdash network. " +
-              "Certificates are kept; sites are briefly unavailable while it restarts",
+        {
+          container: CADDY_CONTAINER,
+          id: existing.id,
+          oldMemoryMb: oldMemory === undefined ? null : Number(oldMemory),
+          newMemoryMb: memoryMb,
+          hostMemoryMb,
+        },
+        `replacing the proxy container: ${staleReason(existing.labels, canMigrate)}. ` +
+          "Certificates are kept; sites are briefly unavailable while it restarts",
       )
       await docker.removeContainer(existing.id, true)
       existing = undefined
@@ -221,7 +244,11 @@ export async function ensureCaddy(): Promise<void> {
         throw new CaddyError(exitedMessage(initial))
       }
     }
-    await waitForAdmin(id, adopted)
+    if (adopted) {
+      await waitForAdminOrRestart(id)
+    } else {
+      await waitForAdmin(id, adopted)
+    }
   } catch (err) {
     // A container created in this run that never came up is removed rather
     // than left behind. It carries the current SPEC_LABEL, so the next
@@ -251,13 +278,31 @@ export async function ensureCaddy(): Promise<void> {
   await probeDashboardReachable()
 
   logger.info(
-    { container: CADDY_CONTAINER, id, adopted },
+    { container: CADDY_CONTAINER, id, adopted, memoryMb, hostMemoryMb },
     adopted ? "adopted the existing Caddy container" : "started Caddy",
   )
 }
 
+/**
+ * Why a proxy that failed the adopt check is being replaced, for the one
+ * warning an operator sees. First match wins, in the order the checks were
+ * added; called only when at least one of them failed.
+ */
+function staleReason(
+  labels: Record<string, string>,
+  canMigrate: boolean,
+): string {
+  if (labels[SPEC_LABEL] !== SPEC_VERSION) {
+    return "its admin API was reachable from every app on the musdash network"
+  }
+  if (canMigrate && labels[MIGRATE_LABEL] !== "1") {
+    return "it was created without tcp_migrate_req, which this kernel now supports"
+  }
+  return "its memory cap was not sized for this host's memory"
+}
+
 /** The proxy's container definition. See SPEC_VERSION before changing it. */
-function proxySpec(migrate: boolean): ContainerSpec {
+function proxySpec(migrate: boolean, memoryBytes: number): ContainerSpec {
   return {
     name: CADDY_CONTAINER,
     image: CADDY_IMAGE,
@@ -271,6 +316,7 @@ function proxySpec(migrate: boolean): ContainerSpec {
       ...sidecarLabels("proxy"),
       [SPEC_LABEL]: SPEC_VERSION,
       [MIGRATE_LABEL]: migrate ? "1" : "0",
+      [MEMORY_LABEL]: String(memoryBytes / MIB),
     },
     hostMounts: [
       {
@@ -306,7 +352,7 @@ function proxySpec(migrate: boolean): ContainerSpec {
       // required a TCP listener on every interface INSIDE the container —
       // including the musdash network every user app is attached to (D29).
     ],
-    memoryLimitBytes: CADDY_MEMORY_BYTES,
+    memoryLimitBytes: memoryBytes,
     restartPolicy: "unless-stopped",
     // `--resume` restores the persisted JSON config across restarts, so a
     // reboot comes back with every route intact. No `--config`: on a fresh
@@ -538,6 +584,40 @@ async function waitForAdmin(id: string, adopted: boolean): Promise<void> {
 
     await Bun.sleep(1000)
   }
+}
+
+/**
+ * waitForAdmin for an adopted proxy, restarting it once if it is wedged.
+ *
+ * Wedged means running, with its ports mapped, and still not answering on its
+ * admin socket after READY_TIMEOUT_SEC. On the 512MB host a proxy looping
+ * requests into itself sat at its memory cap for over 16 minutes: Caddy sets
+ * GOMEMLIMIT just under the cap, so it collected garbage without end instead
+ * of being OOM-killed, and every bootstrap the reconciler queued timed out on
+ * the admin socket and changed nothing (L-7). Nothing else ever restarts a
+ * proxy that is running. An admin API that has not answered for that long
+ * cannot take a route change anyway, so a restart costs little that is not
+ * already lost — and the reconciler's bucket bounds it to one per bootstrap.
+ *
+ * An exited proxy, or one whose ports the Engine could not map, gets
+ * waitForAdmin's own precise error instead: restarting does not fix either.
+ */
+async function waitForAdminOrRestart(id: string): Promise<void> {
+  try {
+    await waitForAdmin(id, true)
+    return
+  } catch (err) {
+    const state = await docker.inspectContainer(id).catch(() => null)
+    const wedged = state?.running === true && state.publishedPortCount > 0
+    if (!wedged) throw err
+  }
+  logger.warn(
+    { container: CADDY_CONTAINER, id, waitedS: READY_TIMEOUT_SEC },
+    "the proxy is running but its admin API has not answered; restarting it. Sites are briefly unavailable",
+  )
+  await docker.stopContainer(id, 10)
+  await docker.startContainer(id)
+  await waitForAdmin(id, true)
 }
 
 /**

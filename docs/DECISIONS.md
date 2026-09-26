@@ -1674,9 +1674,9 @@ against a derived URL has not been run.
 
 ## VPS test fixes (2026-09-25)
 
-`docs/VPS-TEST-2026-09-25.md` ran the Phase 1 Definition of Done on a real
-512MB RamNode box. This section covers the findings that were defects in the
-code. C-3 (the host thrashing on reboot without swap) and the memory margin in
+`docs/VPS-TEST-2026-09-25.md` (removed once its fixes landed; in git history)
+ran the Phase 1 Definition of Done on a real 512MB RamNode box. This section
+covers the findings that were defects in the code. C-3 (the host thrashing on reboot without swap) and the memory margin in
 I-3 are properties of the host and are not addressed here.
 
 ### C-1 — new resource routes are inserted at the front
@@ -2985,3 +2985,139 @@ Verified with an isolated local instance over HTTP: the boxes are prefilled on
 all three forms, an unchanged save keeps every variable, adding one keeps the
 rest, `</textarea><b>x`, `${A}` and `$$` survive, `no-store` appears only on the
 env tab, and no value reaches the log.
+
+## The proxy's memory cap is sized from the host (L-1, 2026-09-26)
+
+On the 512MB host (458 MiB usable), the first of two reboots left every site
+down for 22 min 49 s. Caddy grew to 277 MiB of anonymous memory, the host
+thrashed with swap in use, and only the kernel's global OOM killer ended it.
+Its cap was a fixed 512 MiB — larger than the host — and Caddy derives
+`GOMEMLIMIT` from that cap (483,183,820 bytes, 90%), so neither the kernel nor
+Go's collector pushed back. It is V-1 again, on the other sidecar: D33 sized
+BuildKit from the host and left Caddy's cap fixed.
+
+### D46 — `clamp(floor32(MemTotal / 4), 128, 512)` MiB, relabelled and replaced
+
+`src/caddy/memory.ts` computes the cap from the Docker host's `MemTotal`
+(`DockerClient.info()`, so it stays right for a remote daemon): 128 MiB on a
+512MB host, 224 on 1GB, 480 on a "2GB" host and 512 from 2 GiB up, which is
+the old value. The floor is about twice the largest idle figure measured (67
+MiB, the 1GB host with three apps). No `GOMEMLIMIT` is set: Caddy already
+sets it to 90% of its cgroup limit on start.
+
+The proxy now carries `musdash.proxy_memory_mb`, and a proxy whose label does
+not match the host's cap is replaced through the N-2 preflight like any other
+outdated proxy. Every install upgraded to this version therefore restarts its
+proxy once — about 2.5 s without the sites, measured on the 512MB host for the
+gen-1 replacement — and so does a host whose memory is resized. That is the
+same trade D33 made for BuildKit, where it cost nothing visible; here it is a
+few seconds once, against the unbounded outage it removes. `SPEC_VERSION` is
+not bumped: the label comparison is the trigger, and the replacement warning
+names which check failed.
+
+Rejected: an override variable. The old cap had none, and a host that needs a
+larger proxy than a quarter of its memory is a host that needs more memory.
+Also rejected: `docker update` of the live proxy's limit, which would avoid the
+restart but leave Caddy's `GOMEMLIMIT` at the old value until it next
+restarts.
+
+When the cap is hit, the kernel kills Caddy inside its own cgroup and
+`unless-stopped` restarts it — seconds of downtime rather than tens of
+minutes. Whether 512MB hosts can be supported is still D38's question: this
+removes the failure the reboot test found, and the reboot has to pass several
+times in a row before the answer changes.
+
+## A crash loop fails the deploy, and the reconciler backs off (L-2, 2026-09-26)
+
+On the 512MB host a Railpack app that exits at import (`No module named
+'pkg_resources'`) deployed as "succeeded", and the reconciler then redeployed
+it every 30 seconds — eleven deployments in seven minutes, every one
+"succeeded", each holding the single worker for ~20 of every 30 seconds —
+until the resource was stopped. D44 had recorded the reconciler half as a
+follow-up.
+
+The gate and the reconciler disagreed about the same container. The Engine
+reports `State.Running: true` while it restarts a container under
+`unless-stopped`, and `inspectContainer` maps `running` from it, so the 5 s
+fallback saw a crash loop as up. The container list the reconciler reads
+reports that state as `restarting`, so it saw the same container as gone.
+
+### D47 — a restart during the gate fails it; reconcile redeploys back off
+
+**The gate.** A container the deploy created moments ago has never been
+restarted by Docker, so `restartCount > 0` at any point in the gate means it
+crashed. All three branches (HTTP, image HEALTHCHECK, 5 s uptime) now fail
+with "container crashed and Docker restarted it (N restarts)"; the normal
+failure path removes the new container and leaves the old one serving. The
+Caddy bootstrap has made the same check since N-2. The cost: an app that
+crashes once on its first start and recovers on the restart — waiting for a
+database, say — now fails its deploy instead of passing. That is what the gate
+should say about it.
+
+**The reconciler.** `redeployPlan` decides from the resource's deployments,
+newest first, so the database is the only memory and a restart of musdash
+keeps the backoff:
+
+- A queued or running deploy younger than an hour wins; nothing is added
+  behind it. Before, a manual deploy of a resource with no container could get
+  a reconcile deploy of the previous image queued behind it every tick, which
+  would then replace the new one. A row older than an hour is not trusted to
+  still have a job, so a lost one cannot block healing forever.
+- The streak is the newest consecutive `reconcile` deployments, whatever
+  their outcome, stopping at any other trigger or at a gap of more than an
+  hour. The next redeploy waits `30 s × 2^(streak − 1)`, capped at 30
+  minutes. Streak zero is immediate, so a `docker rm -f` or a reboot still
+  heals within one tick (DoD 11), and so does one a week after the last.
+- A deploy that finished after this tick's container list was taken also
+  wins, for one tick. The worker runs in the same process, so a manual deploy
+  can finish between the listing and the check, and its new container is
+  missing from the stale list — on the host that queued a redundant reconcile
+  deploy five seconds after a manual one succeeded.
+- Each backed-off redeploy logs one warning with the attempt number and the
+  wait before the next one; a skipped tick logs nothing.
+
+Rejected: tracking failures in memory (lost on restart, which is exactly when
+the reconciler is busiest), and giving up after N attempts (a transient
+failure — a registry outage — would then leave a resource down until someone
+noticed).
+
+## Caddy dials containers by name, and a wedged proxy is restarted (L-7, 2026-09-26)
+
+Found while verifying D46 with three reboots of the 512MB host. After the
+first, every site stayed down: Caddy sat at its new 128 MiB cap, and inside
+its network namespace held 188 connections from `172.18.0.5` to its own `:80`
+and 188 back out — `172.18.0.5` was Caddy. Routes dialled container IPs, and a
+reboot hands addresses out again: `web512`'s route resumed pointing at the
+address `web512` had before the reboot, which the Engine had now given to the
+proxy. Caddy proxied every request for that name back into itself. The
+boot-time route sync that would have repaired it goes through the admin API,
+which the loop had starved, so every bootstrap timed out.
+
+This is also what caused the 22-minute outage the cap was meant to fix: there
+the loop grew an uncapped Caddy until the host thrashed and the kernel killed
+it, after which the sync got through. It explains why the other reboot came
+back in 27 s — the addresses happened not to collide. And it was worse than a
+loop: an address can just as well land on another app, which would then answer
+for the first one's domain until the next sync.
+
+### D48 — routes dial the container name; an adopted proxy that stops answering is restarted once
+
+**Names, as specified.** PHASES.md §10 and "Reverse proxy — Caddy" above both
+say Caddy resolves app containers by name through Docker's DNS; the
+implementation dialled IPs, a deviation nobody recorded. A deploy now writes
+`<container-name>:<port>`, and `syncResourceRoutes` rewrites any route still
+dialling an IP on the next bootstrap, which every boot runs (R-1). A name only
+ever means one container; after a reboot it resolves to whatever address that
+container now has. `ContainerState` gains `name`, from the Engine's inspect,
+so nothing assumes a local daemon. D2 is unchanged: the health gate still dials
+the IP, because musdash on the host cannot use that DNS.
+
+**Restarting a wedged proxy.** With GOMEMLIMIT just under its cap, Caddy
+collected garbage without end instead of being OOM-killed — 3.1 million
+`memory.max` events and no kill in 16 minutes — and nothing restarts a proxy
+that is running. The bootstrap of an adopted proxy that is running, has its
+ports mapped, and has not answered on its admin socket for 30 s now stops and
+starts it once, then waits again. An exited proxy and one whose ports could not
+be mapped keep their own errors; a restart fixes neither. Rejected: restarting
+from the reconciler on a single failed ping, which would bounce a proxy that is
+merely slow under load.
