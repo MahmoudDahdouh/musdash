@@ -17,6 +17,7 @@ import { enqueueDeploy } from "./jobs/deploy.ts"
 import { logger } from "./log.ts"
 import { startLogStream } from "./logs/stream.ts"
 import { enqueue } from "./queue/index.ts"
+import { isWorkerBusy } from "./queue/worker.ts"
 
 /**
  * Converges actual state toward desired state every 30 seconds. This is what
@@ -441,11 +442,21 @@ async function ensureBuildkitQueued(): Promise<void> {
     .catch(() => null)
   if (!found) return
 
+  const running = found.some((c) => c.running)
+
+  // Not probed while the worker runs a job. It may be the build, and a daemon
+  // swapping its way through one misses the 2s probe: on the 1GB host that
+  // queued three bootstraps and logged the daemon as down mid-build (R-3). A
+  // bootstrap queued now would run only after that job anyway. The cost is a
+  // queue that never drains between ticks postpones the probe until it does;
+  // a stopped daemon is still caught, and a failed build restarts it (D50).
+  if (running && isWorkerBusy()) return
+
   // Running is not enough: a daemon whose socket this process cannot open —
   // the D32 permissions, a stale socket — reads as running forever while every
   // build fails. The probe is the same HTTP/2 preface the bootstrap uses, over
   // a local socket, so it is cheap enough for every tick.
-  if (found.some((c) => c.running) && (await probeDaemon())) {
+  if (running && (await probeDaemon())) {
     buildkitReported = false
     return
   }

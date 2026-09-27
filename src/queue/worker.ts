@@ -2,7 +2,13 @@ import { getDeployment, markDeploymentFailed } from "../db/queries.ts"
 import { publishDeployment } from "../events.ts"
 import { handlers } from "../jobs/index.ts"
 import { logger } from "../log.ts"
-import { claim, complete, fail, recoverOrphanedLeases } from "./index.ts"
+import {
+  claim,
+  complete,
+  fail,
+  type JobRow,
+  recoverOrphanedLeases,
+} from "./index.ts"
 
 /**
  * The single worker loop.
@@ -18,6 +24,21 @@ const POLL_MS = 1000
 let running = false
 let stopped = false
 let currentTimer: Timer | null = null
+/** True from a job's claim until its row is completed or failed. */
+let busy = false
+
+/**
+ * Whether this process's worker is running a job right now.
+ *
+ * Its own state, not the jobs table: a row can stay `leased` after its
+ * handler ended, if recording the outcome itself failed, and would then read
+ * as busy until the next restart. For the reconciler, which must not read a
+ * sidecar that is busy with the job as one that is down: a build daemon
+ * swapping through a large build misses its socket probe (R-3).
+ */
+export function isWorkerBusy(): boolean {
+  return busy
+}
 
 export function startWorker(): void {
   if (running) return
@@ -61,7 +82,15 @@ function sleep(ms: number): Promise<void> {
 async function tick(): Promise<boolean> {
   const job = claim()
   if (!job) return false
+  busy = true
+  try {
+    return await runJob(job)
+  } finally {
+    busy = false
+  }
+}
 
+async function runJob(job: JobRow): Promise<boolean> {
   const handler = handlers[job.type]
   if (!handler) {
     logger.error({ type: job.type, id: job.id }, "no handler for job type")
