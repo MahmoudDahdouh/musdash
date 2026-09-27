@@ -3,12 +3,22 @@ import { logger } from "../log.ts"
 import { BuildError, type BuildContext } from "./types.ts"
 
 /**
- * How BuildKit reports a step the kernel killed for memory: the step's exit
- * status, 137 being 128 + SIGKILL, inside a line like `process "/bin/sh -c npm
- * ci" did not complete successfully: exit code: 137`. The builder itself then
- * exits 1, which on its own says nothing.
+ * How BuildKit reports a step that ran out of memory. The builder itself then
+ * exits 1, which on its own says nothing. Two shapes, both seen on the 1GB
+ * host, both in BuildKit's own step-failure sentence:
+ *
+ * - the step's exit status, 137 being 128 + SIGKILL: `process "/bin/sh -c npm
+ *   ci" did not complete successfully: exit code: 137`;
+ * - with swap full, no exit status at all: `process "npm run build" did not
+ *   complete successfully: cannot allocate memory` (R-2).
+ *
+ * Anchored to that sentence, because the check sees every line of the build,
+ * the app's own compiler output included. The `ResourceExhausted` that follows
+ * the second shape is left out: it is a general gRPC status that BuildKit also
+ * uses for an oversized message, and an app can print it too.
  */
-const MEMORY_KILL = /exit code: 137\b/
+const MEMORY_KILL =
+  /did not complete successfully: (?:exit code: 137\b|cannot allocate memory)/i
 
 /** The longest a silent build waits between starvation checks. */
 const STALL_POLL_MAX_MS = 15_000
@@ -172,9 +182,7 @@ export async function runBuilder(
       )
     }
     if (sawMemoryKill) {
-      throw new BuildError(
-        `a build step ran out of memory and was killed (exit code 137).${advice}`,
-      )
+      throw new BuildError(`a build step ran out of memory.${advice}`)
     }
     throw new BuildError(`${bin} exited with code ${code}`)
   } finally {

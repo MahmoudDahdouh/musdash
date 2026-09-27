@@ -126,6 +126,29 @@ describe("runBuilder", () => {
     await expect(run).rejects.toThrow(/ADVICE/)
   })
 
+  test("a step BuildKit could not give memory is reported as out of memory", async () => {
+    // What the 1GB host printed for `next build` once BuildKit's swap was
+    // full, 2026-09-28 (R-2): no exit code at all.
+    const run = sh(
+      'echo "#17 ERROR: process \\"npm run build\\" did not complete successfully: cannot allocate memory"; exit 1',
+      ctx({ memoryAdvice: "ADVICE" }),
+    )
+
+    await expect(run).rejects.toThrow(/out of memory/)
+    await expect(run).rejects.toThrow(/ADVICE/)
+  })
+
+  test("a gRPC ResourceExhausted that is not about memory is not called memory", async () => {
+    // BuildKit's message-size error shares the status code, and an app's own
+    // compiler output can name it too.
+    const run = sh(
+      'echo "error: rpc error: code = ResourceExhausted desc = grpc: received message larger than max (5242880 vs. 4194304)"; echo "src/api.ts:3:14 - error TS2339: Property Code.ResourceExhausted does not exist"; exit 1',
+      ctx(),
+    )
+
+    await expect(run).rejects.toThrow(/sh exited with code 1/)
+  })
+
   test("any other failure names the exit code", async () => {
     const run = sh("echo nope; exit 3", ctx())
 
