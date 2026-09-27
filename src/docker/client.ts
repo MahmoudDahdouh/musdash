@@ -36,6 +36,14 @@ export interface ContainerSpec {
   volumes: { name: string; mountPath: string }[]
   /** Required. There is no unlimited option, not even internally. */
   memoryLimitBytes: number
+  /**
+   * Memory plus swap the container may use, in bytes; absent means no swap at
+   * all (MemorySwap equal to Memory). Like `privileged`, `createContainer`
+   * REJECTS it on any spec that is not musdash's own infrastructure: an app's
+   * cap must stay hard, and swap would let a leaking one grind the disk
+   * instead of being killed (D38).
+   */
+  memorySwapBytes?: number
   cpuShares?: number
   restartPolicy: "unless-stopped" | "no"
   /** Published ports. Absent means the container is reachable only on its network. */
@@ -141,6 +149,19 @@ export interface LogOpts {
   signal?: AbortSignal
 }
 
+/** A container's memory, as its cgroup sees it (Engine `GET /containers/{id}/stats`). */
+export interface ContainerMemory {
+  /** Everything charged to the container, page cache included (memory.current). */
+  usageBytes: number
+  /**
+   * Anonymous memory alone — what the processes hold, as opposed to cache the
+   * kernel can drop. Null where the Engine does not report it (cgroup v1).
+   */
+  anonBytes: number | null
+  /** The container's memory limit. */
+  limitBytes: number
+}
+
 /** What the Engine reports about the host it runs on — not this process's host. */
 export interface EngineInfo {
   /** Physical memory of the DAEMON's host, in bytes (Engine `GET /info` → `MemTotal`). */
@@ -179,6 +200,12 @@ export interface DockerClient {
   stopContainer(id: string, timeoutSec?: number): Promise<void>
   removeContainer(id: string, force?: boolean): Promise<void>
   inspectContainer(id: string): Promise<ContainerState>
+  /**
+   * Read-only. How much memory a container holds against its limit, sampled
+   * once. The build path asks it of BuildKit: whether a silent build is pinned
+   * at the daemon's cap, and whether the daemon kept memory after a build.
+   */
+  containerMemory(id: string): Promise<ContainerMemory>
   listManagedContainers(): Promise<ManagedContainer[]>
   /**
    * Containers whose name is exactly `name`, running or not.

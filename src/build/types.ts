@@ -33,6 +33,16 @@ export interface BuildContext {
   onLog: (line: string) => void
   /** Hard bound on the subprocess, after which it is killed. */
   timeoutMs: number
+  /**
+   * Ends a build that has stopped making progress at BuildKit's memory cap.
+   *
+   * After `afterMs` without a line of output, `isStarved` is asked whether the
+   * daemon is pinned at its cap; if it is, the build is stopped and reported
+   * as out of memory rather than left to the timeout (P-9).
+   */
+  stall?: { afterMs: number; isStarved: () => Promise<boolean> }
+  /** Appended to every out-of-memory message: what the user can do about it. */
+  memoryAdvice?: string
 }
 
 export class BuildError extends Error {

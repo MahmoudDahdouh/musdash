@@ -2,7 +2,7 @@ import { config } from "../config.ts"
 import { docker } from "../docker/impl.ts"
 import { cacheDir } from "./cache.ts"
 import { BuildError, type BuildContext } from "./types.ts"
-import { runBuilder } from "./railpack.ts"
+import { runBuilder } from "./run.ts"
 
 /**
  * Dockerfile builds, driven through BuildKit's own client.

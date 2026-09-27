@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync } from "node:fs"
 import { config } from "../config.ts"
 import {
+  type ContainerMemory,
   type ContainerState,
   DockerError,
   sidecarLabels,
@@ -93,11 +94,25 @@ const SOCKET_DIR_IN_CONTAINER = "/run/musdash-buildkit"
  *
  * Generation 3 sized the memory cap from the Docker host instead of fixing it
  * at 1 GiB, which on a 1GB host limited nothing (D33).
+ *
+ * Generation 4 lets the daemon swap as much again as its cap, so a build that
+ * outgrows the cap slows down instead of stalling (D50).
  */
 const SPEC_LABEL = "musdash.builder_spec"
-const SPEC_VERSION = "3"
-/** The generation before D33: correct in every respect but its memory cap. */
-const PREVIOUS_SPEC_VERSION = "2"
+const SPEC_VERSION = "4"
+
+/**
+ * Why each earlier generation that still listened on the socket is replaced.
+ * Anything else — no label at all, or one newer than this build — is
+ * generation 1, which listened on TCP.
+ */
+const OUTDATED_GENERATIONS: ReadonlyMap<string, string> = new Map([
+  ["2", "it was created before the memory cap was sized from the host (D33)"],
+  [
+    "3",
+    "it was created without swap, so a build that outgrew its cap stalled instead of slowing down (D50)",
+  ],
+])
 
 /**
  * The gid the socket was created for, fixed into the daemon's `--group` at
@@ -254,6 +269,14 @@ export async function ensureBuildkit(): Promise<void> {
         { hostPath: config.buildkitDir, mountPath: SOCKET_DIR_IN_CONTAINER },
       ],
       memoryLimitBytes: memory.bytes,
+      // As much swap again as the cap, where the host has swap (D38 adds 1
+      // GiB below 2 GB). Without it a build that outgrew the cap was neither
+      // killed nor finished: the kernel could only drop the step's file pages,
+      // read them back, and drop them again, for the whole 30-minute timeout
+      // (P-9). With it the build's own anonymous pages go to disk instead, so
+      // it slows down but keeps going, and the RAM the host and its apps need
+      // is still capped. Only a sidecar may swap; every app's cap stays hard.
+      memorySwapBytes: memory.bytes * 2,
       restartPolicy: "unless-stopped",
       // BuildKit needs mount and namespace operations to assemble images.
       // Rootless would avoid this, but it needs a different image, different
@@ -403,7 +426,7 @@ async function resolveMemoryCap(): Promise<ResolvedMemoryCap> {
   }
 }
 
-type StaleReason = "d32" | "gen2" | "gid" | "memory" | "gid+memory"
+type StaleReason = "d32" | "generation" | "gid" | "memory" | "gid+memory"
 
 /**
  * Why a daemon that failed the adopt check is being replaced, so the one
@@ -415,21 +438,17 @@ function staleReason(
   capMb: number,
 ): { reason: StaleReason; message: string } {
   const spec = labels[SPEC_LABEL]
+  const outdated =
+    spec === undefined ? undefined : OUTDATED_GENERATIONS.get(spec)
+  if (outdated !== undefined) return { reason: "generation", message: outdated }
   // No label means generation 1, which listened on TCP. A value NEWER than
   // this build's — seen after a downgrade — lands here too; the wording is
   // then imprecise, but replacing a definition this build does not know is
   // still right.
-  if (spec !== PREVIOUS_SPEC_VERSION && spec !== SPEC_VERSION) {
+  if (spec !== SPEC_VERSION) {
     return {
       reason: "d32",
       message: "its API was reachable from every app on the musdash network",
-    }
-  }
-  if (spec === PREVIOUS_SPEC_VERSION) {
-    return {
-      reason: "gen2",
-      message:
-        "it was created before the memory cap was sized from the host (D33)",
     }
   }
 
@@ -587,4 +606,43 @@ export async function probeDaemon(): Promise<boolean> {
     // No socket yet, or a stale one nothing is listening on.
     return false
   }
+}
+
+/**
+ * BuildKit's memory right now, or null when the daemon cannot be asked.
+ *
+ * Read-only, and by name: the id changes every time the daemon is replaced.
+ */
+export function buildkitMemory(): Promise<ContainerMemory | null> {
+  return docker.containerMemory(BUILDKIT_CONTAINER).catch((err: unknown) => {
+    logger.warn(
+      { err: (err as Error).message },
+      "could not read the build daemon's memory",
+    )
+    return null
+  })
+}
+
+/**
+ * Stops and starts the daemon, then waits until it answers again.
+ *
+ * Two things only a restart clears (P-10, P-3). Stopping a build's client —
+ * the timeout, a failure, the stall check — cancels its solve, but under
+ * memory pressure the daemon's step processes kept running, holding the cap
+ * the next build needs. And after a build the daemon itself keeps its heap: on
+ * the 1GB host buildkitd held 227 MiB of anonymous memory, not cache, for at
+ * least 40 minutes after its last build, where it idles at 25–65 MiB.
+ *
+ * The cache volume and the container are kept, so the next build is exactly
+ * as warm; the cost is a few seconds. Runs inside a deploy job, so the queue
+ * guarantees no other build is using the daemon.
+ */
+export async function restartBuildkit(): Promise<void> {
+  const found = (await docker.findContainersByName(BUILDKIT_CONTAINER))[0]
+  if (!found) {
+    throw new DockerError(`${BUILDKIT_CONTAINER} does not exist`)
+  }
+  await docker.stopContainer(found.id, 10)
+  await docker.startContainer(found.id)
+  await waitForDaemon(found.id, true, false)
 }

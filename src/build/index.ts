@@ -3,7 +3,9 @@ import { resolve } from "node:path"
 import { config } from "../config.ts"
 import { logger } from "../log.ts"
 import { redactValues } from "../log.ts"
+import { buildkitMemory, restartBuildkit } from "./bootstrap.ts"
 import { buildWithDockerfile } from "./buildctl.ts"
+import { isStarved, keptAfterBuild } from "./memory.ts"
 import { buildWithRailpack } from "./railpack.ts"
 import { BuildError, type BuildPack, type BuildContext } from "./types.ts"
 
@@ -18,6 +20,18 @@ import { BuildError, type BuildPack, type BuildContext } from "./types.ts"
 
 /** Builds are far slower than deploys — a cold Node build measured 188s. */
 const BUILD_TIMEOUT_MS = 30 * 60 * 1000
+
+/**
+ * How long a build may print nothing before BuildKit's memory is looked at.
+ *
+ * Long, because a build can be quiet for minutes while it compiles, and on a
+ * small host with swap (D50) a build over the cap is slow rather than stuck;
+ * but a third of the timeout, which is what a starved build used to cost (P-9).
+ * The build is stopped only if the daemon is also pinned at its cap.
+ */
+const STALL_AFTER_MS = 10 * 60 * 1000
+
+const MIB = 1024 * 1024
 
 export interface BuildRequest {
   contextDir: string
@@ -78,6 +92,15 @@ export async function buildImage(req: BuildRequest): Promise<void> {
     req.onLog(redactValues(line, secrets))
   }
 
+  // The cap is read from the daemon rather than recomputed, so an override
+  // and the host-sized value are reported the same way. Said up front: a
+  // build that needs more than this will not fit, and on the 1GB host nothing
+  // told the user so before, during or after (P-8).
+  const capMb = await buildkitMemory().then((m) =>
+    m === null ? null : Math.round(m.limitBytes / MIB),
+  )
+  if (capMb !== null) onLog(`BuildKit may use up to ${capMb} MiB of memory`)
+
   const ctx: BuildContext = {
     contextDir: req.contextDir,
     tag: req.tag,
@@ -87,15 +110,38 @@ export async function buildImage(req: BuildRequest): Promise<void> {
     noCache: req.noCache,
     onLog,
     timeoutMs: BUILD_TIMEOUT_MS,
+    stall: {
+      afterMs: STALL_AFTER_MS,
+      isStarved: async () => {
+        const m = await buildkitMemory()
+        return m !== null && isStarved(m)
+      },
+    },
+    memoryAdvice:
+      (capMb === null ? "" : `BuildKit can use ${capMb} MiB on this server. `) +
+      "Build the image somewhere with more memory — in GitHub Actions, for example — and deploy it as an image, or use a server with more memory.",
   }
 
   const started = Date.now()
   logger.info({ tag: req.tag, pack: req.pack }, "build started")
 
-  if (req.pack === "dockerfile") {
-    await buildWithDockerfile(ctx)
-  } else {
-    await buildWithRailpack(ctx)
+  try {
+    if (req.pack === "dockerfile") {
+      await buildWithDockerfile(ctx)
+    } else {
+      await buildWithRailpack(ctx)
+    }
+  } catch (err) {
+    // Ending the client cancels its solve, but on the 1GB host a timed-out
+    // build's npm and apt processes were still running inside BuildKit,
+    // holding the cap the next build needed (P-10). Every failure, not only a
+    // timeout: a step that failed while another ran in parallel can leave the
+    // same thing behind, and the restart costs seconds.
+    await restartQuietly(
+      onLog,
+      "Restarting BuildKit to stop anything the failed build left running",
+    )
+    throw err
   }
 
   const ms = Date.now() - started
@@ -107,4 +153,41 @@ export async function buildImage(req: BuildRequest): Promise<void> {
   // the cache's effect visible. Through the redacting onLog, so every line out
   // of here still has exactly one path.
   onLog(`Build finished in ${(ms / 1000).toFixed(1)}s using ${req.pack}`)
+
+  // buildkitd keeps its heap after a build: 227 of 384 MiB on the 1GB host,
+  // 40 minutes later, which the next build then did not have (P-3).
+  const after = await buildkitMemory()
+  if (after !== null && keptAfterBuild(after)) {
+    await restartQuietly(
+      onLog,
+      `Restarting BuildKit to release the ${Math.round((after.anonBytes ?? 0) / MIB)} MiB it kept after the build`,
+    )
+  }
+}
+
+/**
+ * Restarts the build daemon, and says so in the deploy log.
+ *
+ * Never throws: the build's own outcome is what the deploy reports. A daemon
+ * that does not come back is found by the reconciler, whose BuildKit bootstrap
+ * starts it again, and by the next build.
+ */
+async function restartQuietly(
+  onLog: (line: string) => void,
+  line: string,
+): Promise<void> {
+  onLog(line)
+  try {
+    await restartBuildkit()
+  } catch (err) {
+    // The Engine's text stays in the service log; the deploy log is shown in
+    // the browser and gets a line the user can act on.
+    logger.warn(
+      { err: (err as Error).message },
+      "could not restart the build daemon",
+    )
+    onLog(
+      "BuildKit did not restart cleanly; musdash starts it again within a minute, and the service log has the details",
+    )
+  }
 }

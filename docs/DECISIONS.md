@@ -3155,3 +3155,70 @@ Rejected: running recovery periodically, the fix deferred after the stuck
 admin-API job, which under this rule would take back the lease of the job the
 worker is running; and a shorter lease, which only narrows the window a
 restart has to miss.
+
+## A build over BuildKit's cap stalls, and a stock Next.js app cannot build on 1 GB (P-3, P-8, P-9, P-10, 2026-09-27)
+
+`MahmoudDahdouh/saas-template`, a stock Next.js 16 app built by Railpack, was
+deployed three times on the 1GB host. At the host-sized 384 MiB cap,
+Railpack's parallel `npm install` (190 MiB) and `apt-get install` (~130 MiB)
+plus the daemon filled the cap, and the build neither finished nor failed:
+`memory.events` counted 1.98 million `max` events and no `oom_kill` in 30
+minutes. BuildKit's container cannot swap (D38), so the kernel could only drop
+the steps' file pages, read them back, and drop them again. The deploy log
+printed nothing, and the 30-minute timeout ended it with `railpack exited with
+code 1`. After it, npm and apt were still running inside BuildKit, holding the
+cap. The daemon itself kept 227 MiB of anonymous memory for at least 40
+minutes after its last build, so the next build started with 150. Raising the
+cap to 640 MiB let `next build` (520 MiB) run, and took the host, the
+dashboard and every app down for three minutes.
+
+### D50 — BuildKit may swap, a starved build is stopped, and the daemon is restarted after builds
+
+**BuildKit may swap as much again as its cap** (`memorySwapBytes = 2 × cap`,
+generation 4 of the daemon's definition, so every install replaces its daemon
+once, keeping the cache). This is the one exception to D38's "containers
+cannot swap": the RAM the build may use is still capped, so the host and its
+apps keep theirs, and a build over the cap pushes its own anonymous pages to
+disk and slows down instead of stalling. `ContainerSpec.memorySwapBytes` is
+refused by `createContainer` on any spec without a sidecar role label, like
+`privileged`, so every app's cap stays hard. On a host without swap it changes
+nothing.
+
+**A silent build pinned at the cap is stopped.** After 10 minutes without a
+line of output, the build asks the daemon's memory through
+`DockerClient.containerMemory` (the Engine's one-shot stats) and is stopped if
+anonymous memory is at 90% of the cap — anonymous, because page cache fills a
+healthy cgroup to its limit too. It is then reported as out of memory, with the
+cap and what to do instead: build the image elsewhere and deploy it as an
+image, or use a bigger server. A timeout now says it timed out, and a step
+BuildKit reports as `exit code: 137` says it ran out of memory. Every build
+log starts with the cap.
+
+**The daemon is restarted after every failed build, and after a successful
+one when it kept more than half its cap in anonymous memory.** Stop and start,
+not replace: the container and its cache volume are kept, and the next build
+is as warm as before. A restart that fails is logged and left to the
+reconciler's bootstrap.
+
+**Costs, recorded.** D38's cost applies to BuildKit now as well: a build
+step's pages, including build-scoped variables passed as build args, can reach
+the root-only swapfile. And with swap the stall check cannot tell a build that
+is swapping its way forward from one that is stuck — both hold the cap in
+resident memory — so a build quiet for 10 minutes while it swaps is stopped
+as out of memory. That is the case the swap is meant to rescue, so the 10
+minutes are a guess to revisit once a host run shows how long such a build is
+silent.
+
+**Not verified on a host.** Each piece is unit-tested where it is pure (the
+thresholds, the runner's stop reasons), but none has run against a real
+daemon yet. In particular, whether a Next.js build finishes on the 1GB host
+with swap, and how long it takes, is unknown; until it is, RUNNING.md
+recommends building such apps elsewhere.
+
+Rejected: letting the override go above the host-sized cap on small hosts
+without warning (it already warns, and the warning is now in RUNNING.md too);
+a cgroup `memory.events` reader, which would assume the daemon is local;
+restarting BuildKit before every build, which costs seconds on every deploy to
+fix something that only matters after a build that left memory behind; and a
+build-time `NODE_OPTIONS` heap limit, which would change how users' apps
+build.

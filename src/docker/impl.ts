@@ -2,6 +2,7 @@ import { config } from "../config.ts"
 import { logger } from "../log.ts"
 import {
   assertValidImageRef,
+  type ContainerMemory,
   ContainerNotFoundError,
   type ContainerSpec,
   type ContainerState,
@@ -401,6 +402,22 @@ export class DockerHttpClient implements DockerClient {
       )
     }
 
+    // Same boundary again: swap is what turns an app's hard cap into a soft one
+    // that grinds the disk, so only musdash's own infrastructure may have it.
+    if (spec.memorySwapBytes !== undefined) {
+      if (spec.labels[LABEL_ROLE] === undefined) {
+        throw new DockerError(
+          "refusing to give a container swap without a musdash.role label: " +
+            "every app's memory limit is hard",
+        )
+      }
+      if (spec.memorySwapBytes < spec.memoryLimitBytes) {
+        throw new DockerError(
+          "memorySwapBytes counts memory plus swap, so it cannot be below memoryLimitBytes",
+        )
+      }
+    }
+
     // The Engine reads a Binds source containing a slash as a HOST path, so a
     // "volume" named "/" would be a host bind mount that walks around the check
     // above. Named volumes are plain names; anything else is refused.
@@ -458,8 +475,8 @@ export class DockerHttpClient implements DockerClient {
         ...(hasPorts ? { PortBindings: portBindings } : {}),
         Memory: spec.memoryLimitBytes,
         // Matching the memory limit disables swap, so a leaking app cannot
-        // escape its cap by swapping.
-        MemorySwap: spec.memoryLimitBytes,
+        // escape its cap by swapping. Only a sidecar may set more (see above).
+        MemorySwap: spec.memorySwapBytes ?? spec.memoryLimitBytes,
         ...(spec.cpuShares ? { CpuShares: spec.cpuShares } : {}),
         ...(spec.privileged === true ? { Privileged: true } : {}),
         RestartPolicy: { Name: spec.restartPolicy },
@@ -603,6 +620,27 @@ export class DockerHttpClient implements DockerClient {
     }
   }
 
+  async containerMemory(id: string): Promise<ContainerMemory> {
+    // one-shot: the Engine otherwise samples twice, a second apart, to compute
+    // CPU deltas this caller does not need. Bounded, because the build path
+    // asks before and after every build, and an Engine slowed by a host
+    // under memory pressure must not hold the one worker.
+    const raw = await this.json<StatsResponse>(
+      `/containers/${encodeURIComponent(id)}/stats?stream=false&one-shot=true`,
+      { signal: AbortSignal.timeout(STATS_TIMEOUT_MS) },
+    )
+    const m = raw.memory_stats
+    if (typeof m?.usage !== "number" || typeof m.limit !== "number") {
+      throw new DockerError(`the Engine reported no memory figures for ${id}`)
+    }
+    const anon = m.stats?.anon
+    return {
+      usageBytes: m.usage,
+      anonBytes: typeof anon === "number" ? anon : null,
+      limitBytes: m.limit,
+    }
+  }
+
   async listManagedContainers(): Promise<ManagedContainer[]> {
     // Filter server-side: the reconciler calls this every 30 seconds and should
     // not pull every container on the host across the socket.
@@ -732,6 +770,21 @@ export class DockerHttpClient implements DockerClient {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/** How long containerMemory waits for the Engine's one-shot stats. */
+const STATS_TIMEOUT_MS = 5_000
+
+/**
+ * The part of `GET /containers/{id}/stats` read here. On cgroup v2 `stats` is
+ * the container's memory.stat, which carries `anon`; v1 has no such key.
+ */
+interface StatsResponse {
+  memory_stats?: {
+    usage?: number
+    limit?: number
+    stats?: Record<string, number>
+  }
+}
 
 interface InspectResponse {
   Id: string

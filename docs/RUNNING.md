@@ -393,6 +393,9 @@ daemon carries the build-cache cap too, so nothing needs removing by hand. The
 same one-off replacement happens after you resize the VPS or change
 `MUSDASH_BUILDKIT_MEMORY_MB`.
 
+The build daemon is replaced once more on the upgrade that let it swap (D50),
+the same way and at the same cost.
+
 The proxy is replaced the same way, once, on the upgrade that sized its memory
 cap from the host (D46), and again after a resize. Unlike the build daemon,
 your sites go through it: expect them to be unreachable for a few seconds while
@@ -576,8 +579,17 @@ when its build ends, with a daily sweep for anything a crash left behind.
 
 BuildKit idles at ~66 MB and may grow during a build up to a cap sized from the
 host's memory — 384 MiB on a 1GB host, about 1 GiB on 2GB, at most 8 GiB (D33).
-A build step that exceeds it is killed inside BuildKit's container instead of
-starving the host; `MUSDASH_BUILDKIT_MEMORY_MB` overrides it.
+Past the cap it may swap as much again, where the host has swap (D50): a build
+that outgrows the cap slows down, and the memory your apps and the dashboard
+need stays theirs. A build that sits at the cap printing nothing for 10
+minutes is stopped and reported as out of memory, and BuildKit is restarted
+after any failed build and after a build it kept more than half its cap for.
+
+`MUSDASH_BUILDKIT_MEMORY_MB` overrides the cap, but raising it on a small host
+takes memory from everything else: on the 1GB test host a 640 MiB cap let a
+Next.js build take the dashboard and every app down for three minutes. An app
+that needs more than the cap to build is better built elsewhere — in GitHub
+Actions, for example — and deployed as an image.
 
 Caddy's cap is sized the same way: a quarter of the host's memory, at least
 128 MiB and at most 512 MiB (D46) — 128 MiB on a 512MB host, 224 MiB on 1GB.

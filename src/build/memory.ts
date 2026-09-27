@@ -80,3 +80,38 @@ export function buildkitMemoryCap(memTotalBytes: number): BuildkitMemoryCap {
   if (stepped < MIN) return { bytes: MIN, floored: true }
   return { bytes: Math.min(stepped, MAX), floored: false }
 }
+
+/** One sample of the daemon's cgroup, as DockerClient.containerMemory reads it. */
+interface MemoryReading {
+  usageBytes: number
+  anonBytes: number | null
+  limitBytes: number
+}
+
+/**
+ * Whether the daemon's cgroup is pinned at its cap.
+ *
+ * Anonymous memory, not usage: usage counts page cache, which fills any cgroup
+ * that reads a lot of files and is dropped the moment something needs the
+ * room, so a healthy build sits at its limit by that measure. A starved one
+ * has pushed out nearly all of its cache and is left holding the cap in
+ * anonymous pages. cgroup v1 reports no anon figure, so usage is the fallback
+ * there, at a stricter threshold.
+ */
+export function isStarved(m: MemoryReading): boolean {
+  if (m.anonBytes !== null) return m.anonBytes >= m.limitBytes * 0.9
+  return m.usageBytes >= m.limitBytes * 0.98
+}
+
+/**
+ * Whether the daemon kept enough memory after a build to be worth a restart.
+ *
+ * Half the cap: on the 1GB host buildkitd held 227 of its 384 MiB for 40
+ * minutes after its last build, and the next build started with 150 (P-3). It
+ * idles at 25–65 MiB, so a restart gives most of it back. Anonymous memory
+ * only, for the reason isStarved gives; without that figure the answer is no,
+ * since page cache alone is no reason to restart anything.
+ */
+export function keptAfterBuild(m: MemoryReading): boolean {
+  return m.anonBytes !== null && m.anonBytes > m.limitBytes / 2
+}
