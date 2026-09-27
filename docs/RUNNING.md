@@ -393,6 +393,11 @@ daemon carries the build-cache cap too, so nothing needs removing by hand. The
 same one-off replacement happens after you resize the VPS or change
 `MUSDASH_BUILDKIT_MEMORY_MB`.
 
+The proxy is replaced the same way, once, on the upgrade that sized its memory
+cap from the host (D46), and again after a resize. Unlike the build daemon,
+your sites go through it: expect them to be unreachable for a few seconds while
+the new proxy starts. Certificates and routes are kept.
+
 ---
 
 ## Using the dashboard

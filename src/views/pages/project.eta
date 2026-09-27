@@ -323,7 +323,7 @@
     %>
     <div class="field" x-show="installationId !== ''" x-cloak>
       <span class="label" id="<%= git %>-repo-label">Repository</span>
-      <div class="repo-list" role="radiogroup" aria-labelledby="<%= git %>-repo-label">
+      <div class="repo-list" role="radiogroup" aria-labelledby="<%= git %>-repo-label" x-ref="repoList">
         <% it.gitPicker.installations.forEach(function (i) { %>
         <% i.repos.forEach(function (r) { %>
         <!--

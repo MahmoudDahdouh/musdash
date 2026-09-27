@@ -18,7 +18,7 @@
       class="inline"
       data-confirm
       data-confirm-title="Deploy now?"
-      data-confirm-body="Pulls the image and starts a new container. Traffic only switches once it passes the health check."
+      data-confirm-body="<%= it.resource.kind === 'git' ? 'Builds the latest commit on the branch' : 'Pulls the image' %> and starts a new container. Traffic only switches once it passes the health check."
       data-confirm-label="Deploy"
     >
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />

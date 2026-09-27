@@ -127,7 +127,10 @@ document.addEventListener("alpine:init", () => {
      * when Alpine flushes x-show.
      */
     visibleCount() {
-      const list = this.$el.querySelector(".repo-list")
+      // $refs, not $el: called from the hint's x-show, $el is the hint itself,
+      // which holds no list — so the count was always 0 and "no match" showed
+      // beneath the matches (P-4).
+      const list = this.$refs.repoList
       if (!list) return 0
       let n = 0
       for (const row of list.children) {
