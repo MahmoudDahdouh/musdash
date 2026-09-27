@@ -139,7 +139,7 @@
         <tbody>
           <% it.deployments.forEach(function (d) { %>
           <tr>
-            <td class="mono"><a href="/d/<%= d.id %>"><%= d.image %></a></td>
+            <td class="mono"><a href="/d/<%= d.id %>"><%~ include("@deploy-image", { pending: d.imagePending, status: d.status, image: d.image }) %></a></td>
             <!--
               An image deploy and a rollback carry no commit metadata at all, so
               these three render an em dash rather than an empty cell — a blank

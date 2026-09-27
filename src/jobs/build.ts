@@ -91,7 +91,6 @@ export function setSourceFetcher(fetcher: SourceFetcher): void {
  */
 export interface BuiltSource {
   image: string
-  commit: FetchedSource | null
 }
 
 export async function buildFromSource(
@@ -102,6 +101,14 @@ export async function buildFromSource(
   buildArgs: Record<string, string>,
   /** Every secret at every scope, for redaction. See BuildRequest. */
   redactSecrets: readonly string[],
+  /**
+   * Called with the commit as soon as it is fetched, before anything is built.
+   *
+   * A callback rather than part of the return value: only a build that
+   * succeeds returns, and a failed build is the deploy whose commit the user
+   * most needs to see (P-2).
+   */
+  onCommit: (commit: FetchedSource) => void,
 ): Promise<BuiltSource> {
   const source = gitSource(resource)
   if (!source) {
@@ -123,7 +130,10 @@ export async function buildFromSource(
       },
       dir,
     )
-    if (commit) emit(`At commit ${commit.sha.slice(0, 7)}`)
+    if (commit) {
+      emit(`At commit ${commit.sha.slice(0, 7)}`)
+      onCommit(commit)
+    }
 
     const contextDir = source.buildContext
       ? `${dir}/${source.buildContext}`
@@ -152,7 +162,7 @@ export async function buildFromSource(
       noCache: config.buildNoCache,
       onLog: emit,
     })
-    return { image: tag, commit }
+    return { image: tag }
   } finally {
     // Both paths. Build directories are the second-largest disk leak after
     // images, and a failed build leaves the largest ones.

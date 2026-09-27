@@ -19,6 +19,7 @@ import resourceSrc from "./pages/resource.eta" with { type: "text" }
 import settingsSrc from "./pages/settings.eta" with { type: "text" }
 import setupSrc from "./pages/setup.eta" with { type: "text" }
 import statusSrc from "./pages/status.eta" with { type: "text" }
+import deployImagePartialSrc from "./partials/deploy-image.eta" with { type: "text" }
 import errorsPartialSrc from "./partials/errors.eta" with { type: "text" }
 import statusPartialSrc from "./partials/status.eta" with { type: "text" }
 import appCss from "../../public/app.css" with { type: "text" }
@@ -30,6 +31,7 @@ const eta = new Eta({ autoEscape: true, cache: true })
 // reaches Eta's file loader, which is what keeps it working in the binary.
 eta.loadTemplate("@status", statusPartialSrc)
 eta.loadTemplate("@errors", errorsPartialSrc)
+eta.loadTemplate("@deploy-image", deployImagePartialSrc)
 
 const PAGES = {
   setup: setupSrc,

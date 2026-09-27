@@ -56,7 +56,7 @@ import {
 } from "../github/repos.ts"
 import { flashFromQuery, settingsViewModel } from "../github/settings.ts"
 import { clearTokenCache } from "../github/tokens.ts"
-import { enqueueDeploy } from "../jobs/deploy.ts"
+import { BUILD_PLACEHOLDER, enqueueDeploy } from "../jobs/deploy.ts"
 import { logger } from "../log.ts"
 import { tail } from "../logs/buffer.ts"
 import { enqueue } from "../queue/index.ts"
@@ -488,6 +488,7 @@ export const appRoutes = new Elysia()
     const deployments = listDeployments(resource.id).map((d) => ({
       ...d,
       duration: formatDuration(d.startedAt, d.finishedAt),
+      imagePending: d.image === BUILD_PLACEHOLDER,
     }))
 
     return html(
@@ -530,19 +531,17 @@ export const appRoutes = new Elysia()
       const ctx = getResourceContext(params.resourceId)
       if (!ctx) return statusFor(session, 404)
 
-      // A git resource has no image until it has built one, and requiring it
-      // here would make the very first deploy impossible. The job resolves the
-      // real tag when it builds; this placeholder only labels the row until
-      // then.
-      const image = resourceImage(ctx.resource)
-      if (!image && ctx.resource.kind !== "git") return statusFor(session, 400)
+      // A git resource's deploy always builds, so its row carries the
+      // placeholder until the job resolves the new tag — never the image that
+      // is running now, which a failed build would leave on its row (P-2).
+      const image =
+        ctx.resource.kind === "git"
+          ? BUILD_PLACEHOLDER
+          : resourceImage(ctx.resource)
+      if (!image) return statusFor(session, 400)
 
       // Enqueue and redirect immediately — never await Docker in a handler.
-      const deploymentId = enqueueDeploy(
-        ctx.resource.id,
-        image || "(building)",
-        "manual",
-      )
+      const deploymentId = enqueueDeploy(ctx.resource.id, image, "manual")
       return redirect(`/d/${deploymentId}`, 303)
     },
     { body: t.Object({ csrf: t.String() }) },
@@ -766,6 +765,7 @@ export const appRoutes = new Elysia()
           environment: ctx.environment,
           project: ctx.project,
           duration: formatDuration(deployment.startedAt, deployment.finishedAt),
+          imagePending: deployment.image === BUILD_PLACEHOLDER,
           lines: deployLogTail(params.deploymentId),
         },
         layout(session, "Deployment", {

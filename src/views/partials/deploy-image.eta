@@ -1,0 +1,9 @@
+<%
+  /*
+   * What a deployment names as its image. A build that has not produced one
+   * carries a placeholder rather than a tag, and once the deploy has ended
+   * "(building)" would read as still in progress, so it says so instead
+   * (P-11). Callers pass `pending` (the image is the placeholder), `status`
+   * and `image`.
+   */
+%><% if (it.pending) { %><%= it.status === 'queued' || it.status === 'running' ? 'Building…' : 'Not built' %><% } else { %><%= it.image %><% } %>

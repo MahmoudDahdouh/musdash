@@ -11,7 +11,7 @@
   <div class="page-title" x-data="deploymentStatus('<%= it.deployment.id %>', '<%= it.deployment.status %>')">
     <h1>Deployment</h1>
     <%~ include("@status", { state: it.deployment.status, live: true }) %>
-    <p class="mono muted"><%= it.deployment.image %></p>
+    <p class="mono muted"><%~ include("@deploy-image", { pending: it.imagePending, status: it.deployment.status, image: it.deployment.image }) %></p>
   </div>
   <div class="actions">
     <a class="btn btn-quiet" href="/r/<%= it.resource.id %>">Back to resource</a>

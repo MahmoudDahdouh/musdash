@@ -146,7 +146,11 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     updateDeployment(deploymentId, { status: "running", startedAt: nowIso() })
     publishDeployment({ deploymentId, resourceId, status: "running" })
     publishStatus({ resourceId, state: "deploying" })
-    emit(`Deploying ${image}`)
+    emit(
+      image === BUILD_PLACEHOLDER
+        ? "Deploying a new build"
+        : `Deploying ${image}`,
+    )
 
     // Secrets are decrypted here and must never reach a log line — not on the
     // happy path, not in an error message, not in the deploy stream.
@@ -183,31 +187,30 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     // ordering below is the product's core guarantee, and a second copy of it
     // for git resources would be a second place for it to rot.
     if (resource.kind === "git" && !payload.useExistingImage) {
+      // Commit metadata is written the moment the source is fetched rather
+      // than at enqueue time: resolving it in the HTTP handler would put a
+      // GitHub call in a request path, and would record the commit that was
+      // current when the button was pressed rather than the one this build
+      // used. And before the build rather than after it, so a build that fails
+      // still names its commit (P-2).
       const built = await buildFromSource(
         resource,
         deploymentId,
         emit,
         env.build,
         env.secrets,
+        (commit) => {
+          updateDeployment(deploymentId, {
+            commitSha: commit.sha,
+            commitMessage: commit.message,
+            commitAuthor: commit.author,
+          })
+        },
       )
       image = built.image
-      // The deployment row is created before the tag exists, so it holds the
-      // placeholder the enqueue used until now.
-      //
-      // Commit metadata is written here rather than at enqueue time for two
-      // reasons: resolving it in the HTTP handler would put a GitHub call in a
-      // request path, and it would record the commit that was current when the
-      // button was pressed rather than the one this build actually used.
-      updateDeployment(deploymentId, {
-        image,
-        ...(built.commit
-          ? {
-              commitSha: built.commit.sha,
-              commitMessage: built.commit.message,
-              commitAuthor: built.commit.author,
-            }
-          : {}),
-      })
+      // The deployment row is created before the tag exists, so it holds
+      // BUILD_PLACEHOLDER until now.
+      updateDeployment(deploymentId, { image })
     } else {
       await resolveImage(image, emit, safe)
     }
@@ -691,14 +694,24 @@ function assertNotRestarted(state: ContainerState): void {
 export type DeployTrigger = "manual" | "rollback" | "reconcile" | "webhook"
 
 /**
+ * What a deployment row names as its image until a build has produced one.
+ *
+ * Every deploy that builds is enqueued with this, never with the image already
+ * running: a build that failed left that image on its row, so the one deploy
+ * that produced nothing named an image that works (P-2). The pages render it
+ * as "Building…" or, once the deploy has ended, "Not built" (P-11).
+ */
+export const BUILD_PLACEHOLDER = "(building)"
+
+/**
  * Triggers that deploy an image which already exists locally.
  *
  * Enumerated rather than derived from `trigger !== "manual"`. That inference
  * was correct while there were three triggers and became silently wrong the
  * moment a fourth was added: a webhook deploy would be handed
  * useExistingImage:true and then try to `docker pull` an image literally named
- * "(building)" — the placeholder the deployment row carries until a build
- * resolves the real tag.
+ * BUILD_PLACEHOLDER — which the deployment row carries until a build resolves
+ * the real tag.
  *
  * Adding a trigger now means choosing a side, instead of inheriting an answer
  * from a comparison that never mentioned the concept.
@@ -802,10 +815,9 @@ function isConflict(err: unknown): boolean {
  * removed again on a conflict: a row left behind would show as a permanently
  * "queued" deploy that no job will ever pick up.
  */
-export function enqueueDeployCoalesced(
-  resourceId: string,
-  image: string,
-): string | null {
+export function enqueueDeployCoalesced(resourceId: string): string | null {
+  // A push always builds, so the row names the placeholder, never an image.
+  const image = BUILD_PLACEHOLDER
   const deployment = createDeployment({
     resourceId,
     image,

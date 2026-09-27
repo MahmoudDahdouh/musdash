@@ -3,7 +3,6 @@ import {
   deleteInstallation,
   getGithubApp,
   getWebhookSecret,
-  resourceImage,
   resourcesForPush,
   upsertInstallation,
 } from "../db/queries.ts"
@@ -69,12 +68,7 @@ function handlePush(body: PushEvent, delivery: string | null): void {
   )
 
   for (const resource of affected) {
-    // A git resource has no image until it has built one; the placeholder only
-    // labels the row until the build resolves the real tag.
-    const deploymentId = enqueueDeployCoalesced(
-      resource.id,
-      resourceImage(resource) || "(building)",
-    )
+    const deploymentId = enqueueDeployCoalesced(resource.id)
     if (deploymentId === null) {
       logger.info(
         { resourceId: resource.id, repo, branch },
