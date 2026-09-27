@@ -3222,3 +3222,44 @@ restarting BuildKit before every build, which costs seconds on every deploy to
 fix something that only matters after a build that left memory behind; and a
 build-time `NODE_OPTIONS` heap limit, which would change how users' apps
 build.
+
+## Findings from the 1GB re-test (R-1 to R-4, 2026-09-28)
+
+The re-test of D49 and D50 on the 1GB host passed everything but four points.
+After the upgrade the browser kept the old script for up to an hour, at a URL
+that had not changed, and ran it against the new pages (R-1). `next build`,
+once BuildKit's swap was full, failed as `cannot allocate memory` and
+`ResourceExhausted` with no exit code, which the out-of-memory check did not
+know (R-2). The reconciler read a daemon busy swapping through that build as
+down and queued three bootstraps (R-3). And a rollback row named no commit
+(R-4).
+
+### D51 — versioned asset URLs; two more out-of-memory shapes; no BuildKit probe while a job runs; reused images inherit their commit
+
+**Assets are linked as `/assets/<name>?v=<hash>`**, the first 12 hex digits
+of the SHA-256 of the embedded body, computed once at start. The current
+version is served `immutable` for a year; no version or any other one gets
+the same body with `no-cache`, so a page cached from before an upgrade cannot
+pin the old script. A query string rather than a hashed file name, because
+the asset table is keyed by name and a name that changes would need a lookup
+table the query does not.
+
+**`cannot allocate memory` counts as running out of memory**, next to `exit
+code: 137`, and both only inside BuildKit's own sentence, `did not complete
+successfully: …`: the check sees every line of the build, the app's compiler
+output included. The `ResourceExhausted` that follows is left out; it is a
+general gRPC status, which BuildKit also uses for an oversized message. The
+message no longer names an exit code, since the new shape has none.
+
+**The reconciler does not probe BuildKit's socket while the worker is running
+a job**, as the worker itself reports it — not a `leased` row, which can
+outlive its handler when recording the outcome fails. The job may be the
+build, and a bootstrap queued then would run only after it. A stopped daemon
+is still caught. The cost: a queue that never drains between 30-second ticks
+postpones the probe until it does, which a failed build's restart (D50)
+partly covers. Rejected: a longer probe timeout, which would slow every tick
+when the daemon really is down.
+
+**A rollback or reconcile row copies the commit** of the newest deployment of
+the same resource that built that image and recorded one. The tag embeds the
+building deployment's id, so the match is that build.
