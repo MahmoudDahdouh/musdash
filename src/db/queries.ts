@@ -485,6 +485,41 @@ export function listDeployments(resourceId: string, limit = 20): Deployment[] {
     .all()
 }
 
+/**
+ * The commit a resource's image was built from, or null when no deployment
+ * that recorded one produced it (an image resource, or a build that predates
+ * commit tracking).
+ *
+ * For the rows that deploy an existing image — a rollback, a reconcile
+ * redeploy — which carry no commit of their own and read as "—" otherwise
+ * (R-4). The image tag embeds the building deployment's id, so a match is that
+ * one build.
+ */
+export function commitForImage(
+  resourceId: string,
+  image: string,
+): Pick<Deployment, "commitSha" | "commitMessage" | "commitAuthor"> | null {
+  return (
+    orm
+      .select({
+        commitSha: deployments.commitSha,
+        commitMessage: deployments.commitMessage,
+        commitAuthor: deployments.commitAuthor,
+      })
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.resourceId, resourceId),
+          eq(deployments.image, image),
+          sql`${deployments.commitSha} IS NOT NULL`,
+        ),
+      )
+      .orderBy(desc(deployments.createdAt))
+      .limit(1)
+      .get() ?? null
+  )
+}
+
 export function updateDeployment(
   id: string,
   patch: Partial<Omit<Deployment, "id" | "resourceId" | "createdAt">>,

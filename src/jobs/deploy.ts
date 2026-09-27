@@ -13,6 +13,7 @@ import {
 } from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
 import {
+  commitForImage,
   createDeployment,
   deleteDeployment,
   getDeployment,
@@ -749,14 +750,22 @@ export function enqueueDeploy(
   image: string,
   trigger: DeployTrigger = "manual",
 ): string {
-  const deployment = createDeployment({ resourceId, image, trigger })
+  const reuses = REUSES_IMAGE.has(trigger)
+  const deployment = createDeployment({
+    resourceId,
+    image,
+    trigger,
+    // A deploy that builds records its commit when it fetches; one that
+    // reuses an image inherits the commit that image was built from.
+    ...(reuses ? commitForImage(resourceId, image) : null),
+  })
   enqueue(
     "deploy",
     {
       resourceId,
       deploymentId: deployment.id,
       image,
-      useExistingImage: REUSES_IMAGE.has(trigger),
+      useExistingImage: reuses,
     } satisfies DeployPayload,
     { maxAttempts: DEPLOY_MAX_ATTEMPTS },
   )
