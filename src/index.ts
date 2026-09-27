@@ -30,8 +30,8 @@ const app = new Elysia()
   .onError(handleError)
   .get(
     "/assets/:file",
-    ({ params, status }) =>
-      assetResponse(params.file) ?? status(404, "not found"),
+    ({ params, query, status }) =>
+      assetResponse(params.file, query.v) ?? status(404, "not found"),
   )
   .get("/health", () => "ok")
   .use(authRoutes)

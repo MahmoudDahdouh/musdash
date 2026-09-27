@@ -115,6 +115,7 @@ export function renderPage(
     activeProjectId: layout.activeProjectId ?? "",
     activeEnvironmentId: layout.activeEnvironmentId ?? "",
     activeSettings: layout.activeSettings ?? false,
+    assetUrl,
     body,
   })
 }
@@ -128,19 +129,52 @@ export function renderForbidden(): string {
 }
 
 /**
+ * Each asset's version: the start of its content's SHA-256, computed once.
+ *
+ * In the URL so that a release that changes an asset is a new URL. At a fixed
+ * URL cached for an hour, an upgrade left the browser running the old script
+ * against the new pages until the entry expired (R-1).
+ */
+const ASSET_VERSIONS = Object.fromEntries(
+  Object.entries(assets).map(([name, asset]) => [
+    name,
+    new Bun.CryptoHasher("sha256")
+      .update(asset.body)
+      .digest("hex")
+      .slice(0, 12),
+  ]),
+) as Record<keyof typeof assets, string>
+
+/** Where a page links to an asset. */
+export function assetUrl(name: keyof typeof assets): string {
+  return `/assets/${name}?v=${ASSET_VERSIONS[name]}`
+}
+
+/**
  * Serves an embedded asset, or null when the name is not one.
  *
  * Lives here rather than in the entry point because the asset table is this
  * module's, and src/index.ts wires modules together rather than holding route
  * bodies. Returning null instead of a 404 keeps the HTTP shape at the caller.
+ *
+ * The current version may be cached for good: its URL changes with its
+ * content. Anything else — no version, or a page from before an upgrade asking
+ * for the old one — gets today's body and must be revalidated, so a stale page
+ * cannot pin a stale script.
  */
-export function assetResponse(name: string): Response | null {
-  const asset = assets[name as keyof typeof assets]
-  if (!asset) return null
-  return new Response(asset.body, {
+export function assetResponse(
+  name: string,
+  version: string | undefined,
+): Response | null {
+  if (!Object.hasOwn(assets, name)) return null
+  const key = name as keyof typeof assets
+  const current = version === ASSET_VERSIONS[key]
+  return new Response(assets[key].body, {
     headers: {
-      "content-type": asset.type,
-      "cache-control": "public, max-age=3600",
+      "content-type": assets[key].type,
+      "cache-control": current
+        ? "public, max-age=31536000, immutable"
+        : "no-cache",
     },
   })
 }

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title><%= it.title %> · musdash</title>
-    <link rel="stylesheet" href="/assets/app.css" />
+    <link rel="stylesheet" href="<%= it.assetUrl('app.css') %>" />
     <%/* The mark (i-mark below), inline so it costs no request and no route.
          A data: URI cannot reach the page sprite, so the geometry repeats;
          no # or % in it, which a data: URI would need escaped. */%>
@@ -12,7 +12,7 @@
       rel="icon"
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' color='oklch(0.22 0.02 250)'><style>@media (prefers-color-scheme:dark){svg{color:oklch(0.95 0 0)}}</style><rect x='3' y='3' width='18' height='18' rx='4'/><rect x='9' y='9' width='6' height='6' rx='1' fill='currentColor'/></svg>"
     />
-    <script defer src="/assets/alpine.js"></script>
+    <script defer src="<%= it.assetUrl('alpine.js') %>"></script>
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>
