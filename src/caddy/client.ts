@@ -46,9 +46,9 @@ type UnixInit = RequestInit & { unix: string }
  * Job concurrency is exactly 1 and the worker awaits its handler with no
  * timeout of its own, so a single fetch that never settles — a half-open
  * connection to a port something else is holding, or a Caddy wedged mid-reload
- * — parks the one worker every user deploy is queued behind, indefinitely. The
- * 15-minute lease is no rescue either: recoverExpiredLeases() runs only at
- * startWorker().
+ * — parks the one worker every user deploy is queued behind, indefinitely. No
+ * lease rescues it either: leases are recovered only when the process starts
+ * (recoverOrphanedLeases).
  *
  * The bound is on request() rather than on ping() alone because upsertRoute
  * sits on the deploy critical path and has the identical hang shape.

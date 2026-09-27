@@ -570,7 +570,8 @@ critical path and has the identical hang shape. A general worker-level timeout
 was rejected: `Promise.race` does not cancel the losing handler, so it would
 leave one running while the loop claimed the next job, silently breaking the
 concurrency-1 invariant. Making `recoverExpiredLeases()` periodic is the correct
-general fix and is deferred to its own slice.
+general fix and is deferred to its own slice. (Withdrawn by D49: recovery now
+takes back every lease, so a periodic run would take the running job's too.)
 
 **A running container is not a reachable one — `publishedPortCount`.** The
 sharpest finding of the verification run, and one not anticipated when the slice
@@ -1568,7 +1569,8 @@ no-op.
 The worker calls `complete()` _after_ its handler returns. A handler that exits
 the process never returns, so its row stays `leased`, `recoverExpiredLeases()`
 re-claims it fifteen minutes later, and the process restarts again. A restart
-job is a slow restart loop.
+job is a slow restart loop. (Since D49 the next start re-claims it at once, so
+it would be a fast one; the reasoning is unchanged.)
 
 `POST /settings/restart` therefore stops the worker, reconciler and scheduler,
 then `setTimeout(process.exit, 750)` so the 303 reaches the browser first. It
@@ -3121,3 +3123,35 @@ starts it once, then waits again. An exited proxy and one whose ports could not
 be mapped keep their own errors; a restart fixes neither. Rejected: restarting
 from the reconciler on a single failed ping, which would bounce a proxy that is
 merely slow under load.
+
+## An interrupted job stays leased until a late restart (P-1, 2026-09-27)
+
+On the 1GB GitHub test the host rebooted, the reconciler queued two
+redeploys, and `install.sh` and then a config change restarted musdash, both
+mid-deploy and within minutes. Fifteen minutes later both jobs were still
+`leased` and their deployments still `running`. Recovery ran once, at start,
+and took back only leases already past `leased_until`; a restart inside the
+15-minute lease found nothing expired, and nothing looked again.
+
+### D49 — every lease is taken back at start, and the worker starts after listen
+
+**At start, every `leased` row returns to `pending`, however recent** —
+`recoverOrphanedLeases()`, replacing `recoverExpiredLeases()` and the
+`leased_until < now` condition PHASES.md §8 and "Job queue" above specify. At
+that moment no lease can be live: one process owns the database, systemd
+starts it only after the previous one and its children have exited, and the
+dashboard's restart exits first and refuses while a job is pending or leased
+(D26). `leased_until` is still written and no longer read.
+
+**The worker, the sidecar bootstraps, the reconciler and the scheduler start
+after `listen()`**, which throws `EADDRINUSE` on a taken port. The rule above
+is otherwise only a comment, and a copy of the binary run by hand on the live
+data directory would take back the running process's lease and deploy the
+same resource twice at once. It still does if given a different port and the
+same data directory; that is not a supported setup, and a data-directory lock
+was not worth a native dependency or a pid file that a reboot can make stale.
+
+Rejected: running recovery periodically, the fix deferred after the stuck
+admin-API job, which under this rule would take back the lease of the job the
+worker is running; and a shorter lease, which only narrows the window a
+restart has to miss.

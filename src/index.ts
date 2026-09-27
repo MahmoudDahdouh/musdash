@@ -23,11 +23,6 @@ await reconcileOnce().catch((e: unknown) => {
   logger.warn({ err: (e as Error).message }, "startup reconcile skipped")
 })
 
-startWorker()
-queueSidecarBootstraps() // Docker work: the queue owns it, serving never waits.
-startReconciler()
-startScheduler()
-
 const app = new Elysia()
   // Before anything else: a public peer gets nothing, not even /health (D31),
   // and an oversized form is refused before Elysia reads it (D35).
@@ -47,11 +42,15 @@ const app = new Elysia()
   .use(appRoutes)
   .listen(serveOptions())
 
+const { port, acmeStaging } = config
 logger.info(
-  {
-    port: config.port,
-    hostname: app.server?.hostname,
-    acmeStaging: config.acmeStaging,
-  },
+  { port, hostname: app.server?.hostname, acmeStaging },
   "musdash listening",
 )
+
+// After listen, which throws on a taken port: a second copy run by hand on the
+// live database stops before its worker takes back live leases (P-1).
+startWorker()
+queueSidecarBootstraps() // Docker work: the queue owns it, serving never waits.
+startReconciler()
+startScheduler()

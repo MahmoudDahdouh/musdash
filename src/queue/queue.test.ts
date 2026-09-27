@@ -8,7 +8,7 @@ import {
   getJob,
   pendingCount,
   pruneFinishedJobs,
-  recoverExpiredLeases,
+  recoverOrphanedLeases,
 } from "./index.ts"
 
 /**
@@ -173,7 +173,14 @@ describe("fail", () => {
   })
 })
 
-describe("recoverExpiredLeases", () => {
+/**
+ * Recovery runs once, when the process starts. Only one musdash process ever
+ * owns the database, and systemd starts it only after the previous one has
+ * exited, so at that moment every leased job belongs to a process that is gone
+ * — whether or not its lease has run out yet (P-1: a restart within the
+ * 15-minute lease left two deploys "running" until the next restart).
+ */
+describe("recoverOrphanedLeases", () => {
   test("returns an expired lease to pending", () => {
     const id = enqueue("deploy", {}, {}, db)
     claim(db)
@@ -182,24 +189,35 @@ describe("recoverExpiredLeases", () => {
       id,
     ])
 
-    expect(recoverExpiredLeases(db)).toBe(1)
+    expect(recoverOrphanedLeases(db)).toBe(1)
     expect(getJob(id, db)?.status).toBe("pending")
     expect(claim(db)?.id).toBe(id) // claimable again after a crash
   })
 
-  test("leaves an unexpired lease alone", () => {
+  test("returns an unexpired lease to pending too", () => {
     const id = enqueue("deploy", {}, {}, db)
     claim(db)
-    expect(recoverExpiredLeases(db)).toBe(0)
-    expect(getJob(id, db)?.status).toBe("leased")
+
+    expect(recoverOrphanedLeases(db)).toBe(1)
+    const job = getJob(id, db)
+    expect(job?.status).toBe("pending")
+    expect(job?.leased_until).toBeNull()
+    expect(claim(db)?.id).toBe(id)
   })
 
-  test("does not resurrect done or failed jobs", () => {
+  test("does not resurrect done or failed jobs, or touch pending ones", () => {
     const done = enqueue("deploy", {}, {}, db)
     claim(db)
     complete(done, db)
-    expect(recoverExpiredLeases(db)).toBe(0)
+    const failed = enqueue("deploy", {}, { maxAttempts: 1 }, db)
+    claim(db)
+    fail(failed, "boom", db)
+    const pending = enqueue("deploy", {}, {}, db)
+
+    expect(recoverOrphanedLeases(db)).toBe(0)
     expect(getJob(done, db)?.status).toBe("done")
+    expect(getJob(failed, db)?.status).toBe("failed")
+    expect(getJob(pending, db)?.status).toBe("pending")
   })
 })
 

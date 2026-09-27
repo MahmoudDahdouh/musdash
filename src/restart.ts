@@ -9,8 +9,9 @@ import { logger } from "./log.ts"
  *
  * This is deliberately NOT a job. The worker calls complete() after the handler
  * returns, so a handler that exits the process never completes its own row: the
- * lease sits there, recoverExpiredLeases() re-claims it fifteen minutes later,
- * and the process restarts again. A restart job is a slow restart loop.
+ * lease sits there, recoverOrphanedLeases() re-claims it as soon as the new
+ * process starts, and the process restarts again. A restart job is a restart
+ * loop.
  *
  * It is a direct route action instead, which does not breach "do not await in a
  * handler" because nothing is awaited — the exit is deferred past the response.
@@ -40,7 +41,8 @@ export function restartCapability(): "systemd" | "unmanaged" {
  *
  * Counts leased jobs as well as pending ones: a deploy that is mid-flight is
  * leased, and that is exactly the case worth blocking — restarting through one
- * strands a half-swapped resource until the lease expires. Refusing is honest
+ * interrupts a half-swapped resource, which the next start re-deploys from the
+ * beginning. Refusing is honest
  * and costs the operator three seconds; draining would mean a background timer
  * holding a promise nobody is watching.
  */

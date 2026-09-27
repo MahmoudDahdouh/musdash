@@ -725,7 +725,7 @@ const REUSES_IMAGE: ReadonlySet<DeployTrigger> = new Set([
  * Recovery is the user's Deploy button or the next push. A failed redeploy
  * leaves the old container serving; the reconciler only redeploys the last
  * image that succeeded, for a resource whose container is gone, so it never
- * retries a failed build. A job recovered from an expired lease after a crash
+ * retries a failed build. A job recovered at startup after a crash or restart
  * still re-runs once: claim() does not check attempts.
  */
 const DEPLOY_MAX_ATTEMPTS = 1

@@ -9,7 +9,11 @@ import { nowIso, ulid } from "../ids.ts"
  * block on Docker and an interrupted deploy is recoverable after a restart.
  */
 
-/** 15 minutes. Long enough for a slow image pull, short enough to recover. */
+/**
+ * 15 minutes. Written to leased_until on every claim, and read by nothing since
+ * recovery stopped comparing against it: every lease at startup is orphaned
+ * (see recoverOrphanedLeases). Kept because the column is in the schema.
+ */
 export const LEASE_MS = 15 * 60 * 1000
 
 /** PHASES.md §8: 10s, 60s, 300s, then the job is failed. */
@@ -60,10 +64,10 @@ export function enqueue(
  * Claims the oldest runnable job, atomically.
  *
  * The UPDATE ... WHERE id = (SELECT ...) RETURNING form is deliberate and must
- * not be split into a SELECT followed by an UPDATE. Even at concurrency 1 a
- * restarting process can overlap the previous one, and two statements let both
- * read the same row before either writes it. One statement makes that
- * impossible.
+ * not be split into a SELECT followed by an UPDATE: two statements let two
+ * claimants read the same row before either writes it. musdash runs one
+ * claimant — one process, one worker loop — but one statement makes the claim
+ * correct without relying on that.
  */
 export function claim(database: Database = defaultDb): JobRow | null {
   const now = new Date()
@@ -137,14 +141,22 @@ export function fail(
 }
 
 /**
- * Returns expired leases to the pending pool. Run once at startup: this single
+ * Returns every leased job to the pending pool. Run once at startup: this single
  * statement is what makes a job survive a crash or a restart mid-deploy.
+ *
+ * Every lease, not only expired ones. At startup no job can legitimately be
+ * leased: one process owns the database, and systemd starts it only after the
+ * previous one has exited — as does the dashboard's restart, which exits first.
+ * Checking leased_until instead skipped any job whose owner died within the
+ * last LEASE_MS, and since this runs only once, nothing ever came back for it:
+ * a reboot followed by an upgrade left two deploys "running" indefinitely (P-1).
+ * Running a second musdash by hand on the same data directory would have this
+ * re-run the first one's job; that is not a supported setup.
  */
-export function recoverExpiredLeases(database: Database = defaultDb): number {
+export function recoverOrphanedLeases(database: Database = defaultDb): number {
   const res = database.run(
     `UPDATE jobs SET status = 'pending', leased_until = NULL
-      WHERE status = 'leased' AND leased_until < ?`,
-    [nowIso()],
+      WHERE status = 'leased'`,
   )
   return res.changes
 }

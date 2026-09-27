@@ -879,8 +879,8 @@ export const appRoutes = new Elysia()
    *
    * Deliberately not a job: the worker completes a job only after its handler
    * returns, so a handler that exits the process leaves its row leased and
-   * lease recovery restarts the process again fifteen minutes later. Nothing is
-   * awaited here either — the exit is deferred past this response.
+   * lease recovery at the next start runs it — and restarts the process — again.
+   * Nothing is awaited here either — the exit is deferred past this response.
    */
   .post(
     "/settings/restart",

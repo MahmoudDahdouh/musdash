@@ -2,7 +2,7 @@ import { getDeployment, markDeploymentFailed } from "../db/queries.ts"
 import { publishDeployment } from "../events.ts"
 import { handlers } from "../jobs/index.ts"
 import { logger } from "../log.ts"
-import { claim, complete, fail, recoverExpiredLeases } from "./index.ts"
+import { claim, complete, fail, recoverOrphanedLeases } from "./index.ts"
 
 /**
  * The single worker loop.
@@ -24,10 +24,11 @@ export function startWorker(): void {
   running = true
   stopped = false
 
-  // Jobs left leased by a crash come back to pending. This single call is what
-  // makes an interrupted deploy resume rather than hang forever.
-  const recovered = recoverExpiredLeases()
-  if (recovered > 0) logger.info({ recovered }, "recovered expired job leases")
+  // Jobs left leased by a crash or a restart come back to pending, however
+  // recently they were claimed. This single call is what makes an interrupted
+  // deploy resume rather than hang forever.
+  const recovered = recoverOrphanedLeases()
+  if (recovered > 0) logger.info({ recovered }, "recovered orphaned job leases")
 
   void loop()
 }
