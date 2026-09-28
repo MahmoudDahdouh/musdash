@@ -121,7 +121,7 @@
   <div class="card stack">
     <h2 class="card-title">Deployments</h2>
     <% if (it.deployments.length === 0) { %>
-    <p class="muted">Never deployed. Press Deploy to pull the image and start it.</p>
+    <p class="muted">Never deployed. Press Deploy to <%= it.resource.kind === 'git' ? 'build the latest commit on the branch' : 'pull the image' %> and start it.</p>
     <% } else { %>
     <div class="table-scroll">
       <table class="table">
