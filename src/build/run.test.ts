@@ -138,6 +138,32 @@ describe("runBuilder", () => {
     await expect(run).rejects.toThrow(/ADVICE/)
   })
 
+  test("a Next.js build with Turbopack that runs out of memory names the webpack fix", async () => {
+    // What the 2GB host printed before `next build` pinned BuildKit at its
+    // 960 MiB cap; the same app built with webpack in under half of it (T-3).
+    const run = sh(
+      'echo "#18 1.297 ▲ Next.js 16.3.2 (Turbopack)"; exec sleep 30',
+      ctx({
+        stall: { afterMs: 200, isStarved: () => Promise.resolve(true) },
+        memoryAdvice: "ADVICE",
+      }),
+    )
+
+    await expect(run).rejects.toThrow(/--webpack/)
+    await expect(run).rejects.toThrow(/RAILPACK_BUILD_CMD/)
+    await expect(run).rejects.toThrow(/ADVICE/)
+  })
+
+  test("any other build that runs out of memory does not mention webpack", async () => {
+    const run = sh(
+      'echo "#18 1.297 ▲ Next.js 16.3.2 (webpack)"; echo "#18 ERROR: process \\"npm run build\\" did not complete successfully: exit code: 137"; exit 1',
+      ctx({ memoryAdvice: "ADVICE" }),
+    )
+
+    await expect(run).rejects.toThrow(/out of memory/)
+    await expect(run).rejects.not.toThrow(/--webpack/)
+  })
+
   test("a gRPC ResourceExhausted that is not about memory is not called memory", async () => {
     // BuildKit's message-size error shares the status code, and an app's own
     // compiler output can name it too.

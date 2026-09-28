@@ -20,6 +20,21 @@ import { BuildError, type BuildContext } from "./types.ts"
 const MEMORY_KILL =
   /did not complete successfully: (?:exit code: 137\b|cannot allocate memory)/i
 
+/**
+ * The banner `next build` prints when it compiles with Turbopack, which Next.js
+ * 16 does by default. Unanchored: BuildKit prefixes each line with its step.
+ */
+const TURBOPACK = /Next\.js [\d.]+\S* \(Turbopack\)/
+
+/**
+ * Added to an out-of-memory message when the build was Next.js on Turbopack.
+ * Measured on the 2GB host: Turbopack needed about 1.25 GiB for an app with
+ * one page and stalled below that, while `next build --webpack` peaked at
+ * 408 MiB and built inside BuildKit's 960 MiB cap (T-3, D52).
+ */
+const TURBOPACK_ADVICE =
+  "Next.js builds with Turbopack by default, which needs about 1.25 GiB of memory; with webpack it needs about half. To build with webpack, change the build command to `next build --webpack` — for a Railpack build, add the build variable `RAILPACK_BUILD_CMD=npm run build -- --webpack`."
+
 /** The longest a silent build waits between starvation checks. */
 const STALL_POLL_MAX_MS = 15_000
 
@@ -98,9 +113,11 @@ export async function runBuilder(
 
   let lastOutputAt = Date.now()
   let sawMemoryKill = false
+  let sawTurbopack = false
   const onLog = (line: string) => {
     lastOutputAt = Date.now()
     if (MEMORY_KILL.test(line)) sawMemoryKill = true
+    if (TURBOPACK.test(line)) sawTurbopack = true
     ctx.onLog(line)
   }
 
@@ -145,7 +162,13 @@ export async function runBuilder(
     )
   }
 
-  const advice = ctx.memoryAdvice ? ` ${ctx.memoryAdvice}` : ""
+  // Read when a message is built, not now: whether the build was Turbopack is
+  // known only from its output.
+  const advice = () =>
+    [sawTurbopack ? TURBOPACK_ADVICE : "", ctx.memoryAdvice ?? ""]
+      .filter(Boolean)
+      .map((a) => ` ${a}`)
+      .join("")
   try {
     const readers: { cancel(): Promise<void> }[] = []
     // Observed from the start: the process can run for the whole timeout
@@ -173,7 +196,7 @@ export async function runBuilder(
     if (code === 0) return
     if (stopped === "starved") {
       throw new BuildError(
-        `the build ran out of memory: BuildKit sat at its memory limit with no output for ${duration(stall?.afterMs ?? 0)}, so it was stopped.${advice}`,
+        `the build ran out of memory: BuildKit sat at its memory limit with no output for ${duration(stall?.afterMs ?? 0)}, so it was stopped.${advice()}`,
       )
     }
     if (stopped === "timeout") {
@@ -182,7 +205,7 @@ export async function runBuilder(
       )
     }
     if (sawMemoryKill) {
-      throw new BuildError(`a build step ran out of memory.${advice}`)
+      throw new BuildError(`a build step ran out of memory.${advice()}`)
     }
     throw new BuildError(`${bin} exited with code ${code}`)
   } finally {
