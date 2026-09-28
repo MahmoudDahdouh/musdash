@@ -202,17 +202,15 @@ export function findPendingJob(
   fields: Record<string, string | number | boolean>,
   database: Database = defaultDb,
 ): string | null {
-  const keys = Object.keys(fields)
-  for (const key of keys) {
+  const where: string[] = []
+  const values: (string | number)[] = []
+  for (const [key, value] of Object.entries(fields)) {
     if (!/^[A-Za-z]+$/.test(key)) {
       throw new Error(`findPendingJob: invalid payload field "${key}"`)
     }
+    where.push(`json_extract(payload_json, '$.${key}') = ?`)
+    values.push(typeof value === "boolean" ? Number(value) : value)
   }
-  const where = keys.map((k) => `json_extract(payload_json, '$.${k}') = ?`)
-  const values = keys.map((k) => {
-    const v = fields[k]
-    return typeof v === "boolean" ? Number(v) : (v as string | number)
-  })
   const row = database
     .query<{ id: string }, (string | number)[]>(
       `SELECT id FROM jobs WHERE type = ? AND status = 'pending'${where.map((w) => ` AND ${w}`).join("")} ORDER BY created_at LIMIT 1`,

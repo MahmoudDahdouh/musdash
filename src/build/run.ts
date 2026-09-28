@@ -21,10 +21,12 @@ const MEMORY_KILL =
   /did not complete successfully: (?:exit code: 137\b|cannot allocate memory)/i
 
 /**
- * The banner `next build` prints when it compiles with Turbopack, which Next.js
- * 16 does by default. Unanchored: BuildKit prefixes each line with its step.
+ * The banner `next build` prints when it compiles with Turbopack: by default on
+ * Next.js 16, with `--turbopack` on 15. Unanchored, because BuildKit prefixes
+ * each line with its step, and open after the name, because the parentheses
+ * can list more modes.
  */
-const TURBOPACK = /Next\.js [\d.]+\S* \(Turbopack\)/
+const TURBOPACK = /Next\.js [\d.]+\S* \(Turbopack\b/
 
 /**
  * Added to an out-of-memory message when the build was Next.js on Turbopack.
@@ -33,7 +35,7 @@ const TURBOPACK = /Next\.js [\d.]+\S* \(Turbopack\)/
  * 408 MiB and built inside BuildKit's 960 MiB cap (T-3, D52).
  */
 const TURBOPACK_ADVICE =
-  "Next.js builds with Turbopack by default, which needs about 1.25 GiB of memory; with webpack it needs about half. To build with webpack, change the build command to `next build --webpack` — for a Railpack build, add the build variable `RAILPACK_BUILD_CMD=npm run build -- --webpack`."
+  "This Next.js build used Turbopack, which needs about 1.25 GiB of memory; webpack needs about half. On Next.js 16, build with `next build --webpack` — for a Railpack build with npm, add the build variable `RAILPACK_BUILD_CMD=npm run build -- --webpack`. On Next.js 15, remove `--turbopack` from the build script."
 
 /** The longest a silent build waits between starvation checks. */
 const STALL_POLL_MAX_MS = 15_000

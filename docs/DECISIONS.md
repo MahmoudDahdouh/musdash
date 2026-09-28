@@ -3298,7 +3298,8 @@ be settled by observing it" was wrong: `debug workers -v` settles it. Free is
 generation 5 replaces existing daemons and keeps the cache volume.
 
 In the same slice, a forced-cold Railpack build (`MUSDASH_BUILD_NO_CACHE`)
-passes `--no-cache`, which Railpack 0.37.0 has. The throwaway `--cache-key`
+passes `--no-cache`, which Railpack 0.37.0 has (`railpack build --help` on
+the 2GB host lists it, with `--cache-from` and `--cache-to`). The throwaway `--cache-key`
 used instead only emptied the cache mounts: that flag prefixes mount ids, and
 the layer cache is shared across the daemon and content-addressed.
 
@@ -3323,9 +3324,10 @@ Rejected: keeping the bucket and checking the row's status on a conflict,
 which still needs a second id for the same minute.
 
 **An out-of-memory build that printed Next.js's Turbopack banner says how to
-build with webpack**, before the general advice: `next build --webpack`, or
-for Railpack the build variable `RAILPACK_BUILD_CMD=npm run build --
---webpack`. Measured on the 2GB host with the same app: Turbopack peaked at
+build with webpack**, before the general advice: on Next.js 16 `next build
+--webpack`, or for Railpack with npm the build variable
+`RAILPACK_BUILD_CMD=npm run build -- --webpack`; on 15, where Turbopack is
+opt-in, removing `--turbopack`. Measured on the 2GB host with the same app: Turbopack peaked at
 1254 MiB and finished in 43s with a 1.4 GiB cap, and made no progress in 240s
 with 900 MiB; `next build --webpack` peaked at 408 MiB and finished in 177s
 with 900 MiB, and built inside BuildKit's 960 MiB through musdash. The
