@@ -8,6 +8,7 @@ import {
 } from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
 import { logger } from "../log.ts"
+import { gcKeepStorage } from "./gc.ts"
 import { buildkitMemoryCap } from "./memory.ts"
 
 /**
@@ -46,38 +47,6 @@ const CACHE_VOLUME = "musdash-buildkit-cache"
 const MIB = 1024 * 1024
 
 /**
- * The daemon's own cache ceiling, for --oci-worker-gc-keepstorage.
- *
- * Two fields, "Reserved,Maximum", in MB — verified to parse against
- * moby/buildkit:v0.27.0. Reserved is the floor gc will never collect below and
- * Maximum the ceiling it collects down to, both derived from the same knob that
- * bounds the on-disk cache so one number governs the whole build cache.
- *
- * Reserved is a quarter of the cap rather than equal to it: setting them equal
- * leaves gc nothing it is permitted to reclaim, which is how a cap becomes a
- * daemon that never collects.
- *
- * The third field is deliberately omitted. buildkitd's own --help calls the
- * value "Reserved[,Free[,Maximum]]", but upstream assigns the parsed fields in
- * the order GCReservedSpace, GCMaxUsedSpace, GCMinFreeSpace — so position two
- * is the maximum, not a free-space target, and the help text is misleading.
- * Passing three fields on the help text's reading set the ceiling to ~197GB and
- * left the cap inert. Two fields are unambiguous under either reading, and were
- * verified to parse; the daemon accepts contradictory values silently, so this
- * cannot be settled by observing it and is pinned to upstream's assignment
- * order instead.
- *
- * Writing an empty field to skip one is not an option: "2560,,10240" is a parse
- * error and buildkitd exits with `strconv.ParseInt: parsing "": invalid
- * syntax`. Percentages are rejected too — this flag takes MB integers only.
- */
-function gcKeepStorageMb(): string {
-  const maxMb = config.buildCacheGb * 1024
-  const reservedMb = Math.floor(maxMb / 4)
-  return `${reservedMb},${maxMb}`
-}
-
-/**
  * Where the daemon creates its socket, INSIDE the container. The host directory
  * config.buildkitDir is bind-mounted here, so the socket is
  * config.buildkitSocket on the host — which is where buildctl and railpack dial.
@@ -97,9 +66,13 @@ const SOCKET_DIR_IN_CONTAINER = "/run/musdash-buildkit"
  *
  * Generation 4 lets the daemon swap as much again as its cap, so a build that
  * outgrows the cap slows down instead of stalling (D50).
+ *
+ * Generation 5 passes the cache ceiling in the field buildkitd reads as the
+ * ceiling. Generation 4 passed it where the daemon reads a free-disk target,
+ * which emptied the cache after every build on a small disk (T-2, D52).
  */
 const SPEC_LABEL = "musdash.builder_spec"
-const SPEC_VERSION = "4"
+const SPEC_VERSION = "5"
 
 /**
  * Why each earlier generation that still listened on the socket is replaced.
@@ -111,6 +84,10 @@ const OUTDATED_GENERATIONS: ReadonlyMap<string, string> = new Map([
   [
     "3",
     "it was created without swap, so a build that outgrew its cap stalled instead of slowing down (D50)",
+  ],
+  [
+    "4",
+    "its cache ceiling was read as a free-disk target, so it emptied the build cache after every build on a small disk (D52)",
   ],
 ])
 
@@ -313,7 +290,7 @@ export async function ensureBuildkit(): Promise<void> {
         "--group",
         GID,
         "--oci-worker-gc",
-        `--oci-worker-gc-keepstorage=${gcKeepStorageMb()}`,
+        `--oci-worker-gc-keepstorage=${gcKeepStorage(config.buildCacheGb)}`,
       ],
     })
   }

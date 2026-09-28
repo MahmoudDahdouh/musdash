@@ -24,17 +24,16 @@ export async function buildWithRailpack(ctx: BuildContext): Promise<void> {
     // would reach the deploy log panel as escape-code noise.
     "--progress",
     "plain",
-    // Scopes the layer cache per resource. Without it every resource shares one
-    // cache key and a build for one app evicts another's layers — the
-    // difference between a 20-second and a 3-minute redeploy.
-    //
-    // Railpack has no `--no-cache` flag, so a forced-cold build is expressed as
-    // a cache key nothing has written to yet rather than as a missing flag.
-    // The suffix keeps the key inside cacheDir's charset and 64-char limit; the
-    // throwaway namespace it creates is reclaimed by the daemon's own GC (D18).
+    // Scopes the cache MOUNTS (npm, apt, mise downloads) per resource, so one
+    // app's build cannot read another's. The layer cache is not scoped by it:
+    // layers are content-addressed and shared across the whole daemon, and
+    // they survive between builds only as long as the daemon's gc allows (D52).
     "--cache-key",
-    ctx.noCache ? `${ctx.cacheKey}-nocache-${Date.now()}` : ctx.cacheKey,
+    ctx.cacheKey,
   ]
+  // A forced-cold build. Railpack 0.37.0 has the flag; a throwaway cache key,
+  // used before, emptied only the mounts and still reused every layer (D52).
+  if (ctx.noCache) args.push("--no-cache")
   for (const [k, v] of Object.entries(ctx.buildArgs)) {
     args.push("--env", `${k}=${v}`)
   }
