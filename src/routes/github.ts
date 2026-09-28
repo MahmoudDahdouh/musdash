@@ -72,7 +72,7 @@ function handlePush(body: PushEvent, delivery: string | null): void {
     if (deploymentId === null) {
       logger.info(
         { resourceId: resource.id, repo, branch },
-        "push coalesced into a deploy already queued this minute",
+        "push folded into a deploy of this resource that has not started yet",
       )
     }
   }

@@ -527,18 +527,6 @@ export function updateDeployment(
   orm.update(deployments).set(patch).where(eq(deployments.id, id)).run()
 }
 
-/**
- * Removes a deployment row outright.
- *
- * Only for a row whose job was never queued — a coalesced push whose bucket
- * already held one. A row with no job behind it shows as a deploy stuck at
- * "queued" forever, which is worse than no row at all. Never call this on a
- * deployment that ran: history is the point of the table.
- */
-export function deleteDeployment(id: string): void {
-  orm.delete(deployments).where(eq(deployments.id, id)).run()
-}
-
 export function markDeploymentFailed(id: string, error: string): void {
   updateDeployment(id, {
     status: "failed",

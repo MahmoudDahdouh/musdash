@@ -188,6 +188,39 @@ export function activeJobCount(database: Database = defaultDb): number {
   )
 }
 
+/**
+ * The oldest job of this type that has not started and whose payload holds
+ * each of these fields, or null.
+ *
+ * Only 'pending': a job the worker has claimed has already acted on its input,
+ * so folding new work into it would lose that work (T-1). Field names are
+ * spliced into a JSON path, so anything but a plain identifier is refused; a
+ * boolean is compared as the 0 or 1 json_extract returns for it.
+ */
+export function findPendingJob(
+  type: JobType,
+  fields: Record<string, string | number | boolean>,
+  database: Database = defaultDb,
+): string | null {
+  const keys = Object.keys(fields)
+  for (const key of keys) {
+    if (!/^[A-Za-z]+$/.test(key)) {
+      throw new Error(`findPendingJob: invalid payload field "${key}"`)
+    }
+  }
+  const where = keys.map((k) => `json_extract(payload_json, '$.${k}') = ?`)
+  const values = keys.map((k) => {
+    const v = fields[k]
+    return typeof v === "boolean" ? Number(v) : (v as string | number)
+  })
+  const row = database
+    .query<{ id: string }, (string | number)[]>(
+      `SELECT id FROM jobs WHERE type = ? AND status = 'pending'${where.map((w) => ` AND ${w}`).join("")} ORDER BY created_at LIMIT 1`,
+    )
+    .get(type, ...values)
+  return row?.id ?? null
+}
+
 export function getJob(
   id: string,
   database: Database = defaultDb,

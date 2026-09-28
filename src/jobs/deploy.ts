@@ -15,7 +15,6 @@ import { docker } from "../docker/impl.ts"
 import {
   commitForImage,
   createDeployment,
-  deleteDeployment,
   getDeployment,
   getResourceContext,
   markDeploymentFailed,
@@ -30,7 +29,7 @@ import {
 } from "../events.ts"
 import { nowIso, shortId } from "../ids.ts"
 import { logger, redactGithub, redactValues } from "../log.ts"
-import { enqueue } from "../queue/index.ts"
+import { enqueue, findPendingJob } from "../queue/index.ts"
 import { startLogStream, stopLogStream } from "../logs/stream.ts"
 import { routeHosts } from "./routes.ts"
 
@@ -774,57 +773,29 @@ export function enqueueDeploy(
 }
 
 /**
- * How long one resource's pushes collapse into a single deploy.
+ * Queues a push-triggered deploy, folding it into one that has not started.
  *
  * Pushes arrive in bursts — five commits in one `git push`, a merge, a CI bot —
- * and job concurrency is exactly 1, so a job per delivery parks real work behind
- * a queue of redundant builds of nearly the same tree.
+ * and job concurrency is exactly 1, so a job per delivery parks real work
+ * behind a queue of redundant builds of nearly the same tree. A deploy that is
+ * still waiting has not fetched yet, and fetches the branch's newest commit
+ * when it runs, so this push is already in it: returns null.
  *
- * The tradeoff is sharper than the reconciler's (`caddyJobId` and
- * `buildkitJobId` in reconciler.ts) and cuts the other way, so it is worth
- * stating plainly. For a sidecar the bucket only DELAYS a re-queue, because the
- * reconciler tries again every 30 seconds forever. A webhook has no retry loop:
- * a second, genuinely different push landing in a bucket that already holds a
- * finished row is DROPPED, not delayed, and that commit does not deploy until
- * someone pushes again or clicks Deploy.
+ * Only a waiting one. A deploy that is running fetched an older commit, and one
+ * that has finished — or failed — deployed nothing of this push; either way the
+ * push gets its own deploy. The 60-second bucket this replaces treated a failed
+ * row as "already queued", so a fix pushed within a minute of a broken build
+ * was dropped (T-1, D52).
  *
- * 60 seconds — the BuildKit precedent, not the proxy's five minutes — bounds
- * that blind window to roughly the length of one build while still collapsing
- * the burst this exists for. Anything longer starts swallowing real commits.
- */
-const PUSH_BUCKET_MS = 60 * 1000
-
-function pushJobId(resourceId: string): string {
-  return `deploy-push-${resourceId}-${Math.floor(Date.now() / PUSH_BUCKET_MS)}`
-}
-
-/**
- * Whether an enqueue error is the primary-key conflict that means "this bucket
- * already holds a row" rather than a genuine failure like a locked database or
- * a full disk. Same shape as `isConflict` in reconciler.ts; the message fallback
- * covers drivers that do not set `code`.
- */
-function isConflict(err: unknown): boolean {
-  const code = (err as { code?: unknown }).code
-  return (
-    (typeof code === "string" && code.startsWith("SQLITE_CONSTRAINT")) ||
-    /constraint failed/i.test((err as Error).message)
-  )
-}
-
-/**
- * Queues a push-triggered deploy, collapsing a burst per resource.
- *
- * Returns the deployment id, or null when this bucket already holds a job — the
- * primary-key conflict IS the answer there, exactly as it is for the sidecar
- * bootstraps. `enqueue` has no OR IGNORE and will throw, so the catch is
- * required rather than defensive.
- *
- * The deployment row is created first because the job payload needs its id, and
- * removed again on a conflict: a row left behind would show as a permanently
- * "queued" deploy that no job will ever pick up.
+ * The lookup and the insert are synchronous calls on the one write connection,
+ * so no other enqueue can land between them.
  */
 export function enqueueDeployCoalesced(resourceId: string): string | null {
+  if (
+    findPendingJob("deploy", { resourceId, useExistingImage: false }) !== null
+  ) {
+    return null
+  }
   // A push always builds, so the row names the placeholder, never an image.
   const image = BUILD_PLACEHOLDER
   const deployment = createDeployment({
@@ -832,23 +803,17 @@ export function enqueueDeployCoalesced(resourceId: string): string | null {
     image,
     trigger: "webhook",
   })
-  try {
-    enqueue(
-      "deploy",
-      {
-        resourceId,
-        deploymentId: deployment.id,
-        image,
-        // A push always builds. Never REUSES_IMAGE — see that set's comment.
-        useExistingImage: false,
-      } satisfies DeployPayload,
-      { id: pushJobId(resourceId), maxAttempts: DEPLOY_MAX_ATTEMPTS },
-    )
-  } catch (err) {
-    deleteDeployment(deployment.id)
-    if (!isConflict(err)) throw err
-    return null
-  }
+  enqueue(
+    "deploy",
+    {
+      resourceId,
+      deploymentId: deployment.id,
+      image,
+      // A push always builds. Never REUSES_IMAGE — see that set's comment.
+      useExistingImage: false,
+    } satisfies DeployPayload,
+    { maxAttempts: DEPLOY_MAX_ATTEMPTS },
+  )
   publishStatus({ resourceId, state: "queued" })
   return deployment.id
 }

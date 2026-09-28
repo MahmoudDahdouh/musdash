@@ -5,6 +5,7 @@ import {
   complete,
   enqueue,
   fail,
+  findPendingJob,
   getJob,
   pendingCount,
   pruneFinishedJobs,
@@ -235,5 +236,52 @@ describe("pruneFinishedJobs", () => {
     expect(pruneFinishedJobs(168, db)).toBe(1)
     expect(getJob(old, db)).toBeNull()
     expect(getJob(fresh, db)).not.toBeNull()
+  })
+})
+
+/**
+ * A push folds into a deploy of the same resource only while that deploy has
+ * not started: it has not fetched yet, so it builds the newest commit anyway.
+ * A running or finished one built an older commit. On the 2GB host a fix pushed
+ * 42 seconds after a failed build was dropped because the failed job's row
+ * still held the minute's id (T-1).
+ */
+describe("findPendingJob", () => {
+  const push = (resourceId: string) => ({
+    resourceId,
+    deploymentId: "d",
+    useExistingImage: false,
+  })
+  const match = { resourceId: "r1", useExistingImage: false }
+
+  test("finds a deploy of the resource that has not started", () => {
+    const id = enqueue("deploy", push("r1"), {}, db)
+
+    expect(findPendingJob("deploy", match, db)).toBe(id)
+  })
+
+  test("ignores one that is running, done or failed", () => {
+    enqueue("deploy", push("r1"), {}, db)
+    const running = claim(db)
+    expect(findPendingJob("deploy", match, db)).toBeNull()
+
+    complete(running?.id ?? "", db)
+    expect(findPendingJob("deploy", match, db)).toBeNull()
+
+    enqueue("deploy", push("r1"), { maxAttempts: 1 }, db)
+    fail(claim(db)?.id ?? "", "build failed", db)
+    expect(findPendingJob("deploy", match, db)).toBeNull()
+  })
+
+  test("ignores another resource and a rollback", () => {
+    enqueue("deploy", push("r2"), {}, db)
+    enqueue("deploy", { ...push("r1"), useExistingImage: true }, {}, db)
+    enqueue("prune_images", { resourceId: "r1" }, {}, db)
+
+    expect(findPendingJob("deploy", match, db)).toBeNull()
+  })
+
+  test("refuses a field name that is not a plain identifier", () => {
+    expect(() => findPendingJob("deploy", { "a') OR 1=1 --": 1 }, db)).toThrow()
   })
 })
