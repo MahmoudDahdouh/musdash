@@ -591,6 +591,13 @@ Next.js build take the dashboard and every app down for three minutes. An app
 that needs more than the cap to build is better built elsewhere — in GitHub
 Actions, for example — and deployed as an image.
 
+**Next.js 16** builds with Turbopack by default, which needed about 1.25 GiB
+for a one-page app on the 2GB test host and stalls below that — more than the
+~1 GiB BuildKit gets there. The same app built with webpack in 408 MiB. On a
+2GB host, add the build variable `RAILPACK_BUILD_CMD=npm run build --
+--webpack` (or put `next build --webpack` in your Dockerfile); on 1GB, build
+elsewhere (D52).
+
 Caddy's cap is sized the same way: a quarter of the host's memory, at least
 128 MiB and at most 512 MiB (D46) — 128 MiB on a 512MB host, 224 MiB on 1GB.
 If the proxy ever outgrows it, the kernel kills Caddy inside its own

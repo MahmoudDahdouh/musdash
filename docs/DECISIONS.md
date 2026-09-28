@@ -1057,6 +1057,9 @@ this not" breaks when the set grows; a guard that names what it means does not.*
 
 ### Coalescing pushes, and why the blind window is worse here
 
+> **Superseded by D52:** a push now folds only into a pending deploy of the
+> same resource; the time bucket dropped a fix pushed after a failed build.
+
 A burst of pushes at job concurrency 1 would queue a deploy each. The bucketed
 job id from the reconciler collapses them, with a **60s** bucket.
 
@@ -1360,6 +1363,10 @@ every build, and would go stale exactly when it matters — after a build the
 sweeper has not seen. The walk runs once a day.
 
 ### D18 — the daemon cache is capped by flag, and the help text is wrong
+
+> **Corrected by D52:** the help text was right. The field order is
+> `Reserved,Free,Maximum`, and the two-field form below set a 10 GB free-disk
+> target with no ceiling, which emptied the cache on a small disk.
 
 Only the Dockerfile strategy writes to `buildCacheDir`. Railpack — the default
 pack — caches inside the daemon's own `musdash-buildkit-cache` volume, which had
@@ -3263,3 +3270,67 @@ when the daemon really is down.
 **A rollback or reconcile row copies the commit** of the newest deployment of
 the same resource that built that image and recorded one. The tag embeds the
 building deployment's id, so the match is that build.
+
+## Findings from the first 2GB run (T-1 to T-3, R-5, 2026-09-28)
+
+A fresh install on a 2GB host passed the Phase 2 run with four exceptions. A
+fix pushed 42 seconds after a broken build was dropped, logged as "coalesced
+into a deploy already queued" although that deploy had failed (T-1). Railpack
+redeploys of an unchanged commit ran apt, mise, `npm install` and the app's
+build again every time (T-2). A stock Next.js 16 app could not build in
+BuildKit's 960 MiB, and the advice missed the one-line fix that worked on the
+same host (T-3). And R-5, a git resource's empty state saying "pull the
+image", was still open.
+
+### D52 — BuildKit's cache ceiling in the right field; a push folds only into a deploy that has not started; the webpack advice
+
+**`--oci-worker-gc-keepstorage` is `Reserved,Free,Maximum`, and musdash now
+passes `2560,0,10240`.** D18 read the order as Reserved,Maximum and passed two
+fields, so the 10 GB ceiling landed in the Free slot. `buildctl debug workers
+-v` on the 2GB host showed what the daemon applied: `Reserved space: 2.56GB`,
+`Minimum free space: 10.24GB`, and no maximum. The disk had 7.8 GB free, so
+after each build gc pruned down to the reserved 2.56 GB and took every layer
+built on Railpack's builder image with it. The 1GB host, on a 38 GB disk,
+never crossed the threshold, which is why its redeploys were warm. D18's
+belief that the daemon "accepts contradictory values silently, so this cannot
+be settled by observing it" was wrong: `debug workers -v` settles it. Free is
+0 (no free-disk target); an empty field is still a parse error. Builder spec
+generation 5 replaces existing daemons and keeps the cache volume.
+
+In the same slice, a forced-cold Railpack build (`MUSDASH_BUILD_NO_CACHE`)
+passes `--no-cache`, which Railpack 0.37.0 has. The throwaway `--cache-key`
+used instead only emptied the cache mounts: that flag prefixes mount ids, and
+the layer cache is shared across the daemon and content-addressed.
+
+Known and not fixed here: Railpack 0.37.0 hashes build variables into a
+`secrets-hash` file by iterating a Go map, unsorted. With two or more build
+variables the hash can change between runs, and the steps that mount it —
+`npm install`, the app's build — can miss the cache. It is upstream's to fix.
+
+**A push folds only into a deploy of the same resource that has not started.**
+This supersedes the 60-second push bucket ("Coalescing pushes, and why the
+blind window is worse here"). A pending deploy has not fetched yet and will
+fetch the branch's newest commit, so a push landing while it waits is already
+in it. A running deploy fetched an older commit, and a finished or failed one
+deployed nothing of this push, so either way the push gets its own job. That
+is exactly the case the bucket got wrong: it read the failed row's id as
+"already queued". The lookup is `findPendingJob` in the queue, a JSON match on
+the payload's `resourceId` and `useExistingImage: false`, so a pending
+rollback never absorbs a push. It runs synchronously with the insert on the
+one write connection. The burst the bucket existed for still collapses:
+pushes arriving while a build runs fold into the one deploy queued behind it.
+Rejected: keeping the bucket and checking the row's status on a conflict,
+which still needs a second id for the same minute.
+
+**An out-of-memory build that printed Next.js's Turbopack banner says how to
+build with webpack**, before the general advice: `next build --webpack`, or
+for Railpack the build variable `RAILPACK_BUILD_CMD=npm run build --
+--webpack`. Measured on the 2GB host with the same app: Turbopack peaked at
+1254 MiB and finished in 43s with a 1.4 GiB cap, and made no progress in 240s
+with 900 MiB; `next build --webpack` peaked at 408 MiB and finished in 177s
+with 900 MiB, and built inside BuildKit's 960 MiB through musdash. The
+10-minute stall window is unchanged — D50 calls it a guess to revisit, and a
+shorter one only for Turbopack would be another guess.
+
+**A git resource's empty deployments card says Deploy builds the latest
+commit on the branch**, using the same wording as the Deploy confirmation.
