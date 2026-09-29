@@ -172,6 +172,7 @@
           title="Memory used by the musdash process. Caddy and BuildKit run in their own containers and are not counted."
         >
           <span>dashboard</span> <span class="rss-value"><%= it.rssMb %> MB</span>
+          <span class="version" title="musdash version">v<%= it.version %></span>
         </p>
       </aside>
 
