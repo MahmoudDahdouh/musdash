@@ -1,7 +1,7 @@
 import { getAppPrivateKey, getGithubApp } from "../db/queries.ts"
 import { ghJson, ghPaginate } from "./api.ts"
 import { appJwt } from "./jwt.ts"
-import { installationToken } from "./tokens.ts"
+import { withInstallationToken } from "./tokens.ts"
 
 /** Everything musdash reads from GitHub: installations, repositories, commits. */
 
@@ -94,11 +94,15 @@ export async function listInstallations(): Promise<InstallationRef[]> {
 export async function listInstallationRepos(
   installationId: number,
 ): Promise<RepoRef[]> {
-  const token = await installationToken(installationId)
-  const raw = await ghPaginate<RawRepo>(
-    "/installation/repositories",
-    { kind: "installation", token },
-    (body) => (body as { repositories: RawRepo[] }).repositories,
+  // The WHOLE pagination is retried, not the failing page: a token rejected on
+  // page 3 was also the one that fetched pages 1-2, and restarting from page 1
+  // is simpler than splicing a partial list.
+  const raw = await withInstallationToken(installationId, (token) =>
+    ghPaginate<RawRepo>(
+      "/installation/repositories",
+      { kind: "installation", token },
+      (body) => (body as { repositories: RawRepo[] }).repositories,
+    ),
   )
   return raw.map(toRepoRef)
 }
@@ -122,18 +126,13 @@ export async function getCommit(
   repo: string,
   ref: string,
 ): Promise<CommitMeta> {
-  const auth =
+  const path = `/repos/${repo}/commits/${encodeURIComponent(ref)}`
+  const raw =
     installationId === null
-      ? ({ kind: "none" } as const)
-      : ({
-          kind: "installation" as const,
-          token: await installationToken(installationId),
-        } as const)
-
-  const raw = await ghJson<RawCommit>(
-    `/repos/${repo}/commits/${encodeURIComponent(ref)}`,
-    auth,
-  )
+      ? await ghJson<RawCommit>(path, { kind: "none" })
+      : await withInstallationToken(installationId, (token) =>
+          ghJson<RawCommit>(path, { kind: "installation", token }),
+        )
   return {
     sha: raw.sha,
     message: raw.commit.message ?? null,

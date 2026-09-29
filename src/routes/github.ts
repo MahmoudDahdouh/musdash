@@ -1,11 +1,13 @@
 import { Elysia } from "elysia"
 import {
+  clearGitLinkage,
   deleteInstallation,
   getGithubApp,
   getWebhookSecret,
   resourcesForPush,
   upsertInstallation,
 } from "../db/queries.ts"
+import { invalidateToken } from "../github/tokens.ts"
 import { verifySignature, WEBHOOK_PATH } from "../github/webhook.ts"
 import { enqueueDeployCoalesced } from "../jobs/deploy.ts"
 import { logger } from "../log.ts"
@@ -78,19 +80,50 @@ function handlePush(body: PushEvent, delivery: string | null): void {
   }
 }
 
+/**
+ * Synchronous on purpose: every branch is a SQLite write or a cache delete, so
+ * the 202 goes back well inside GitHub's 10-second delivery timeout.
+ */
 function handleInstallation(body: InstallationEvent): void {
   const installationId = body.installation?.id
   if (typeof installationId !== "number") return
 
   const action = body.action
-  if (action === "deleted" || action === "suspend") {
+  if (action === "deleted") {
+    // The same cleanup as a sync that finds the installation gone
+    // (register.ts): unlink first, because resources.git_installation_id has
+    // no foreign key and would otherwise hold an id that 404s at the next
+    // deploy. The repo and branch stay — only the credential is gone, and
+    // the user can re-link from the resource's settings. The column holds
+    // GitHub's integer as a decimal string.
+    const unlinked = clearGitLinkage(String(installationId))
     deleteInstallation(installationId)
-    logger.info({ installationId, action }, "installation removed")
+    invalidateToken(installationId)
+    logger.info(
+      { installationId, action, unlinked },
+      "installation deleted on GitHub",
+    )
+    return
+  }
+
+  if (action === "suspend") {
+    // The row and every resource link are KEPT. A suspension is reversible on
+    // GitHub's side, and keeping them is what lets `unsuspend` restore deploys
+    // with no action here. Only the cached token goes: GitHub has revoked it,
+    // and handing it out until its hour ends would fail every call.
+    invalidateToken(installationId)
+    logger.info(
+      { installationId, action },
+      "installation suspended; its resource links are kept",
+    )
     return
   }
 
   // Any other action (created, unsuspend, new_permissions_accepted) means the
-  // installation exists and its login may have changed.
+  // installation exists and its login may have changed. A cached token was
+  // minted under the previous permissions or before a suspension, so it is
+  // dropped and the next call mints one under the current terms.
+  invalidateToken(installationId)
   const app = getGithubApp()
   if (!app) return
   const login = body.installation?.account?.login
@@ -157,13 +190,18 @@ export const githubWebhookRoutes = new Elysia().post(
       case "installation":
         handleInstallation(body as InstallationEvent)
         break
-      case "installation_repositories":
-        // Deliberately nothing beyond a log. The repository list is re-fetched
-        // every time the picker renders, so there is no local copy to keep in
-        // sync — and a syncInstallations() here would put a GitHub round trip
-        // inside a request GitHub times out at 10 seconds.
+      case "installation_repositories": {
+        // A token is scoped to the repositories granted when it was minted, so
+        // the cached one no longer matches the grant: drop it. Nothing else is
+        // needed — the repository list is re-fetched every time the picker
+        // renders, so there is no local copy to keep in sync, and a
+        // syncInstallations() here would put a GitHub round trip inside a
+        // request GitHub times out at 10 seconds.
+        const installationId = (body as InstallationEvent).installation?.id
+        if (typeof installationId === "number") invalidateToken(installationId)
         logger.info({ delivery }, "installation repositories changed")
         break
+      }
       default:
         logger.debug({ event, delivery }, "webhook event ignored")
     }

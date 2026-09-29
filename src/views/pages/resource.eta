@@ -337,9 +337,69 @@
     <dd class="mono"><%= it.resource.gitRepo || '—' %></dd>
     <dt>Branch</dt>
     <dd class="mono"><%= it.resource.gitBranch || '—' %></dd>
+    <dt>GitHub account</dt>
+    <% if (it.gitLink.kind === 'linked') { %>
+    <dd><%= it.gitLink.accountLogin %></dd>
+    <% } else if (it.gitLink.kind === 'stale') { %>
+    <dd>Installation removed</dd>
+    <% } else { %>
+    <dd class="muted">Not linked</dd>
+    <% } %>
     <dt>Build pack</dt>
     <dd><%= it.resource.buildPack === 'dockerfile' ? 'Dockerfile' : 'Detected automatically (Railpack)' %></dd>
   </dl>
+
+  <% if (it.gitLink.kind === 'stale') { %>
+  <div class="notice notice-warn" role="status">
+    <svg class="icon" aria-hidden="true"><use href="#i-alert" /></svg>
+    <div>
+      The GitHub installation this resource was linked to has been removed.
+      Choose an account below and save, or choose None if the repository is
+      public.
+    </div>
+  </div>
+  <% } %>
+
+  <!--
+    A plain form, no Alpine: the account list comes from SQLite, so this page
+    makes no GitHub call. The repository is typed rather than picked for the
+    same reason. A stale or absent link preselects None, so saving without
+    touching the select never writes back an installation that is gone.
+  -->
+  <form
+    method="post"
+    action="/r/<%= it.resource.id %>/source"
+    class="stack"
+  >
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <div class="field">
+      <label class="label" for="res-src-account">GitHub account</label>
+      <select id="res-src-account" name="installationId">
+        <option value="" <%= it.gitLink.kind !== 'linked' ? 'selected' : '' %>>None — public repo</option>
+        <% it.githubInstallations.forEach(function (i) { %>
+        <option value="<%= i.installationId %>" <%= it.gitLink.kind === 'linked' && String(i.installationId) === it.resource.gitInstallationId ? 'selected' : '' %>><%= i.accountLogin %></option>
+        <% }) %>
+      </select>
+    </div>
+    <div class="field">
+      <label class="label" for="res-src-repo">Repository</label>
+      <input id="res-src-repo" name="repo" value="<%= it.resource.gitRepo || '' %>" required placeholder="owner/name" autocapitalize="none" spellcheck="false" />
+    </div>
+    <div class="field">
+      <label class="label" for="res-src-branch">Branch</label>
+      <%/* Same pattern and message as the create form in project.eta, which
+           mirrors isValidGitRef (src/github/repos.ts). */%>
+      <input id="res-src-branch" name="branch" value="<%= it.resource.gitBranch || '' %>" required pattern="(?!/)(?!.*\.\.)[^\x00-\x1f\x7f \~\^\:\?\*\[\\]{1,255}" placeholder="main" autocapitalize="none" spellcheck="false" />
+      <p class="error">No spaces, no "..", no leading "/", and none of ~ ^ : ? * [ \</p>
+    </div>
+    <p class="hint">Saving does not deploy. The next deploy or push builds from the source set here.</p>
+    <div class="row end">
+      <button class="btn btn-primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Save source
+      </button>
+    </div>
+  </form>
 
   <!--
     An unchecked checkbox submits nothing at all, which is exactly how "off" is

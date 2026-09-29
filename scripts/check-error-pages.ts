@@ -72,9 +72,9 @@ const SENTENCES: Record<ErrorKey, string> = {
   "domain-dashboard":
     "That is the dashboard's own address, so a resource cannot use it. Choose another name, or change the dashboard address under Settings.",
   "env-invalid-line":
-    "Nothing was saved. Every line must be NAME=value, and each name must use letters, digits and underscores, not start with a digit, and appear once per box. Fix the line and paste the variables again.",
+    "Nothing was saved, so make your change again; the boxes show what is saved. Every line must be NAME=value, and each name must use letters, digits and underscores, not start with a digit, and appear once per box.",
   "env-scope-duplicate":
-    "Nothing was saved. A name appears in more than one box. Keep it only in the box where it is needed and paste the variables again.",
+    "Nothing was saved, so make your change again; the boxes show what is saved. A name appeared in more than one box; keep it only in the box where it is needed.",
   "github-no-domain":
     "GitHub needs a public HTTPS address for this dashboard. Set one under Dashboard address, then connect GitHub.",
   "github-no-flow":
@@ -85,6 +85,10 @@ const SENTENCES: Record<ErrorKey, string> = {
     "GitHub did not return a registration code. Press Connect GitHub to start again.",
   "github-confirm":
     "GitHub was not disconnected, because the request was not confirmed. Press Disconnect GitHub and confirm.",
+  "source-repo-required":
+    "Enter a repository as owner/name, or a local path, before saving the source.",
+  "repo-invalid":
+    "That is not a repository reference. With a GitHub account chosen, enter the repository as owner/name, such as acme/web.",
 }
 
 const FORBIDDEN_SENTENCE =
@@ -640,7 +644,8 @@ try {
     )
   }
 
-  // ---- criterion 6: the 16 not-found sites
+  // ---- criterion 6: the 16 not-found sites (the re-link 404, D55, is
+  // checked with the other re-link cases after seeding)
   const env = { runtime: "A=1" }
   const notFound: [string, "GET" | "POST", string, Record<string, string>?][] =
     [
@@ -888,6 +893,152 @@ try {
     `/r/${noImage}/deploy`,
     {},
   )
+
+  // ---- Slice A3: re-linking a git resource's source (POST /r/:id/source)
+  const gitCreated = await send(
+    "POST",
+    `/e/${eid}/resources/git`,
+    withCsrf({
+      name: "relink",
+      repo: "owner/app",
+      branch: "main",
+      dockerfilePath: "deploy/Dockerfile",
+      buildContext: "app",
+    }),
+  )
+  const g = /^\/r\/([^/?#]+)$/.exec(gitCreated.location)?.[1] ?? ""
+  if (!g) throw new Error(`git fixture failed: ${gitCreated.status}`)
+  const gr = `/r/${g}`
+  await keyed(
+    "re-link with no repository",
+    "source-repo-required",
+    "POST",
+    `${gr}/source`,
+    withCsrf({ installationId: "", repo: "   ", branch: SENTINEL }),
+    `${gr}?tab=settings&error=source-repo-required`,
+  )
+  await keyed(
+    "re-link repo not owner/name (seeded)",
+    "repo-invalid",
+    "POST",
+    `${gr}/source`,
+    withCsrf({ installationId: "4242", repo: SENTINEL, branch: "main" }),
+    `${gr}?tab=settings&error=repo-invalid`,
+  )
+  await keyed(
+    "re-link invalid branch (seeded)",
+    "branch-invalid",
+    "POST",
+    `${gr}/source`,
+    withCsrf({
+      installationId: "4242",
+      repo: "owner/app",
+      branch: `${SENTINEL} x`,
+    }),
+    `${gr}?tab=settings&error=branch-invalid`,
+  )
+  await statusCase(
+    "[7] 400 re-link installation id not digits",
+    400,
+    "POST",
+    `${gr}/source`,
+    { installationId: SENTINEL, repo: "owner/app", branch: "main" },
+  )
+  await statusCase(
+    "[7] 400 re-link installation not connected",
+    400,
+    "POST",
+    `${gr}/source`,
+    { installationId: "999999", repo: "owner/app", branch: "main" },
+  )
+  await statusCase(
+    "[7] 400 re-link an image resource",
+    400,
+    "POST",
+    `${r}/source`,
+    { installationId: "", repo: "owner/app", branch: "main" },
+  )
+  await statusCase(
+    "[6] 404 re-link an unknown resource",
+    404,
+    "POST",
+    `/r/${BOGUS}/source`,
+    { installationId: "", repo: "owner/app", branch: "main" },
+  )
+  {
+    // A valid re-link moves the columns and source_json together, keeps every
+    // other source_json key, and enqueues nothing (Slice A criterion 21).
+    const read = (): Record<string, unknown> => {
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        const row = db
+          .query(
+            `SELECT git_installation_id, git_repo, git_branch, source_json,
+               built_image, previous_image, container_id,
+               current_deployment_id, auto_deploy, desired_state,
+               (SELECT COUNT(*) FROM jobs) AS jobs,
+               (SELECT COUNT(*) FROM deployments) AS deployments
+             FROM resources WHERE id = ?`,
+          )
+          .get(g) as Record<string, unknown> | null
+        return row ?? {}
+      } finally {
+        db.close()
+      }
+    }
+    const before = read()
+    const r1 = await send(
+      "POST",
+      `${gr}/source`,
+      withCsrf({ installationId: "4242", repo: "acme/web", branch: "dev" }),
+    )
+    const after = read()
+    const src = JSON.parse(String(after.source_json)) as Record<string, unknown>
+    const was = JSON.parse(String(before.source_json)) as Record<
+      string,
+      unknown
+    >
+    const problems: string[] = []
+    if (r1.status !== 303 || r1.location !== `${gr}?tab=settings`) {
+      problems.push(`${r1.status} ${r1.location}`)
+    }
+    if (after.git_installation_id !== "4242") problems.push("installation")
+    if (after.git_repo !== "acme/web" || src.repo !== "acme/web") {
+      problems.push("repo not written to both places")
+    }
+    if (after.git_branch !== "dev" || src.branch !== "dev") {
+      problems.push("branch not written to both places")
+    }
+    if (was.dockerfilePath !== "deploy/Dockerfile" || !was.buildContext) {
+      problems.push("fixture source_json lacks dockerfilePath/buildContext")
+    }
+    for (const column of [
+      "built_image",
+      "previous_image",
+      "container_id",
+      "current_deployment_id",
+      "auto_deploy",
+      "desired_state",
+    ]) {
+      if (after[column] !== before[column]) problems.push(`${column} changed`)
+    }
+    for (const key of Object.keys(was)) {
+      if (key !== "repo" && key !== "branch" && src[key] !== was[key]) {
+        problems.push(`source_json.${key} changed`)
+      }
+    }
+    if (
+      after.jobs !== before.jobs ||
+      after.deployments !== before.deployments
+    ) {
+      problems.push("a job or deployment was enqueued")
+    }
+    const page = await send("GET", `${gr}?tab=settings`)
+    if (page.status !== 200 || !page.body.includes("octo-fixture")) {
+      problems.push("settings tab does not name the linked account")
+    }
+    verdict("[A3] valid re-link", problems, "303, both places, nothing queued")
+  }
 
   // ---- whole-run checks
   const missing = ERROR_KEYS.filter((k) => !exercised.has(k))

@@ -14,6 +14,10 @@ That is not a valid image reference. Use a name like nginx:alpine or ghcr.io/own
 A resource with that name already exists in this environment. Choose another name.
 <% } else if (it.key === "repo-required") { %>
 Choose a repository, or enter a local path, before creating the resource.
+<% } else if (it.key === "source-repo-required") { %>
+Enter a repository as owner/name, or a local path, before saving the source.
+<% } else if (it.key === "repo-invalid") { %>
+That is not a repository reference. With a GitHub account chosen, enter the repository as owner/name, such as acme/web.
 <% } else if (it.key === "branch-invalid") { %>
 That is not a valid branch name. Branch names cannot contain spaces, "..", or any of ~ ^ : ? * [ \
 <% } else if (it.key === "env-name-taken") { %>

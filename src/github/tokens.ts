@@ -1,6 +1,8 @@
 import { getAppPrivateKey, getGithubApp } from "../db/queries.ts"
+import { logger } from "../log.ts"
 import { ghJson } from "./api.ts"
 import { appJwt } from "./jwt.ts"
+import { dropIfCurrent, withTokenRetry } from "./token-retry.ts"
 
 /**
  * Installation access tokens, cached in memory for their hour of life.
@@ -90,7 +92,44 @@ export function installationToken(installationId: number): Promise<string> {
   return promise
 }
 
-/** Drops a token that GitHub has started rejecting, so the next call re-mints. */
+/**
+ * Runs a token-authenticated GitHub call, re-minting once if GitHub answers 401.
+ *
+ * Every resource call made with an installation token goes through here rather
+ * than calling installationToken() itself, so a token revoked before its hour
+ * is up costs one failed request instead of up to an hour of failed deploys.
+ *
+ * The drop is compare-and-delete (dropIfCurrent), not invalidateToken: another
+ * caller may already have replaced the stale token with a fresh one, and
+ * deleting that would force a needless extra mint.
+ */
+export function withInstallationToken<T>(
+  installationId: number,
+  call: (token: string) => Promise<T>,
+): Promise<T> {
+  return withTokenRetry(
+    {
+      acquire: () => installationToken(installationId),
+      invalidate: (failed) => {
+        dropIfCurrent(cache, installationId, failed)
+        // The id and the status only: `failed` is a bearer credential.
+        logger.warn(
+          { installationId, status: 401 },
+          "GitHub rejected a cached installation token; retrying once with a fresh one",
+        )
+      },
+    },
+    call,
+  )
+}
+
+/**
+ * Drops an installation's token unconditionally, so the next call re-mints.
+ *
+ * For lifecycle events (suspend, new permissions, repository access changes,
+ * removal), where whichever token happens to be cached was minted under terms
+ * that no longer hold.
+ */
 export function invalidateToken(installationId: number): void {
   cache.delete(installationId)
 }

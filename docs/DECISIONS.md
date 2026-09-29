@@ -1083,8 +1083,10 @@ not finite. `NewInstallation.appRowId` is the _App's_ ULID, not the
 installation's.
 
 Writing the wrong one produces a 404 from GitHub at deploy time, hours after the
-mistake and nowhere near it. The create route validates that the field is
-digits-only and matches a known installation before it is stored.
+mistake and nowhere near it. `checkGitSource` (`src/routes/git-source.ts`)
+validates that the field is digits-only and matches a known installation before
+it is stored; the create route and the re-link route (D55) both call it, so the
+two cannot drift.
 
 ### Disconnect nulls the linkage and keeps the repo
 
@@ -3375,3 +3377,98 @@ does. Only the default: a `MUSDASH_SRC` the operator set is their checkout,
 and fetching over it — or reaching the clone branch's `rm -rf` when it is not
 a git repository — would destroy their changes. RUNNING.md now leads with the
 one-liner, which never had the bug.
+
+## GitHub hardening (docs/GITHUB-HARDENING.md, 2026-09-29)
+
+Slices from reading Coolify's GitHub path side by side with ours. The plan is
+the input; each entry below records what was decided when its slice was built.
+
+### D55 — uninstall unlinks, suspend keeps the link, a rejected token is retried once, a git resource can be re-linked
+
+**Uninstall and suspend.** The `installation` webhook's `deleted` action now
+does what the Sync removal path already did: `clearGitLinkage`, then
+`deleteInstallation`, then `invalidateToken`, and one log line with the number
+of resources unlinked. Before, a resource kept a dead `git_installation_id` and
+its next deploy failed with a 404. `suspend` keeps the installation row and
+every link and only drops the cached token: suspension is reversible, and
+`unsuspend` already upserts, so access returns with nothing for the user to do.
+Clearing on suspend would have made every resource need a manual re-link, and
+fought Sync, which still lists a suspended installation. Until the B3 message
+lands, a deploy during a suspension shows GitHub's generic 403.
+Every other `installation` action (`created`, `unsuspend`,
+`new_permissions_accepted`) and `installation_repositories` also drop the
+cached token, since a token minted before the change may not reflect it — after
+`unsuspend` the next call mints fresh rather than reusing a token from before
+the suspension. All of this
+is a synchronous SQLite write or Map delete, so the webhook still answers 202
+without waiting on anything. Sync's removal path also invalidates now, for
+symmetry.
+
+**A rejected token is retried once.** `invalidateToken` had no callers, so a
+revoked token stayed cached for up to 59 minutes and every call failed with a
+401 that blamed the App. (A narrowed grant shows up as a 404 on the repository,
+which a new token does not fix; the `installation_repositories` invalidation
+above is what covers that.) `withInstallationToken`
+(`src/github/tokens.ts`, logic in `token-retry.ts`) wraps the three
+token-authenticated calls — the repo list, `getCommit`, and the tarball
+request. On a `GitHubError` 401 from the call, and only that, it drops the
+cached token and retries once with a fresh one; a second failure surfaces
+unchanged.
+
+- Not on 403, 404 or 5xx: a new token fixes none of them.
+- Not on the mint. A mint 401 is a bad App JWT (a rotated key, or clock skew —
+  B1), and re-signing the same JWT fails the same way. The plan's "404 on the
+  access-token endpoint" clause is moot: a mint only runs when nothing valid is
+  cached, and a failed mint caches nothing.
+- Compare-and-delete: the entry is dropped only if it still holds the token
+  that failed, so a caller that lost the race does not throw away a token
+  another caller has just minted.
+- The repo list retries the whole paginated call, not one page.
+- The codeload hop after the tarball redirect is outside the wrapper. Its URL is
+  signed and carries no token, so its failure says nothing about the token.
+- The retry logs `{ installationId, status: 401 }` and never the token.
+
+This is not a job retry and does not contradict D44: it repeats one HTTP call
+inside a step, for the one cause a new token actually fixes.
+
+**Re-link.** `POST /r/:id/source` changes a git resource's installation,
+repository and branch from a plain form in the Source card, which also shows
+the account it is linked to, "not linked", or an installation that no longer
+exists. Before, a disconnect, reinstall or repo transfer meant deleting and
+recreating the resource.
+
+- It uses the create route's rules through `checkGitSource`, including the
+  local-path seam when no installation is chosen. It accepts nothing create
+  would refuse.
+- A repository that is not `owner/name` is a keyed error here
+  (`repo-invalid`), where create answers 400: on create the field is hidden and
+  filled by the picker, here the user types it (D37). An empty repository is
+  `source-repo-required`, because `repo-required`'s sentence says "before
+  creating the resource".
+- `setGitSource` writes the columns (read by push matching and the page) and
+  `source_json` (read by the build) in one update, keeping every other
+  `source_json` key. Writing only one would have pushes match one branch while
+  the build fetched another.
+- Saving does not deploy, like every other settings save. A deploy already
+  queued but not started builds the new source, because the build reads the row
+  when it runs. `previous_image` is kept, so Rollback can return to a build of
+  the old repository.
+- The form makes no GitHub call and adds no JavaScript: an installation select
+  from SQLite and two text fields. The searchable picker stays on the create
+  dialog.
+- Pack, Dockerfile path and build context are still fixed after creation.
+
+D37's inventory grows: 17 keys (it lists 15), 17 not-found sites (16), and
+twelve 400s (nine) — the re-link route adds one 404 and three 400s, all
+exercised by `scripts/check-error-pages.ts`.
+
+The new route validates its body with Elysia `t` like every other route.
+CLAUDE.md says "validate all input with zod"; in practice zod validates config
+and routes use `t` plus hand checks. That wording is left for the maintainer to
+reconcile.
+
+**Verified.** `bun test src/github/token-retry.test.ts` covers the retry rules.
+`scripts/check-error-pages.ts` exercises every re-link refusal and a valid
+re-link against a compiled binary; its two env sentences, stale since D45, were
+corrected in the same change. **Not yet verified:** the webhook paths against
+real GitHub deliveries, and rows 3 and 4 of the plan's real-host test matrix.

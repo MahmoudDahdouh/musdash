@@ -10,6 +10,7 @@ import {
 import { logger } from "../log.ts"
 import { ghJson } from "./api.ts"
 import { listInstallations } from "./repos.ts"
+import { invalidateToken } from "./tokens.ts"
 
 /**
  * The second half of the manifest flow: code in, credentials out.
@@ -122,6 +123,9 @@ export async function syncInstallations(): Promise<number> {
     // The column holds GitHub's integer as a decimal string.
     const unlinked = clearGitLinkage(String(local.installationId))
     deleteInstallation(local.installationId)
+    // A token minted for a removed installation must not outlive it in memory,
+    // the same cleanup the `installation` webhook does for `deleted`.
+    invalidateToken(local.installationId)
     removed++
     logger.info(
       { installationId: local.installationId, unlinked },

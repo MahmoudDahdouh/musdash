@@ -4,7 +4,7 @@ import { localSourceFetcher, setSourceFetcher } from "../jobs/build.ts"
 import { logger } from "../log.ts"
 import { ghFetch, GitHubError } from "./api.ts"
 import { getCommit, isValidGitRef, isValidRepoRef } from "./repos.ts"
-import { installationToken } from "./tokens.ts"
+import { withInstallationToken } from "./tokens.ts"
 
 /**
  * Repository source, fetched as a tarball and extracted straight to disk.
@@ -81,17 +81,18 @@ async function download(
   installationId: number | null,
   dest: string,
 ): Promise<void> {
-  const auth =
+  const path = `/repos/${repo}/tarball/${sha}`
+  const init = { redirect: "manual" } as const
+  // Only the api.github.com request is retried on a 401. The codeload hop
+  // below carries no token — its signed URL is the credential — so a failure
+  // there is not a stale token, and re-minting would not fix it. Extraction
+  // stays outside too: a retry must never re-run a half-written tar.
+  const res =
     installationId === null
-      ? ({ kind: "none" } as const)
-      : ({
-          kind: "installation" as const,
-          token: await installationToken(installationId),
-        } as const)
-
-  const res = await ghFetch(`/repos/${repo}/tarball/${sha}`, auth, {
-    redirect: "manual",
-  })
+      ? await ghFetch(path, { kind: "none" }, init)
+      : await withInstallationToken(installationId, (token) =>
+          ghFetch(path, { kind: "installation", token }, init),
+        )
 
   let body = res.body
   const location = res.headers.get("location")

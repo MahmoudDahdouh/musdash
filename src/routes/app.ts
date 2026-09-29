@@ -35,6 +35,7 @@ import {
   resourceImage,
   setAutoDeploy,
   setEnvVars,
+  setGitSource,
   setResourceImage,
   setSetting,
   setSharedEnvVars,
@@ -49,11 +50,7 @@ import {
   replaceGithubApp,
   syncInstallations,
 } from "../github/register.ts"
-import {
-  isValidGitRef,
-  isValidRepoRef,
-  listInstallationRepos,
-} from "../github/repos.ts"
+import { listInstallationRepos } from "../github/repos.ts"
 import { flashFromQuery, settingsViewModel } from "../github/settings.ts"
 import { clearTokenCache } from "../github/tokens.ts"
 import { BUILD_PLACEHOLDER, enqueueDeploy } from "../jobs/deploy.ts"
@@ -75,6 +72,7 @@ import {
 } from "../settings.ts"
 import { renderPage } from "../views/render.ts"
 import { errorKeyFromQuery, withError } from "./errors.ts"
+import { checkGitSource } from "./git-source.ts"
 import { layout, statusFor } from "./layout.ts"
 
 const html = (body: string, headers?: Record<string, string>) =>
@@ -388,14 +386,9 @@ export const appRoutes = new Elysia()
   /**
    * A resource built from a repository.
    *
-   * Two shapes, and the difference is deliberate. WITH an installation the repo
-   * came from the picker and is validated as a real repository reference and a
-   * real git ref, because both become path segments in a GitHub URL. WITHOUT
-   * one, the repo stays free text: githubSourceFetcher falls back to a local
-   * directory when the value is not a repository reference
-   * (tarball.ts:128-134), and that seam is how checkpoint 3's build
-   * verification runs on a box with no GitHub at all. Requiring isValidRepoRef
-   * unconditionally would remove it.
+   * The installation, repo and branch rules live in checkGitSource, shared
+   * with the re-link route below; see git-source.ts for why the rules differ
+   * with and without an installation.
    */
   .post(
     "/e/:environmentId/resources/git",
@@ -408,31 +401,23 @@ export const appRoutes = new Elysia()
       if (findResourceByNameInEnv(environment.id, body.name)) {
         return redirect(withError(back, "resource-name-taken"), 303)
       }
-      const repo = body.repo.trim()
-      const branch = body.branch.trim() || "main"
-      // The repo input is hidden and filled by the picker, so it cannot be
-      // `required` — this is the check the form cannot make.
-      if (!repo) return redirect(withError(back, "repo-required"), 303)
-
-      const installationId = body.installationId?.trim() || null
-      if (installationId !== null) {
-        // Stored as GitHub's integer in DECIMAL STRING form, because
-        // tarball.ts:139 does Number() on it and throws if the result is not
-        // finite. Anything else here fails at deploy time, not now.
-        if (!/^\d+$/.test(installationId)) return statusFor(session, 400)
-        // Checked against installationId (GitHub's number), never against the
-        // ULID row id — they are different values and the row id would never
-        // match.
-        const known = listGithubInstallations().some(
-          (i) => String(i.installationId) === installationId,
-        )
-        if (!known) return statusFor(session, 400)
-
-        if (!isValidRepoRef(repo)) return statusFor(session, 400)
-        if (!isValidGitRef(branch)) {
-          return redirect(withError(back, "branch-invalid"), 303)
+      const source = checkGitSource(body)
+      if (!source.ok) {
+        switch (source.refusal) {
+          // The repo input is hidden and filled by the picker, so it cannot be
+          // `required` — this is the check the form cannot make.
+          case "no-repo":
+            return redirect(withError(back, "repo-required"), 303)
+          case "bad-branch":
+            return redirect(withError(back, "branch-invalid"), 303)
+          // The picker only offers known installations and real repositories,
+          // so only a stale tab or a hand-made request reaches these.
+          case "bad-installation":
+          case "bad-repo":
+            return statusFor(session, 400)
         }
       }
+      const { repo, branch, installationId } = source
 
       const resource = createGitResource({
         environmentId: environment.id,
@@ -491,6 +476,13 @@ export const appRoutes = new Elysia()
       imagePending: d.image === BUILD_PLACEHOLDER,
     }))
 
+    // SQLite only, never a GitHub call: this page renders on every tab switch
+    // and must not stall behind a slow or unreachable API.
+    const githubInstallations = listGithubInstallations().map((i) => ({
+      installationId: i.installationId,
+      accountLogin: i.accountLogin,
+    }))
+
     return html(
       renderPage(
         "resource",
@@ -513,6 +505,8 @@ export const appRoutes = new Elysia()
           // stays value-free and cacheable.
           envText: tab === "env" ? getEnvText(resource.id) : undefined,
           logs: tail(resource.id, 300),
+          githubInstallations,
+          gitLink: gitLinkFor(resource.gitInstallationId, githubInstallations),
           csrf: session?.csrfToken,
         },
         layout(session, resource.name, {
@@ -732,6 +726,68 @@ export const appRoutes = new Elysia()
     {
       body: t.Object({
         enabled: t.Optional(t.String()),
+        csrf: t.String(),
+      }),
+    },
+  )
+
+  /**
+   * Re-points a git resource at a different installation, repository or
+   * branch — after an uninstall, a reinstall or a repository transfer, without
+   * deleting and recreating it.
+   *
+   * Validated by the same checkGitSource as the create route, so re-linking
+   * accepts nothing creating refuses. Unlike create, a bad repository here is
+   * a keyed notice rather than a 400: this form's repo field is typed by hand,
+   * not filled by the picker.
+   *
+   * Saves and nothing more — no deploy is enqueued. The next manual deploy or
+   * matching push builds from the new source.
+   */
+  .post(
+    "/r/:resourceId/source",
+    ({ params, body, redirect, session }) => {
+      const ctx = getResourceContext(params.resourceId)
+      if (!ctx) return statusFor(session, 404)
+      if (ctx.resource.kind !== "git") return statusFor(session, 400)
+
+      const back = `/r/${ctx.resource.id}?tab=settings`
+      const source = checkGitSource(body)
+      if (!source.ok) {
+        switch (source.refusal) {
+          case "no-repo":
+            return redirect(withError(back, "source-repo-required"), 303)
+          case "bad-repo":
+            return redirect(withError(back, "repo-invalid"), 303)
+          case "bad-branch":
+            return redirect(withError(back, "branch-invalid"), 303)
+          // The select only offers known installations, so only a stale tab
+          // or a hand-made request reaches this.
+          case "bad-installation":
+            return statusFor(session, 400)
+        }
+      }
+
+      setGitSource(ctx.resource.id, {
+        installationId: source.installationId,
+        repo: source.repo,
+        branch: source.branch,
+      })
+      logger.info(
+        {
+          resourceId: ctx.resource.id,
+          installationId: source.installationId,
+        },
+        "git resource source changed",
+      )
+      return redirect(back, 303)
+    },
+    {
+      body: t.Object({
+        /** GitHub's numeric installation id, as a string; empty for none. */
+        installationId: t.Optional(t.String()),
+        repo: t.String(),
+        branch: t.String(),
         csrf: t.String(),
       }),
     },
@@ -1069,6 +1125,34 @@ export const appRoutes = new Elysia()
   )
 
 // --------------------------------------------------------------- helpers
+
+/** What the resource page says about a git resource's GitHub linkage. */
+type GitLink =
+  | { kind: "none" }
+  | { kind: "linked"; accountLogin: string }
+  | { kind: "stale" }
+
+/**
+ * Resolves a resource's stored installation id against the known ones.
+ *
+ * "stale" is an id that matches no installation — left by a missed uninstall
+ * webhook before a sync, or written before unlinking existed. It is shown
+ * rather than hidden because its next deploy would 404 at GitHub, and the
+ * re-link form is how the user fixes it. The column holds GitHub's integer as
+ * a decimal string, so the comparison is on the string form.
+ */
+function gitLinkFor(
+  gitInstallationId: string | null,
+  installations: { installationId: number; accountLogin: string }[],
+): GitLink {
+  if (gitInstallationId === null) return { kind: "none" }
+  const match = installations.find(
+    (i) => String(i.installationId) === gitInstallationId,
+  )
+  return match
+    ? { kind: "linked", accountLogin: match.accountLogin }
+    : { kind: "stale" }
+}
 
 interface GitPickerRepo {
   fullName: string

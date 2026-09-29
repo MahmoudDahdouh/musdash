@@ -421,6 +421,48 @@ export function setResourceImage(id: string, image: string): void {
   updateResource(id, { sourceJson: JSON.stringify({ image }) })
 }
 
+export interface GitSourcePatch {
+  /** GitHub's integer as a decimal string, or null for a public repository. */
+  installationId: string | null
+  repo: string
+  branch: string
+}
+
+/**
+ * Re-points a GIT resource at a different installation, repository or branch.
+ *
+ * Kind-guarded for the same reason as setResourceImage: an image resource's
+ * sourceJson holds its image, and writing a repository into it is the failure
+ * that turns it into something it is not.
+ *
+ * One updateResource, so the git columns (which resourcesForPush queries) and
+ * sourceJson (which the build reads) can never disagree. sourceJson is patched
+ * rather than rebuilt through gitSource(): only repo and branch change, and a
+ * rebuild would drop any key gitSource() does not know about.
+ */
+export function setGitSource(id: string, patch: GitSourcePatch): void {
+  const resource = getResource(id)
+  if (!resource) return
+  if (resource.kind !== "git") {
+    throw new Error(`resource ${id} is a ${resource.kind} resource, not git`)
+  }
+  const parsed: unknown = JSON.parse(resource.sourceJson)
+  const stored =
+    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed
+      : {}
+  updateResource(id, {
+    gitInstallationId: patch.installationId,
+    gitRepo: patch.repo,
+    gitBranch: patch.branch,
+    sourceJson: JSON.stringify({
+      ...stored,
+      repo: patch.repo,
+      branch: patch.branch,
+    }),
+  })
+}
+
 /** Resource plus the environment and project it belongs to, for headers/URLs. */
 export interface ResourceContext {
   resource: Resource
