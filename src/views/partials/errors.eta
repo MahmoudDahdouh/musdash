@@ -14,6 +14,10 @@ That is not a valid image reference. Use a name like nginx:alpine or ghcr.io/own
 A resource with that name already exists in this environment. Choose another name.
 <% } else if (it.key === "repo-required") { %>
 Choose a repository, or enter a local path, before creating the resource.
+<% } else if (it.key === "source-repo-required") { %>
+Enter a repository as owner/name, or a local path, before saving the source.
+<% } else if (it.key === "repo-invalid") { %>
+That is not a repository reference. With a GitHub account chosen, enter the repository as owner/name, such as acme/web.
 <% } else if (it.key === "branch-invalid") { %>
 That is not a valid branch name. Branch names cannot contain spaces, "..", or any of ~ ^ : ? * [ \
 <% } else if (it.key === "env-name-taken") { %>
@@ -38,4 +42,6 @@ That GitHub callback did not come from a connection started here. Press Connect 
 GitHub did not return a registration code. Press Connect GitHub to start again.
 <% } else if (it.key === "github-confirm") { %>
 GitHub was not disconnected, because the request was not confirmed. Press Disconnect GitHub and confirm.
+<% } else if (it.key === "deploy-already-started") { %>
+This deploy was not cancelled, because it had already started. Only a deploy that is still queued can be cancelled.
 <% } %>

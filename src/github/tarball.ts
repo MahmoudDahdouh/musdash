@@ -1,10 +1,15 @@
 import { existsSync } from "node:fs"
-import type { FetchedSource, SourceFetcher } from "../jobs/build.ts"
+import type {
+  FetchedSource,
+  SourceFetcher,
+  SourceRequest,
+} from "../jobs/build.ts"
 import { localSourceFetcher, setSourceFetcher } from "../jobs/build.ts"
 import { logger } from "../log.ts"
-import { ghFetch, GitHubError } from "./api.ts"
+import { ghFetch } from "./api.ts"
+import { ARCHIVE_TIMINGS, downloadArchive, retryLine } from "./archive-fetch.ts"
 import { getCommit, isValidGitRef, isValidRepoRef } from "./repos.ts"
-import { installationToken } from "./tokens.ts"
+import { withInstallationToken } from "./tokens.ts"
 
 /**
  * Repository source, fetched as a tarball and extracted straight to disk.
@@ -12,58 +17,6 @@ import { installationToken } from "./tokens.ts"
  * The tarball endpoint over `git clone`: one authenticated request, no git
  * binary, no `.git` directory, smaller footprint (DECISIONS, "Source fetching").
  */
-
-/** A build can legitimately take minutes; a fetch cannot. Job concurrency is 1,
- *  so a hung fetch parks every queued deploy behind it. */
-const FETCH_TIMEOUT_MS = 120_000
-
-/**
- * Extracts a gzipped tarball stream into `dest`.
- *
- * The stream is handed to Bun.spawn as stdin rather than pumped by hand: a
- * manual write loop over the response body deadlocks once the pipe fills,
- * because nothing is reading the other end while the loop blocks. Letting Bun
- * own the pumping keeps memory flat — the whole point of streaming rather than
- * buffering a tarball that can be hundreds of megabytes.
- *
- * --strip-components=1 removes GitHub's `{owner}-{repo}-{sha}/` wrapper.
- */
-async function extract(
-  body: ReadableStream<Uint8Array>,
-  dest: string,
-): Promise<void> {
-  let proc: ReturnType<typeof Bun.spawn>
-  try {
-    proc = Bun.spawn(["tar", "-xz", "--strip-components=1", "-C", dest], {
-      stdin: body,
-      stdout: "ignore",
-      stderr: "pipe",
-    })
-  } catch (err) {
-    throw new Error(
-      `could not run tar — is it installed and on PATH? (${(err as Error).message})`,
-    )
-  }
-
-  const kill = setTimeout(() => {
-    proc.kill()
-  }, FETCH_TIMEOUT_MS)
-
-  try {
-    // stderr is drained concurrently with the wait: an undrained pipe blocks
-    // tar as soon as its buffer fills, and nothing would ever read it if we
-    // waited for exit first.
-    const [code, stderr] = await Promise.all([
-      proc.exited,
-      new Response(proc.stderr as ReadableStream).text(),
-    ])
-    if (code !== 0) {
-      throw new Error(`tar exited ${code}: ${stderr.trim() || "no output"}`)
-    }
-  } finally {
-    clearTimeout(kill)
-  }
-}
 
 /**
  * Downloads and extracts a repository at a resolved commit.
@@ -80,54 +33,58 @@ async function download(
   sha: string,
   installationId: number | null,
   dest: string,
+  emit?: (line: string) => void,
 ): Promise<void> {
-  const auth =
+  const path = `/repos/${repo}/tarball/${sha}`
+  const init = { redirect: "manual" } as const
+  // The 401 re-mint stays on the api.github.com request, inside `locate`. The
+  // codeload hop carries no token — its signed URL is the credential — so a
+  // failure there is not a stale token, and re-minting would not fix it. The
+  // whole download (this request, codeload, tar) is retried at most once, and
+  // only after the first tar has exited and `dest` has been emptied: a retry
+  // never extracts over a half-written tree (D58).
+  const locate = () =>
     installationId === null
-      ? ({ kind: "none" } as const)
-      : ({
-          kind: "installation" as const,
-          token: await installationToken(installationId),
-        } as const)
+      ? ghFetch(path, { kind: "none" }, init)
+      : withInstallationToken(installationId, (token) =>
+          ghFetch(path, { kind: "installation", token }, init),
+        )
 
-  const res = await ghFetch(`/repos/${repo}/tarball/${sha}`, auth, {
-    redirect: "manual",
-  })
-
-  let body = res.body
-  const location = res.headers.get("location")
-  if (location) {
-    // Never log `location`: the signed URL grants read access to the archive.
-    logger.debug({ repo }, "following GitHub's archive redirect")
-    const signed = await fetch(location, {
-      headers: { "user-agent": "musdash" },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    })
-    if (!signed.ok) {
-      throw new GitHubError(
-        `GitHub's archive host returned ${signed.status} for ${repo}`,
-        signed.status,
+  await downloadArchive({
+    repo,
+    dest,
+    timings: ARCHIVE_TIMINGS,
+    locate,
+    onRetry: (reason) => {
+      // The repository and the reason's fields only: never the signed URL,
+      // and never an error's own text, which can carry it.
+      logger.warn(
+        { repo, ...reason },
+        "the archive download failed; retrying once",
       )
-    }
-    body = signed.body
-  }
-
-  if (!body) throw new Error(`GitHub returned an empty archive for ${repo}`)
-  await extract(body, dest)
+      emit?.(retryLine(reason, ARCHIVE_TIMINGS))
+    },
+  })
 }
 
+/** Where a SourceRequest points, once validated. */
+type ValidatedSource =
+  | { kind: "local" }
+  | { kind: "github"; repo: string; ref: string; installation: number | null }
+
 /**
- * The source fetcher Checkpoint 4 installs, replacing the local-directory seam.
- *
- * Three ways in, and the last one matters: a filesystem path still delegates to
- * localSourceFetcher, which is what keeps checkpoint 3's end-to-end build
- * verification runnable without GitHub.
+ * Validates a request, for both steps: resolve and fetch must agree on what a
+ * request means, and two copies of these checks would drift apart.
  */
-export const githubSourceFetcher: SourceFetcher = async (source, destDir) => {
+function validate(source: SourceRequest): ValidatedSource {
   const { repo, ref, installationId } = source
 
-  // A local path: not reachable from the UI, but it is the verification seam.
+  // A local path: the create dialog's Local path field reaches this, and it is
+  // the verification seam. An owner/name typed into that same field is not a
+  // local path — it falls through below and is fetched from GitHub without
+  // credentials, as a public repository.
   if (!isValidRepoRef(repo)) {
-    if (existsSync(repo)) return localSourceFetcher(source, destDir)
+    if (existsSync(repo)) return { kind: "local" }
     throw new Error(
       `"${repo}" is not a repository reference (owner/name) or an existing directory`,
     )
@@ -140,14 +97,37 @@ export const githubSourceFetcher: SourceFetcher = async (source, destDir) => {
   if (installation !== null && !Number.isFinite(installation)) {
     throw new Error(`installation id "${installationId}" is not a number`)
   }
+  return { kind: "github", repo, ref, installation }
+}
 
-  // Resolve the ref to a commit FIRST, then fetch that exact commit. Fetching
-  // the branch name instead would leave a window in which a push lands between
-  // the two calls, and the deployment row would record a commit that is not the
-  // one that was built.
-  const commit = await getCommit(installation, repo, ref)
-  await download(repo, commit.sha, installation, destDir)
-  return commit satisfies FetchedSource
+/**
+ * The source fetcher Checkpoint 4 installs, replacing the local-directory seam.
+ *
+ * Three ways in, and the last one matters: a filesystem path still delegates to
+ * localSourceFetcher, which is what keeps checkpoint 3's end-to-end build
+ * verification runnable without GitHub.
+ */
+export const githubSourceFetcher: SourceFetcher = {
+  async resolve(source) {
+    const target = validate(source)
+    if (target.kind === "local") return localSourceFetcher.resolve(source)
+    const commit = await getCommit(target.installation, target.repo, target.ref)
+    return commit satisfies FetchedSource
+  },
+
+  async fetch(source, commit, destDir, emit) {
+    const target = validate(source)
+    if (target.kind === "local") {
+      return localSourceFetcher.fetch(source, null, destDir, emit)
+    }
+    // Only ever the commit resolve() returned, never the branch name: fetching
+    // the branch would reopen the window resolve-then-fetch exists to close — a
+    // push landing in between would be built under the previous commit's record.
+    if (!commit) {
+      throw new Error(`no commit was resolved for ${target.repo}`)
+    }
+    await download(target.repo, commit.sha, target.installation, destDir, emit)
+  },
 }
 
 /**

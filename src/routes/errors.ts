@@ -23,6 +23,9 @@ export const ERROR_KEYS = [
   "github-state-mismatch",
   "github-no-code",
   "github-confirm",
+  "source-repo-required",
+  "repo-invalid",
+  "deploy-already-started",
 ] as const
 
 export type ErrorKey = (typeof ERROR_KEYS)[number]

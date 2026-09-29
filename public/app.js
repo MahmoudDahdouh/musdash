@@ -71,7 +71,7 @@ document.addEventListener("alpine:init", () => {
       })
       es.addEventListener("deployment", (e) => {
         const d = JSON.parse(e.data)
-        if (d.status === "succeeded" || d.status === "failed") {
+        if (["succeeded", "failed", "cancelled"].includes(d.status)) {
           // The overview's deployment table is server-rendered, so refresh it
           // once the deploy settles rather than mirroring state client-side.
           setTimeout(() => window.location.reload(), 600)

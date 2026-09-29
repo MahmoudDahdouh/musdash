@@ -72,9 +72,9 @@ const SENTENCES: Record<ErrorKey, string> = {
   "domain-dashboard":
     "That is the dashboard's own address, so a resource cannot use it. Choose another name, or change the dashboard address under Settings.",
   "env-invalid-line":
-    "Nothing was saved. Every line must be NAME=value, and each name must use letters, digits and underscores, not start with a digit, and appear once per box. Fix the line and paste the variables again.",
+    "Nothing was saved, so make your change again; the boxes show what is saved. Every line must be NAME=value, and each name must use letters, digits and underscores, not start with a digit, and appear once per box.",
   "env-scope-duplicate":
-    "Nothing was saved. A name appears in more than one box. Keep it only in the box where it is needed and paste the variables again.",
+    "Nothing was saved, so make your change again; the boxes show what is saved. A name appeared in more than one box; keep it only in the box where it is needed.",
   "github-no-domain":
     "GitHub needs a public HTTPS address for this dashboard. Set one under Dashboard address, then connect GitHub.",
   "github-no-flow":
@@ -85,6 +85,12 @@ const SENTENCES: Record<ErrorKey, string> = {
     "GitHub did not return a registration code. Press Connect GitHub to start again.",
   "github-confirm":
     "GitHub was not disconnected, because the request was not confirmed. Press Disconnect GitHub and confirm.",
+  "source-repo-required":
+    "Enter a repository as owner/name, or a local path, before saving the source.",
+  "repo-invalid":
+    "That is not a repository reference. With a GitHub account chosen, enter the repository as owner/name, such as acme/web.",
+  "deploy-already-started":
+    "This deploy was not cancelled, because it had already started. Only a deploy that is still queued can be cancelled.",
 }
 
 const FORBIDDEN_SENTENCE =
@@ -272,7 +278,11 @@ function readOne(sql: string, ...params: string[]): string {
 // ------------------------------------------------------------------ checks
 
 /** Problems with the layout's error notice on a followed page (criterion 2). */
-function noticeProblems(body: string, key: ErrorKey): string[] {
+function noticeProblems(
+  body: string,
+  key: ErrorKey,
+  otherNotices = 0,
+): string[] {
   const problems: string[] = []
   // The repository picker renders one hidden notice per failing installation,
   // tagged data-installation; it is not the layout's notice.
@@ -281,7 +291,9 @@ function noticeProblems(body: string, key: ErrorKey): string[] {
     /class="notice notice-error"\s+role="alert"\s+data-installation=/g,
   )
   const total = count(body, /notice-error/g) - picker
-  if (total !== 1) problems.push(`${total} notice-error elements, want 1`)
+  if (total !== 1 + otherNotices) {
+    problems.push(`${total} notice-error elements, want ${1 + otherNotices}`)
+  }
   // The layout's notice: an icon, then the text in its own <div>. Compared
   // exactly, so an extra word or a double-escaped quote fails too.
   const notice =
@@ -308,6 +320,8 @@ async function keyed(
   path: string,
   form: Record<string, string> | undefined,
   expected: string,
+  /** Error notices the followed page shows besides the layout's own. */
+  otherNotices = 0,
 ): Promise<Reply> {
   exercised.add(key)
   const before = snapshot()
@@ -328,7 +342,9 @@ async function keyed(
       problems.push(`followed: content-type ${page.type}`)
     }
     problems.push(
-      ...noticeProblems(page.body, key).map((p) => `followed: ${p}`),
+      ...noticeProblems(page.body, key, otherNotices).map(
+        (p) => `followed: ${p}`,
+      ),
     )
   }
   verdict(`[1,2] ${label}`, problems, `303 ${r.location}, ${after.counts}`)
@@ -640,7 +656,8 @@ try {
     )
   }
 
-  // ---- criterion 6: the 16 not-found sites
+  // ---- criterion 6: the 16 not-found sites (the re-link 404, D56, is
+  // checked with the other re-link cases after seeding)
   const env = { runtime: "A=1" }
   const notFound: [string, "GET" | "POST", string, Record<string, string>?][] =
     [
@@ -828,6 +845,7 @@ try {
   await stop()
   const now = new Date().toISOString()
   const noImage = "01V4SEEDEDNOIMAGE000000000"
+  const reconcileRow = "01V4SEEDEDRECONCILE0000000"
   {
     const db = new Database(dbPath)
     try {
@@ -846,6 +864,12 @@ try {
            desired_state, memory_limit_mb, created_at)
          VALUES (?, ?, 'noimage', 'image', '{}', 'stopped', 512, ?)`,
       ).run(noImage, eid, now)
+      // A reconcile deployment: the cancel route refuses it with a 400
+      // (D59), and no form can create one.
+      db.query(
+        `INSERT INTO deployments (id, resource_id, status, image, trigger,
+           created_at) VALUES (?, ?, 'queued', 'nginx:alpine', 'reconcile', ?)`,
+      ).run(reconcileRow, noImage, now)
     } finally {
       db.close()
     }
@@ -888,6 +912,252 @@ try {
     `/r/${noImage}/deploy`,
     {},
   )
+
+  // ---- Slice A3: re-linking a git resource's source (POST /r/:id/source)
+  const gitCreated = await send(
+    "POST",
+    `/e/${eid}/resources/git`,
+    withCsrf({
+      name: "relink",
+      repo: "owner/app",
+      branch: "main",
+      dockerfilePath: "deploy/Dockerfile",
+      buildContext: "app",
+    }),
+  )
+  const g = /^\/r\/([^/?#]+)$/.exec(gitCreated.location)?.[1] ?? ""
+  if (!g) throw new Error(`git fixture failed: ${gitCreated.status}`)
+  const gr = `/r/${g}`
+  await keyed(
+    "re-link with no repository",
+    "source-repo-required",
+    "POST",
+    `${gr}/source`,
+    withCsrf({ installationId: "", repo: "   ", branch: SENTINEL }),
+    `${gr}?tab=settings&error=source-repo-required`,
+  )
+  await keyed(
+    "re-link repo not owner/name (seeded)",
+    "repo-invalid",
+    "POST",
+    `${gr}/source`,
+    withCsrf({ installationId: "4242", repo: SENTINEL, branch: "main" }),
+    `${gr}?tab=settings&error=repo-invalid`,
+  )
+  await keyed(
+    "re-link invalid branch (seeded)",
+    "branch-invalid",
+    "POST",
+    `${gr}/source`,
+    withCsrf({
+      installationId: "4242",
+      repo: "owner/app",
+      branch: `${SENTINEL} x`,
+    }),
+    `${gr}?tab=settings&error=branch-invalid`,
+  )
+  await statusCase(
+    "[7] 400 re-link installation id not digits",
+    400,
+    "POST",
+    `${gr}/source`,
+    { installationId: SENTINEL, repo: "owner/app", branch: "main" },
+  )
+  await statusCase(
+    "[7] 400 re-link installation not connected",
+    400,
+    "POST",
+    `${gr}/source`,
+    { installationId: "999999", repo: "owner/app", branch: "main" },
+  )
+  await statusCase(
+    "[7] 400 re-link an image resource",
+    400,
+    "POST",
+    `${r}/source`,
+    { installationId: "", repo: "owner/app", branch: "main" },
+  )
+  await statusCase(
+    "[6] 404 re-link an unknown resource",
+    404,
+    "POST",
+    `/r/${BOGUS}/source`,
+    { installationId: "", repo: "owner/app", branch: "main" },
+  )
+  {
+    // A valid re-link moves the columns and source_json together, keeps every
+    // other source_json key, and enqueues nothing (Slice A criterion 21).
+    const read = (): Record<string, unknown> => {
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        const row = db
+          .query(
+            `SELECT git_installation_id, git_repo, git_branch, source_json,
+               built_image, previous_image, container_id,
+               current_deployment_id, auto_deploy, desired_state,
+               (SELECT COUNT(*) FROM jobs) AS jobs,
+               (SELECT COUNT(*) FROM deployments) AS deployments
+             FROM resources WHERE id = ?`,
+          )
+          .get(g) as Record<string, unknown> | null
+        return row ?? {}
+      } finally {
+        db.close()
+      }
+    }
+    const before = read()
+    const r1 = await send(
+      "POST",
+      `${gr}/source`,
+      withCsrf({ installationId: "4242", repo: "acme/web", branch: "dev" }),
+    )
+    const after = read()
+    const src = JSON.parse(String(after.source_json)) as Record<string, unknown>
+    const was = JSON.parse(String(before.source_json)) as Record<
+      string,
+      unknown
+    >
+    const problems: string[] = []
+    if (r1.status !== 303 || r1.location !== `${gr}?tab=settings`) {
+      problems.push(`${r1.status} ${r1.location}`)
+    }
+    if (after.git_installation_id !== "4242") problems.push("installation")
+    if (after.git_repo !== "acme/web" || src.repo !== "acme/web") {
+      problems.push("repo not written to both places")
+    }
+    if (after.git_branch !== "dev" || src.branch !== "dev") {
+      problems.push("branch not written to both places")
+    }
+    if (was.dockerfilePath !== "deploy/Dockerfile" || !was.buildContext) {
+      problems.push("fixture source_json lacks dockerfilePath/buildContext")
+    }
+    for (const column of [
+      "built_image",
+      "previous_image",
+      "container_id",
+      "current_deployment_id",
+      "auto_deploy",
+      "desired_state",
+    ]) {
+      if (after[column] !== before[column]) problems.push(`${column} changed`)
+    }
+    for (const key of Object.keys(was)) {
+      if (key !== "repo" && key !== "branch" && src[key] !== was[key]) {
+        problems.push(`source_json.${key} changed`)
+      }
+    }
+    if (
+      after.jobs !== before.jobs ||
+      after.deployments !== before.deployments
+    ) {
+      problems.push("a job or deployment was enqueued")
+    }
+    const page = await send("GET", `${gr}?tab=settings`)
+    if (page.status !== 200 || !page.body.includes("octo-fixture")) {
+      problems.push("settings tab does not name the linked account")
+    }
+    verdict("[A3] valid re-link", problems, "303, both places, nothing queued")
+  }
+
+  // ---- Slice D-a: cancelling a deploy that has already left the queue
+  {
+    const queued = await send("POST", `${r}/deploy`, withCsrf({}))
+    const did = /^\/d\/([^/?#]+)$/.exec(queued.location)?.[1] ?? ""
+    if (!did) throw new Error(`deploy fixture failed: ${queued.status}`)
+    // Docker points at a socket that does not exist, so the worker claims the
+    // job and fails it within moments; wait for that before cancelling.
+    let status = ""
+    for (
+      let i = 0;
+      i < 100 && (status === "" || status === "queued" || status === "running");
+      i++
+    ) {
+      await Bun.sleep(100)
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        const row = db
+          .query("SELECT status FROM deployments WHERE id = ?")
+          .get(did) as { status?: unknown } | null
+        status = typeof row?.status === "string" ? row.status : ""
+      } finally {
+        db.close()
+      }
+    }
+    if (status !== "failed" && status !== "succeeded") {
+      throw new Error(`deploy fixture never finished: ${status}`)
+    }
+    await keyed(
+      "cancel a deploy that already ran",
+      "deploy-already-started",
+      "POST",
+      `/d/${did}/cancel`,
+      withCsrf({}),
+      `/d/${did}?error=deploy-already-started`,
+      // The failed deployment's own error, which its page shows below.
+      1,
+    )
+  }
+  await statusCase(
+    "[6] 404 cancel an unknown deployment",
+    404,
+    "POST",
+    `/d/${BOGUS}/cancel`,
+    {},
+  )
+  await statusCase(
+    "[7] 400 cancel a reconcile deployment (seeded)",
+    400,
+    "POST",
+    `/d/${reconcileRow}/cancel`,
+    {},
+  )
+
+  // ---- Slice D-b2: "Deploy this again" (POST /d/:id/redeploy)
+  await statusCase(
+    "[6] 404 redeploy an unknown deployment",
+    404,
+    "POST",
+    `/d/${BOGUS}/redeploy`,
+    {},
+  )
+  await statusCase(
+    "[7] 400 redeploy a deployment that has not finished (seeded)",
+    400,
+    "POST",
+    `/d/${reconcileRow}/redeploy`,
+    {},
+  )
+  {
+    // The failed image deploy from the cancel case above is finished and names
+    // a real image, so it qualifies: a new row, and a 303 to its page.
+    const failed = readOne(
+      `SELECT id FROM deployments WHERE resource_id = ? AND status = 'failed'
+       ORDER BY created_at DESC LIMIT 1`,
+      rid,
+    )
+    const again = await send("POST", `/d/${failed}/redeploy`, withCsrf({}))
+    const next = /^\/d\/([^/?#]+)$/.exec(again.location)?.[1] ?? ""
+    const trigger = readOne(
+      "SELECT trigger AS id FROM deployments WHERE id = ?",
+      next,
+    )
+    verdict(
+      "[D-b2] redeploy a failed image deployment",
+      [
+        ...(failed ? [] : ["no failed deployment to redeploy"]),
+        ...(again.status === 303 && next && next !== failed
+          ? []
+          : [`${again.status} ${again.location}`]),
+        ...(trigger === "redeploy" ? [] : [`trigger ${trigger}`]),
+        ...((await send("GET", `/d/${failed}`)).body.includes(
+          `action="/d/${failed}/redeploy"`,
+        )
+          ? []
+          : ["the failed deployment's page has no Deploy this again form"]),
+      ],
+      "303 to a new redeploy row",
+    )
+  }
 
   // ---- whole-run checks
   const missing = ERROR_KEYS.filter((k) => !exercised.has(k))

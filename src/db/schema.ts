@@ -133,7 +133,7 @@ export const deployments = sqliteTable(
     // migration — same as jobs.type below.
     trigger: text("trigger")
       .notNull()
-      .$type<"manual" | "rollback" | "reconcile" | "webhook">(),
+      .$type<"manual" | "rollback" | "reconcile" | "webhook" | "redeploy">(),
     error: text("error"),
     startedAt: text("started_at"),
     finishedAt: text("finished_at"),
@@ -142,6 +142,12 @@ export const deployments = sqliteTable(
     commitSha: text("commit_sha"),
     commitMessage: text("commit_message"),
     commitAuthor: text("commit_author"),
+    // What the build was made from (0005, D60). The repository as fetched, and
+    // a keyed HMAC of every build input — the key that lets a push reuse an
+    // image instead of building it again. Null for image deploys and for rows
+    // written before 0005, which therefore never match.
+    gitRepo: text("git_repo"),
+    buildFingerprint: text("build_fingerprint"),
 
     createdAt: text("created_at").notNull(),
   },
@@ -222,7 +228,9 @@ export const domains = sqliteTable("domains", {
   createdAt: text("created_at").notNull(),
 })
 
-export type JobStatus = "pending" | "leased" | "done" | "failed"
+// jobs.status is TEXT with no CHECK constraint either, so "cancelled" (a deploy
+// removed from the queue before the worker claimed it, D59) needs no migration.
+export type JobStatus = "pending" | "leased" | "done" | "failed" | "cancelled"
 // jobs.type is a plain TEXT column with no CHECK constraint, so widening this
 // union needs no migration.
 export type JobType =

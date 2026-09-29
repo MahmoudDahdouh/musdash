@@ -9,7 +9,11 @@ import {
 } from "../db/queries.ts"
 import { logger } from "../log.ts"
 import { ghJson } from "./api.ts"
-import { listInstallations } from "./repos.ts"
+import {
+  clearGitHubCaches,
+  forgetInstallation,
+  listInstallations,
+} from "./repos.ts"
 
 /**
  * The second half of the manifest flow: code in, credentials out.
@@ -76,64 +80,81 @@ export async function convertManifestCode(code: string): Promise<ConvertedApp> {
  * The `installation` webhook is the only other deleter, so a delivery that was
  * missed, unverified, or never arrived leaves a PHANTOM installation behind
  * forever: it shows in Settings and the account picker, and minting a token for
- * it 404s at deploy time. Since webhook delivery is not yet verified against
- * real GitHub, that is the expected state rather than an edge case — and "Sync
- * installations" is precisely the button the UI points the user at to fix it.
- * An upsert-only sync cannot fix it, which made the button a placebo.
+ * it 404s at deploy time. Push deliveries have been handled on a real host
+ * (D52), but installation lifecycle deliveries are still unverified against
+ * real GitHub (D56), so a missed `deleted` is a realistic state rather than an
+ * edge case — and "Sync installations" is precisely the button the UI points
+ * the user at to fix it. An upsert-only sync cannot fix it, which made the
+ * button a placebo.
  *
  * Called after registration and from that button — the "Install" step happens
  * on github.com, and nothing tells musdash about it except the webhook.
+ *
+ * Every exit, including a missing App and a throwing listInstallations(),
+ * clears the cached tokens and repository lists. The button is the user's
+ * "musdash is showing me something out of date" remedy, and a lifecycle
+ * delivery that never arrived leaves the caches as wrong as the rows. Clearing
+ * even when GitHub fails costs one refetch; skipping it would leave the button
+ * unable to fix the picker exactly when the webhook was missed.
  *
  * `appRowId` is the App's ULID row id from getGithubApp(); `installationId` is
  * GitHub's integer. They are different values and only the second one mints a
  * token.
  */
 export async function syncInstallations(): Promise<number> {
-  const app = getGithubApp()
-  if (!app) return 0
+  try {
+    const app = getGithubApp()
+    if (!app) return 0
 
-  // Throws on an API failure rather than returning an empty list, which is what
-  // makes the removal below safe: a transient 500 or a timeout propagates to
-  // the caller and no local row is touched. Only an authoritative, successful
-  // answer from GitHub can delete anything.
-  const installations = await listInstallations()
+    // Throws on an API failure rather than returning an empty list, which is
+    // what makes the removal below safe: a transient 500 or a timeout
+    // propagates to the caller and no local row is touched. Only an
+    // authoritative, successful answer from GitHub can delete anything.
+    const installations = await listInstallations()
 
-  for (const installation of installations) {
-    upsertInstallation({
-      appRowId: app.id,
-      installationId: installation.installationId,
-      accountLogin: installation.accountLogin,
-    })
-  }
+    for (const installation of installations) {
+      upsertInstallation({
+        appRowId: app.id,
+        installationId: installation.installationId,
+        accountLogin: installation.accountLogin,
+      })
+    }
 
-  const live = new Set(installations.map((i) => i.installationId))
-  let removed = 0
-  for (const local of listGithubInstallations()) {
-    if (live.has(local.installationId)) continue
+    const live = new Set(installations.map((i) => i.installationId))
+    let removed = 0
+    for (const local of listGithubInstallations()) {
+      if (live.has(local.installationId)) continue
 
-    // Unlink before deleting, for the same reason the disconnect path does it:
-    // there is no foreign key from resources.git_installation_id
-    // (0002_github.sql:37), so deleting the row alone would leave resources
-    // holding an id that resolves to nothing. That does not fail here — it
-    // fails as a 404 from GitHub at the next deploy, long after the uninstall
-    // that caused it. Clearing it surfaces as "no installation selected" in the
-    // UI, which is a state the user can act on.
-    //
-    // The column holds GitHub's integer as a decimal string.
-    const unlinked = clearGitLinkage(String(local.installationId))
-    deleteInstallation(local.installationId)
-    removed++
+      // Unlink before deleting, for the same reason the disconnect path does
+      // it: there is no foreign key from resources.git_installation_id
+      // (0002_github.sql:37), so deleting the row alone would leave resources
+      // holding an id that resolves to nothing. That does not fail here — it
+      // fails as a 404 from GitHub at the next deploy, long after the
+      // uninstall that caused it. Clearing it surfaces as "no installation
+      // selected" in the UI, which is a state the user can act on.
+      //
+      // The column holds GitHub's integer as a decimal string.
+      const unlinked = clearGitLinkage(String(local.installationId))
+      deleteInstallation(local.installationId)
+      // A token or repository list cached for a removed installation must not
+      // outlive it in memory, the same cleanup the `installation` webhook does
+      // for `deleted`.
+      forgetInstallation(local.installationId)
+      removed++
+      logger.info(
+        { installationId: local.installationId, unlinked },
+        "removed an installation GitHub no longer reports",
+      )
+    }
+
     logger.info(
-      { installationId: local.installationId, unlinked },
-      "removed an installation GitHub no longer reports",
+      { count: installations.length, removed },
+      "synced GitHub installations",
     )
+    return installations.length
+  } finally {
+    clearGitHubCaches()
   }
-
-  logger.info(
-    { count: installations.length, removed },
-    "synced GitHub installations",
-  )
-  return installations.length
 }
 
 /**
@@ -145,11 +166,11 @@ export async function syncInstallations(): Promise<number> {
  * other way back — so that refusal is handled here instead of reaching the 500
  * handler as "a GitHub App is already registered".
  *
- * The caller is responsible for clearTokenCache(): tokens are cached by
- * installation id, and a new App mints tokens that the old cache would shadow
- * for up to an hour. It lives at the call site rather than here so that
- * disconnect, which does not insert anything, cannot forget it by a different
- * route.
+ * The caller is responsible for clearGitHubCaches(): tokens and repository
+ * lists are cached by installation id, and a new App's would be shadowed by
+ * the old caches for up to an hour. It lives at the call site rather than here
+ * so that disconnect, which does not insert anything, cannot forget it by a
+ * different route.
  */
 export function replaceGithubApp(converted: ConvertedApp): void {
   const existing = getGithubApp()

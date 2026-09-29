@@ -73,6 +73,7 @@ export function claim(database: Database = defaultDb): JobRow | null {
   const now = new Date()
   const leaseUntil = new Date(now.getTime() + LEASE_MS).toISOString()
 
+  // Only 'pending' is claimable, so a 'cancelled' deploy is never run (D59).
   const rows = database
     .query<JobRow, [string, string]>(
       `UPDATE jobs
@@ -154,6 +155,7 @@ export function fail(
  * re-run the first one's job; that is not a supported setup.
  */
 export function recoverOrphanedLeases(database: Database = defaultDb): number {
+  // Only 'leased': a 'cancelled' job never ran, so it is never revived (D59).
   const res = database.run(
     `UPDATE jobs SET status = 'pending', leased_until = NULL
       WHERE status = 'leased'`,
@@ -189,34 +191,139 @@ export function activeJobCount(database: Database = defaultDb): number {
 }
 
 /**
- * The oldest job of this type that has not started and whose payload holds
- * each of these fields, or null.
+ * The payload conditions shared by findPendingJob and findLeasedJobs, as
+ * ` AND ...` clauses plus their bind values.
  *
- * Only 'pending': a job the worker has claimed has already acted on its input,
- * so folding new work into it would lose that work (T-1). Field names are
- * spliced into a JSON path, so anything but a plain identifier is refused; a
- * boolean is compared as the 0 or 1 json_extract returns for it.
+ * Field names are spliced into a JSON path, so anything but a plain identifier
+ * is refused; a boolean is compared as the 0 or 1 json_extract returns for it.
+ * `caller` names the public function in the error, so a bad call site can be
+ * found from the message alone.
+ *
+ * null means "this field is absent" (or JSON null — json_extract cannot tell
+ * the two apart, and no writer stores a null). It is the only way to exclude
+ * a job by a field it carries: `= NULL` is never true in SQL, so it becomes
+ * `IS NULL` and binds nothing.
  */
-export function findPendingJob(
-  type: JobType,
-  fields: Record<string, string | number | boolean>,
-  database: Database = defaultDb,
-): string | null {
-  const where: string[] = []
+function payloadClauses(
+  caller: string,
+  fields: Record<string, string | number | boolean | null>,
+): { sql: string; values: (string | number)[] } {
+  let sql = ""
   const values: (string | number)[] = []
   for (const [key, value] of Object.entries(fields)) {
     if (!/^[A-Za-z]+$/.test(key)) {
-      throw new Error(`findPendingJob: invalid payload field "${key}"`)
+      throw new Error(`${caller}: invalid payload field "${key}"`)
     }
-    where.push(`json_extract(payload_json, '$.${key}') = ?`)
+    if (value === null) {
+      sql += ` AND json_extract(payload_json, '$.${key}') IS NULL`
+      continue
+    }
+    sql += ` AND json_extract(payload_json, '$.${key}') = ?`
     values.push(typeof value === "boolean" ? Number(value) : value)
   }
+  return { sql, values }
+}
+
+/**
+ * The oldest job of this type that has not started and whose payload holds
+ * each of these fields (a null field: lacks it), or null.
+ *
+ * Only 'pending': a job the worker has claimed has already acted on its input,
+ * so folding new work into it would lose that work (T-1).
+ */
+export function findPendingJob(
+  type: JobType,
+  fields: Record<string, string | number | boolean | null>,
+  database: Database = defaultDb,
+): string | null {
+  const match = payloadClauses("findPendingJob", fields)
   const row = database
     .query<{ id: string }, (string | number)[]>(
-      `SELECT id FROM jobs WHERE type = ? AND status = 'pending'${where.map((w) => ` AND ${w}`).join("")} ORDER BY created_at LIMIT 1`,
+      `SELECT id FROM jobs WHERE type = ? AND status = 'pending'${match.sql} ORDER BY created_at LIMIT 1`,
     )
-    .get(type, ...values)
+    .get(type, ...match.values)
   return row?.id ?? null
+}
+
+/**
+ * Ids of every leased job of this type whose payload holds each of these
+ * fields (a null field: lacks it), oldest first.
+ *
+ * A list rather than the first match: concurrency is 1, so only one job is
+ * really running, but a leased row can outlive its handler (D51, worker.ts),
+ * so the caller checks each one's deployment instead of trusting the oldest.
+ */
+export function findLeasedJobs(
+  type: JobType,
+  fields: Record<string, string | number | boolean | null>,
+  database: Database = defaultDb,
+): string[] {
+  const match = payloadClauses("findLeasedJobs", fields)
+  return database
+    .query<{ id: string }, (string | number)[]>(
+      `SELECT id FROM jobs WHERE type = ? AND status = 'leased'${match.sql} ORDER BY created_at`,
+    )
+    .all(type, ...match.values)
+    .map((row) => row.id)
+}
+
+/**
+ * Whether another pending job of any type for this resource would run after
+ * `jobId` — that is, whether folding new work into `jobId` would reorder it
+ * against something the user asked for later.
+ *
+ * claim() runs pending jobs oldest `created_at` first, so "after" is judged on
+ * that same column. Its order between two equal timestamps is not defined
+ * (created_at has millisecond resolution and claim has no tiebreak), so an
+ * equal one counts as after: this then answers true, the caller does not
+ * fold, and the only cost is a redundant deploy, never a skipped Stop. One
+ * statement on the one connection, so no enqueue lands between the read of
+ * `jobId`'s timestamp and the comparison.
+ */
+export function hasPendingJobAfter(
+  jobId: string,
+  resourceId: string,
+  database: Database = defaultDb,
+): boolean {
+  const row = database
+    .query<{ found: number }, [string, string]>(
+      `SELECT EXISTS (
+         SELECT 1 FROM jobs AS other, jobs AS mine
+          WHERE mine.id = ?
+            AND other.status = 'pending'
+            AND other.id <> mine.id
+            AND json_extract(other.payload_json, '$.resourceId') = ?
+            AND other.created_at >= mine.created_at
+       ) AS found`,
+    )
+    .get(jobId, resourceId)
+  return row?.found === 1
+}
+
+/**
+ * Takes a deploy that has not started out of the queue; false if there is none.
+ *
+ * One guarded UPDATE, never a SELECT followed by an UPDATE. claim() is also a
+ * single statement on the same connection, so exactly one of the two moves
+ * the row out of 'pending' and the other matches nothing. That is what makes
+ * true a promise — the worker can never run a job this cancelled — and false
+ * mean the deploy has already been claimed (or never existed), with nothing
+ * changed either way.
+ *
+ * `type = 'deploy'` keeps any other job that happens to carry the same
+ * deploymentId in its payload out of reach.
+ */
+export function cancelPendingDeploy(
+  deploymentId: string,
+  database: Database = defaultDb,
+): boolean {
+  const res = database.run(
+    `UPDATE jobs SET status = 'cancelled', leased_until = NULL
+      WHERE type = 'deploy' AND status = 'pending'
+        AND json_extract(payload_json, '$.deploymentId') = ?`,
+    [deploymentId],
+  )
+  return res.changes === 1
 }
 
 export function getJob(
@@ -230,7 +337,10 @@ export function getJob(
   )
 }
 
-/** Removes finished jobs so the table does not grow without bound. */
+/**
+ * Removes finished jobs so the table does not grow without bound. A cancelled
+ * job counts as finished: it will never run, and keeping it serves nothing.
+ */
 export function pruneFinishedJobs(
   olderThanHours = 168,
   database: Database = defaultDb,
@@ -239,7 +349,7 @@ export function pruneFinishedJobs(
     Date.now() - olderThanHours * 3600 * 1000,
   ).toISOString()
   return database.run(
-    "DELETE FROM jobs WHERE status IN ('done','failed') AND created_at < ?",
+    "DELETE FROM jobs WHERE status IN ('done','failed','cancelled') AND created_at < ?",
     [cutoff],
   ).changes
 }

@@ -24,6 +24,7 @@ import {
   getResourceContext,
   getSetting,
   getSharedEnvText,
+  latestDeploymentStatus,
   listDeployments,
   listDomains,
   listEnvironments,
@@ -35,6 +36,7 @@ import {
   resourceImage,
   setAutoDeploy,
   setEnvVars,
+  setGitSource,
   setResourceImage,
   setSetting,
   setSharedEnvVars,
@@ -43,20 +45,23 @@ import {
 } from "../db/queries.ts"
 import { parseEnvText } from "../env/parse.ts"
 import { deployLogTail } from "../events.ts"
+import { isFullCommitSha } from "../github/api.ts"
 import { buildManifest, ManifestError } from "../github/manifest.ts"
 import {
   convertManifestCode,
   replaceGithubApp,
   syncInstallations,
 } from "../github/register.ts"
-import {
-  isValidGitRef,
-  isValidRepoRef,
-  listInstallationRepos,
-} from "../github/repos.ts"
+import { cachedInstallationRepos, clearGitHubCaches } from "../github/repos.ts"
 import { flashFromQuery, settingsViewModel } from "../github/settings.ts"
-import { clearTokenCache } from "../github/tokens.ts"
-import { BUILD_PLACEHOLDER, enqueueDeploy } from "../jobs/deploy.ts"
+import { BUILD_PLACEHOLDER } from "../build/images.ts"
+import {
+  cancelQueuedDeploy,
+  enqueueDeploy,
+  enqueueRedeploy,
+  pendingDeploymentFor,
+  redeployable,
+} from "../jobs/deploy.ts"
 import { logger } from "../log.ts"
 import { tail } from "../logs/buffer.ts"
 import { enqueue } from "../queue/index.ts"
@@ -75,6 +80,7 @@ import {
 } from "../settings.ts"
 import { renderPage } from "../views/render.ts"
 import { errorKeyFromQuery, withError } from "./errors.ts"
+import { checkGitSource } from "./git-source.ts"
 import { layout, statusFor } from "./layout.ts"
 
 const html = (body: string, headers?: Record<string, string>) =>
@@ -280,10 +286,8 @@ export const appRoutes = new Elysia()
         image: resourceImage(resource),
         // One query per resource, like domainCount: a project page holds a
         // handful, and navTree already does the whole tree in one statement.
-        state: resourceState(
-          resource,
-          listDeployments(resource.id, 1)[0]?.status ?? null,
-        ),
+        // Cancelled rows are skipped there and here alike (D59).
+        state: resourceState(resource, latestDeploymentStatus(resource.id)),
         domainCount: listDomains(resource.id).length,
       })),
     }))
@@ -301,8 +305,9 @@ export const appRoutes = new Elysia()
             : undefined,
           csrf: session?.csrfToken,
           defaultMemoryMb: config.defaultMemoryMb,
-          // Only on the resources tab: gitPicker makes one GitHub API call per
-          // installation, and the env tab renders none of it.
+          // Only on the resources tab: on a cache miss gitPicker makes one
+          // GitHub API call per installation, and the env tab renders none of
+          // it.
           gitPicker:
             tab === "resources"
               ? await gitPicker()
@@ -388,14 +393,9 @@ export const appRoutes = new Elysia()
   /**
    * A resource built from a repository.
    *
-   * Two shapes, and the difference is deliberate. WITH an installation the repo
-   * came from the picker and is validated as a real repository reference and a
-   * real git ref, because both become path segments in a GitHub URL. WITHOUT
-   * one, the repo stays free text: githubSourceFetcher falls back to a local
-   * directory when the value is not a repository reference
-   * (tarball.ts:128-134), and that seam is how checkpoint 3's build
-   * verification runs on a box with no GitHub at all. Requiring isValidRepoRef
-   * unconditionally would remove it.
+   * The installation, repo and branch rules live in checkGitSource, shared
+   * with the re-link route below; see git-source.ts for why the rules differ
+   * with and without an installation.
    */
   .post(
     "/e/:environmentId/resources/git",
@@ -408,31 +408,23 @@ export const appRoutes = new Elysia()
       if (findResourceByNameInEnv(environment.id, body.name)) {
         return redirect(withError(back, "resource-name-taken"), 303)
       }
-      const repo = body.repo.trim()
-      const branch = body.branch.trim() || "main"
-      // The repo input is hidden and filled by the picker, so it cannot be
-      // `required` — this is the check the form cannot make.
-      if (!repo) return redirect(withError(back, "repo-required"), 303)
-
-      const installationId = body.installationId?.trim() || null
-      if (installationId !== null) {
-        // Stored as GitHub's integer in DECIMAL STRING form, because
-        // tarball.ts:139 does Number() on it and throws if the result is not
-        // finite. Anything else here fails at deploy time, not now.
-        if (!/^\d+$/.test(installationId)) return statusFor(session, 400)
-        // Checked against installationId (GitHub's number), never against the
-        // ULID row id — they are different values and the row id would never
-        // match.
-        const known = listGithubInstallations().some(
-          (i) => String(i.installationId) === installationId,
-        )
-        if (!known) return statusFor(session, 400)
-
-        if (!isValidRepoRef(repo)) return statusFor(session, 400)
-        if (!isValidGitRef(branch)) {
-          return redirect(withError(back, "branch-invalid"), 303)
+      const source = checkGitSource(body)
+      if (!source.ok) {
+        switch (source.refusal) {
+          // The repo input is hidden and filled by the picker, so it cannot be
+          // `required` — this is the check the form cannot make.
+          case "no-repo":
+            return redirect(withError(back, "repo-required"), 303)
+          case "bad-branch":
+            return redirect(withError(back, "branch-invalid"), 303)
+          // The picker only offers known installations and real repositories,
+          // so only a stale tab or a hand-made request reaches these.
+          case "bad-installation":
+          case "bad-repo":
+            return statusFor(session, 400)
         }
       }
+      const { repo, branch, installationId } = source
 
       const resource = createGitResource({
         environmentId: environment.id,
@@ -491,6 +483,13 @@ export const appRoutes = new Elysia()
       imagePending: d.image === BUILD_PLACEHOLDER,
     }))
 
+    // SQLite only, never a GitHub call: this page renders on every tab switch
+    // and must not stall behind a slow or unreachable API.
+    const githubInstallations = listGithubInstallations().map((i) => ({
+      installationId: i.installationId,
+      accountLogin: i.accountLogin,
+    }))
+
     return html(
       renderPage(
         "resource",
@@ -500,7 +499,9 @@ export const appRoutes = new Elysia()
           project,
           tab,
           image: resourceImage(resource),
-          state: resourceState(resource, deployments[0]?.status ?? null),
+          // Not deployments[0]: that may be a cancelled row, which did nothing
+          // and must not define the state (D59).
+          state: resourceState(resource, latestDeploymentStatus(resource.id)),
           deployments,
           domains: listDomains(resource.id),
           autoDomain: autoDomainFor(resource.name, environment.name),
@@ -513,6 +514,8 @@ export const appRoutes = new Elysia()
           // stays value-free and cacheable.
           envText: tab === "env" ? getEnvText(resource.id) : undefined,
           logs: tail(resource.id, 300),
+          githubInstallations,
+          gitLink: gitLinkFor(resource.gitInstallationId, githubInstallations),
           csrf: session?.csrfToken,
         },
         layout(session, resource.name, {
@@ -539,6 +542,18 @@ export const appRoutes = new Elysia()
           ? BUILD_PLACEHOLDER
           : resourceImage(ctx.resource)
       if (!image) return statusFor(session, 400)
+
+      // An identical build deploy still waiting in the queue already does
+      // what this press asks for, and concurrency 1 would run the copy right
+      // after it for nothing — so the press goes to the waiting one.
+      const existing = pendingDeploymentFor(ctx.resource.id, image)
+      if (existing !== null) {
+        logger.info(
+          { resourceId: ctx.resource.id, deploymentId: existing },
+          "deploy folded into a queued deploy",
+        )
+        return redirect(`/d/${existing}`, 303)
+      }
 
       // Enqueue and redirect immediately — never await Docker in a handler.
       const deploymentId = enqueueDeploy(ctx.resource.id, image, "manual")
@@ -737,6 +752,68 @@ export const appRoutes = new Elysia()
     },
   )
 
+  /**
+   * Re-points a git resource at a different installation, repository or
+   * branch — after an uninstall, a reinstall or a repository transfer, without
+   * deleting and recreating it.
+   *
+   * Validated by the same checkGitSource as the create route, so re-linking
+   * accepts nothing creating refuses. Unlike create, a bad repository here is
+   * a keyed notice rather than a 400: this form's repo field is typed by hand,
+   * not filled by the picker.
+   *
+   * Saves and nothing more — no deploy is enqueued. The next manual deploy or
+   * matching push builds from the new source.
+   */
+  .post(
+    "/r/:resourceId/source",
+    ({ params, body, redirect, session }) => {
+      const ctx = getResourceContext(params.resourceId)
+      if (!ctx) return statusFor(session, 404)
+      if (ctx.resource.kind !== "git") return statusFor(session, 400)
+
+      const back = `/r/${ctx.resource.id}?tab=settings`
+      const source = checkGitSource(body)
+      if (!source.ok) {
+        switch (source.refusal) {
+          case "no-repo":
+            return redirect(withError(back, "source-repo-required"), 303)
+          case "bad-repo":
+            return redirect(withError(back, "repo-invalid"), 303)
+          case "bad-branch":
+            return redirect(withError(back, "branch-invalid"), 303)
+          // The select only offers known installations, so only a stale tab
+          // or a hand-made request reaches this.
+          case "bad-installation":
+            return statusFor(session, 400)
+        }
+      }
+
+      setGitSource(ctx.resource.id, {
+        installationId: source.installationId,
+        repo: source.repo,
+        branch: source.branch,
+      })
+      logger.info(
+        {
+          resourceId: ctx.resource.id,
+          installationId: source.installationId,
+        },
+        "git resource source changed",
+      )
+      return redirect(back, 303)
+    },
+    {
+      body: t.Object({
+        /** GitHub's numeric installation id, as a string; empty for none. */
+        installationId: t.Optional(t.String()),
+        repo: t.String(),
+        branch: t.String(),
+        csrf: t.String(),
+      }),
+    },
+  )
+
   .post(
     "/r/:resourceId/delete",
     ({ params, redirect, session }) => {
@@ -750,12 +827,23 @@ export const appRoutes = new Elysia()
     { body: t.Object({ csrf: t.String() }) },
   )
 
-  .get("/d/:deploymentId", ({ params, session }) => {
+  .get("/d/:deploymentId", ({ params, query, session }) => {
     const deployment = getDeployment(params.deploymentId)
     // The page has no context of its own: the breadcrumb and the sidebar
     // highlight both come from the resource it belongs to.
     const ctx = deployment && getResourceContext(deployment.resourceId)
     if (!deployment || !ctx) return statusFor(session, 404)
+    // What "Deploy this again" would repeat, for the button's confirm text;
+    // null hides the button. Pure: no Docker or GitHub call on a page render.
+    const sha = deployment.commitSha
+    const redeploy = redeployable(deployment, ctx.resource)
+      ? {
+          kind: ctx.resource.kind,
+          sha7: sha !== null && isFullCommitSha(sha) ? sha.slice(0, 7) : null,
+          image:
+            deployment.image === BUILD_PLACEHOLDER ? null : deployment.image,
+        }
+      : null
     return html(
       renderPage(
         "deployment",
@@ -767,14 +855,80 @@ export const appRoutes = new Elysia()
           duration: formatDuration(deployment.startedAt, deployment.finishedAt),
           imagePending: deployment.image === BUILD_PLACEHOLDER,
           lines: deployLogTail(params.deploymentId),
+          csrf: session?.csrfToken,
+          redeploy,
         },
         layout(session, "Deployment", {
           activeProjectId: ctx.project.id,
           activeEnvironmentId: ctx.environment.id,
+          errorKey: errorKeyFromQuery(query.error),
         }),
       ),
     )
   })
+
+  /**
+   * Removes a queued deploy from the queue (D59).
+   *
+   * No await anywhere, and no Docker: the cancel is one guarded UPDATE racing
+   * the worker's claim, and whichever runs first wins outright. Losing that
+   * race is not an error the user caused, so it redirects back with a notice
+   * rather than a status page.
+   */
+  .post(
+    "/d/:deploymentId/cancel",
+    ({ params, redirect, session }) => {
+      const deployment = getDeployment(params.deploymentId)
+      if (!deployment) return statusFor(session, 404)
+      // The reconciler's redeploys heal drift; cancelling one would leave the
+      // resource down until the next pass re-queued it. The form never shows
+      // for them, so reaching here means a hand-made request.
+      if (deployment.trigger === "reconcile") return statusFor(session, 400)
+
+      const back = `/d/${deployment.id}`
+      // Already done — a double submit, or a second tab. The outcome the user
+      // asked for holds, so there is nothing to report.
+      if (deployment.status === "cancelled") return redirect(back, 303)
+
+      if (cancelQueuedDeploy(deployment.id, deployment.resourceId)) {
+        return redirect(back, 303)
+      }
+      return redirect(withError(back, "deploy-already-started"), 303)
+    },
+    { body: t.Object({ csrf: t.String() }) },
+  )
+
+  /**
+   * "Deploy this again" (D61): a new deployment repeating a finished one.
+   *
+   * No await, no Docker, no GitHub: whether the image is still on the server,
+   * and whether the commit can be built again, is decided by the job, which
+   * says why in the deploy log when it cannot. A deployment the page would not
+   * offer the button for is a hand-made request, so it gets a 400.
+   */
+  .post(
+    "/d/:deploymentId/redeploy",
+    ({ params, redirect, session }) => {
+      const deployment = getDeployment(params.deploymentId)
+      const ctx = deployment && getResourceContext(deployment.resourceId)
+      if (!deployment || !ctx) return statusFor(session, 404)
+      if (!redeployable(deployment, ctx.resource)) {
+        return statusFor(session, 400)
+      }
+
+      const deploymentId = enqueueRedeploy(deployment, ctx.resource)
+      logger.info(
+        {
+          resourceId: ctx.resource.id,
+          sourceDeploymentId: deployment.id,
+          deploymentId,
+        },
+        "redeploy queued",
+      )
+      return redirect(`/d/${deploymentId}`, 303)
+    },
+    { body: t.Object({ csrf: t.String() }) },
+  )
 
   // --------------------------------------------------------------- github
 
@@ -984,9 +1138,9 @@ export const appRoutes = new Elysia()
       // backstop would not save a careless line here.
       const converted = await convertManifestCode(code)
       replaceGithubApp(converted)
-      // Mandatory after ANY App change: tokens are cached by installation id,
-      // and a new App mints tokens that a stale cache would shadow for an hour.
-      clearTokenCache()
+      // Mandatory after ANY App change: tokens and repository lists are cached
+      // by installation id, and a stale cache would shadow the new App's.
+      clearGitHubCaches()
       logger.info({ appId: converted.appId }, "registered a GitHub App")
     } catch (err) {
       logger.error(
@@ -1058,9 +1212,9 @@ export const appRoutes = new Elysia()
         unlinked += clearGitLinkage(String(installation.installationId))
       }
       deleteGithubApp(app.id)
-      // Same reason as registration: a revoked App's tokens must not linger in
-      // memory for the rest of their hour.
-      clearTokenCache()
+      // Same reason as registration: a revoked App's tokens and repository
+      // lists must not linger in memory.
+      clearGitHubCaches()
 
       logger.info({ appId: app.appId, unlinked }, "disconnected GitHub")
       return redirect(flashUrl("ok", "GitHub is disconnected."), 303)
@@ -1069,6 +1223,34 @@ export const appRoutes = new Elysia()
   )
 
 // --------------------------------------------------------------- helpers
+
+/** What the resource page says about a git resource's GitHub linkage. */
+type GitLink =
+  | { kind: "none" }
+  | { kind: "linked"; accountLogin: string }
+  | { kind: "stale" }
+
+/**
+ * Resolves a resource's stored installation id against the known ones.
+ *
+ * "stale" is an id that matches no installation — left by a missed uninstall
+ * webhook before a sync, or written before unlinking existed. It is shown
+ * rather than hidden because its next deploy would 404 at GitHub, and the
+ * re-link form is how the user fixes it. The column holds GitHub's integer as
+ * a decimal string, so the comparison is on the string form.
+ */
+function gitLinkFor(
+  gitInstallationId: string | null,
+  installations: { installationId: number; accountLogin: string }[],
+): GitLink {
+  if (gitInstallationId === null) return { kind: "none" }
+  const match = installations.find(
+    (i) => String(i.installationId) === gitInstallationId,
+  )
+  return match
+    ? { kind: "linked", accountLogin: match.accountLogin }
+    : { kind: "stale" }
+}
 
 interface GitPickerRepo {
   fullName: string
@@ -1079,7 +1261,7 @@ interface GitPickerRepo {
 interface GitPickerInstallation {
   installationId: number
   accountLogin: string
-  repos: GitPickerRepo[]
+  repos: readonly GitPickerRepo[]
   /** Non-null when this installation's listing failed. */
   error: string | null
 }
@@ -1092,18 +1274,20 @@ interface GitPicker {
 /**
  * The repository choices for the project page's git dialog.
  *
- * Rendered server-side at page load, one API call per installation, rather
- * than from a client fetch endpoint — the UI is a view of server state and
- * this project does not add an XHR API to populate a <select>.
+ * Rendered server-side at page load, on a cache miss one API call per
+ * installation, rather than from a client fetch endpoint — the UI is a view of
+ * server state and this project does not add an XHR API to populate a
+ * <select>.
  *
  * Each call is isolated: an installation the user revoked on GitHub still has
  * a row here, and its token mint 404s. Letting that reject would take down the
  * whole project page for a resource that has nothing to do with GitHub.
  *
- * Caveat, surfaced in the template: listInstallationRepos paginates to
- * completion at 100/page, so an installation granting several hundred
- * repositories makes this page slow and its HTML large. The fix is to scope
- * the installation to fewer repositories, not to fetch from the client.
+ * Caveat, surfaced in the template: on a cache miss listInstallationRepos
+ * paginates to completion at 100/page, so an installation granting several
+ * hundred repositories makes that render slow, and every render's HTML large.
+ * The fix is to scope the installation to fewer repositories, not to fetch
+ * from the client.
  */
 async function gitPicker(): Promise<GitPicker> {
   const installations = listGithubInstallations()
@@ -1117,7 +1301,7 @@ async function gitPicker(): Promise<GitPicker> {
         return {
           installationId: installation.installationId,
           accountLogin: installation.accountLogin,
-          repos: await listInstallationRepos(installation.installationId),
+          repos: await cachedInstallationRepos(installation.installationId),
           error: null,
         }
       } catch (err) {

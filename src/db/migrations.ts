@@ -10,6 +10,7 @@ import init0001 from "../../migrations/0001_init.sql" with { type: "text" }
 import github0002 from "../../migrations/0002_github.sql" with { type: "text" }
 import sharedEnv0003 from "../../migrations/0003_shared_env.sql" with { type: "text" }
 import singleUser0004 from "../../migrations/0004_single_user.sql" with { type: "text" }
+import deployHistory0005 from "../../migrations/0005_deploy_history.sql" with { type: "text" }
 import { logger } from "../log.ts"
 
 /**
@@ -41,6 +42,7 @@ export const MIGRATIONS: readonly Migration[] = [
     sql: singleUser0004,
     before: reportExtraAccounts,
   },
+  { name: "0005_deploy_history", sql: deployHistory0005 },
 ]
 
 export function runMigrations(

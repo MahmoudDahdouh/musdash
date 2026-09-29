@@ -268,8 +268,9 @@
       <div>
         No GitHub App is connected, so there are no repositories to choose from.
         Connect one under <a href="/settings">Settings</a>, install it on the
-        account that owns the repository, then come back here. You can still
-        build from a local directory using the option at the bottom of this form.
+        account that owns the repository, then come back here. A public
+        repository still deploys without one: type it as owner/name in the
+        local-path option at the bottom of this form.
       </div>
     </div>
     <% } else { %>
@@ -363,7 +364,8 @@
       <% if (repoTotal >= 200) { %>
       <p class="hint">
         All <%= repoTotal %> repositories these installations grant are listed
-        here, which is why this page took a moment to load. If that becomes
+        here, which is why this page can take a moment to load when the list
+        is read from GitHub again (at most every five minutes). If that becomes
         annoying, narrow the App's access on GitHub to the repositories you
         actually deploy.
       </p>
@@ -421,9 +423,10 @@
         <label class="label" for="<%= git %>-local">Local path</label>
         <input id="<%= git %>-local" placeholder="/srv/sources/my-app" @input="useLocal($event.target.value)" aria-describedby="<%= git %>-local-hint" />
         <p class="hint" id="<%= git %>-local-hint">
-          For testing on the server itself. Typing a path here clears the GitHub
-          account above and musdash builds that directory on this host rather
-          than fetching from GitHub. Give an absolute path.
+          Typing here clears the GitHub account above. An absolute path builds
+          that directory on this host, for testing on the server itself. A
+          public repository typed as owner/name is fetched from GitHub instead,
+          without credentials.
         </p>
       </div>
     </details>
