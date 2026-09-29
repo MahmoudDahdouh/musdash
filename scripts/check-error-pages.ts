@@ -1159,6 +1159,128 @@ try {
     )
   }
 
+  // ---- An empty container port: a browser sends a blank number input as
+  // `containerPort=`, never omits it. Blank means no port (NULL), on create
+  // and in settings; a non-empty value must be 1–65535, checked server-side.
+  {
+    const port = (id: string): unknown => {
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        const row = db
+          .query("SELECT container_port FROM resources WHERE id = ?")
+          .get(id) as { container_port?: unknown } | null
+        return row ? row.container_port : "missing"
+      } finally {
+        db.close()
+      }
+    }
+    const createdWithPort = async (
+      label: string,
+      path: string,
+      form: Record<string, string>,
+      want: number | null,
+    ): Promise<string> => {
+      const c = await send("POST", path, withCsrf(form))
+      const id = /^\/r\/([^/?#]+)$/.exec(c.location)?.[1] ?? ""
+      const stored = id ? port(id) : "no resource"
+      verdict(
+        label,
+        [
+          ...(c.status === 303 && id ? [] : [`${c.status} ${c.location}`]),
+          ...(stored === want ? [] : [`container_port ${String(stored)}`]),
+        ],
+        `303 /r/<id>, container_port ${String(want)}`,
+      )
+      return id
+    }
+    const git = (name: string, containerPort: string) => ({
+      name,
+      repo: "owner/app",
+      branch: "main",
+      containerPort,
+    })
+    await createdWithPort(
+      "[port] git create, blank port stores NULL",
+      `/e/${eid}/resources/git`,
+      git("portblank", ""),
+      null,
+    )
+    await createdWithPort(
+      "[port] git create, whitespace port stores NULL",
+      `/e/${eid}/resources/git`,
+      git("portspace", "  "),
+      null,
+    )
+    await createdWithPort(
+      "[port] git create, 3000 stores 3000",
+      `/e/${eid}/resources/git`,
+      git("port3000", "3000"),
+      3000,
+    )
+    const img = await createdWithPort(
+      "[port] image create, blank port stores NULL",
+      `/e/${eid}/resources`,
+      { name: "portimg", image: "nginx:alpine", containerPort: "" },
+      null,
+    )
+    if (!img) throw new Error("image port fixture failed")
+    const settings = `/r/${img}/settings`
+    await send(
+      "POST",
+      settings,
+      withCsrf({ image: "nginx:alpine", containerPort: "8080" }),
+    )
+    // Without this, a failed setup would leave NULL and the clear below would
+    // pass without clearing anything.
+    if (port(img) !== 8080) throw new Error("settings could not set port 8080")
+    const cleared = await send(
+      "POST",
+      settings,
+      withCsrf({ image: "nginx:alpine", containerPort: "" }),
+    )
+    verdict(
+      "[port] settings, blank port clears 8080 to NULL",
+      [
+        ...(cleared.status === 303 &&
+        cleared.location === `/r/${img}?tab=settings`
+          ? []
+          : [`${cleared.status} ${cleared.location}`]),
+        ...(port(img) === null ? [] : [`container_port ${String(port(img))}`]),
+      ],
+      "303, container_port NULL",
+    )
+    // Out of range or not a number: the form's own min/max and type=number
+    // refuse these, so only a hand-made request sends them — a status page.
+    await send(
+      "POST",
+      settings,
+      withCsrf({ image: "nginx:alpine", containerPort: "8080" }),
+    )
+    for (const bad of ["0", "70000", "abc"]) {
+      await statusCase(
+        `[port] 400 image create, port ${bad}`,
+        400,
+        "POST",
+        `/e/${eid}/resources`,
+        { name: "portbad", image: "nginx:alpine", containerPort: bad },
+      )
+      await statusCase(
+        `[port] 400 git create, port ${bad}`,
+        400,
+        "POST",
+        `/e/${eid}/resources/git`,
+        git("portbad", bad),
+      )
+      await statusCase(
+        `[port] 400 settings, port ${bad}`,
+        400,
+        "POST",
+        settings,
+        { image: "httpd:alpine", containerPort: bad },
+      )
+    }
+  }
+
   // ---- whole-run checks
   const missing = ERROR_KEYS.filter((k) => !exercised.has(k))
   report(
