@@ -1,8 +1,7 @@
 import {
   autoDomainFor,
   caddy,
-  DASHBOARD_HOST_ROUTE_ID,
-  DASHBOARD_ROUTE_ID,
+  DASHBOARD_TAIL_ROUTE_IDS,
   ROUTE_ID_PREFIX,
   type RouteSpec,
   routeIdFor,
@@ -91,13 +90,15 @@ async function currentUpstream(resource: Resource): Promise<string | null> {
  * a lost config volume, a route still dialling an IP from before L-7, and a
  * domain edit. One whose container is momentarily down keeps its route
  * and its upstream, with the hosts still corrected: dropping the route in
- * between would only send its visitors to the dashboard.
+ * between would only send its visitors to the final 404.
  *
  * Any other musdash route is deleted — a stopped or deleted resource, one down
- * to zero hosts, one with no port. The dashboard's two routes are never
- * touched. A route with no host matcher would be a catch-all AHEAD of the
- * dashboard's, which is why "zero hosts" must mean "no route", not an empty
- * matcher.
+ * to zero hosts, one with no port. The dashboard's tail routes
+ * (DASHBOARD_TAIL_ROUTE_IDS) are never touched — an id missing from that set
+ * would be deleted here on every domain change. A route with no host matcher
+ * would answer on every address AHEAD of the tail, swallowing the dashboard and
+ * the final 404 alike, which is why "zero hosts" must mean "no route", not an
+ * empty matcher.
  *
  * Runs on the queue, so it never races a deploy: job concurrency is exactly 1.
  * ensureRoute writes only on a real difference, because every admin write
@@ -129,9 +130,12 @@ export async function syncResourceRoutes(): Promise<void> {
   }
 
   let removed = 0
-  const keep = new Set([DASHBOARD_ROUTE_ID, DASHBOARD_HOST_ROUTE_ID])
   for (const id of await caddy.listRouteIds()) {
-    if (!id.startsWith(ROUTE_ID_PREFIX) || keep.has(id) || wanted.has(id)) {
+    if (
+      !id.startsWith(ROUTE_ID_PREFIX) ||
+      DASHBOARD_TAIL_ROUTE_IDS.has(id) ||
+      wanted.has(id)
+    ) {
       continue
     }
     try {

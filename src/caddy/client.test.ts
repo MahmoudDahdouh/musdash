@@ -1,8 +1,19 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterAll, beforeEach, describe, expect, test } from "bun:test"
-import { CaddyClient, DASHBOARD_ROUTE_ID } from "./client.ts"
+import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test"
+import {
+  CaddyClient,
+  caddy,
+  DASHBOARD_HOST_ROUTE_ID,
+  DASHBOARD_ROUTE_ID,
+  DASHBOARD_TAIL_ROUTE_IDS,
+  dashboardIpRouteBody,
+  ensureDashboardRoutes,
+  IP_LITERAL_HOST_PATTERN,
+  NOT_FOUND_ROUTE_ID,
+  notFoundRouteBody,
+} from "./client.ts"
 
 /**
  * The route-order and transport guarantees, against a fake admin API on a unix
@@ -14,6 +25,8 @@ import { CaddyClient, DASHBOARD_ROUTE_ID } from "./client.ts"
  * stored JSON with sorted keys. It cannot prove Caddy behaves that way — only
  * the VPS re-run can — but it does pin the client to that contract, which is
  * where C-1 came from: a new route was POSTed behind the dashboard's catch-all.
+ * Nor can it evaluate the CEL matcher; the pattern is checked with JavaScript's
+ * RegExp here, and Caddy's RE2 evaluation was verified on the VPS (D55).
  */
 
 interface Route {
@@ -91,33 +104,243 @@ beforeEach(() => {
 const client = new CaddyClient(socket)
 const ids = () => routes.map((r) => r["@id"])
 
-describe("route order (C-1)", () => {
-  test("a new resource route lands ahead of the dashboard catch-all", async () => {
-    await client.appendRoute({
-      id: DASHBOARD_ROUTE_ID,
-      hosts: [],
-      upstream: "musdash-host:8000",
+/** The pattern as it must appear inside the CEL single-quoted string. */
+const celPattern = IP_LITERAL_HOST_PATTERN.replaceAll("\\", "\\\\")
+
+/** A resource route exactly as routeBody wrote it before D55. */
+function resourceRoute(id: string, host: string, dial: string): Route {
+  return {
+    "@id": id,
+    match: [{ host: [host] }],
+    handle: [{ handler: "reverse_proxy", upstreams: [{ dial }] }],
+    terminal: true,
+  }
+}
+
+/** The pre-D55 dashboard route: matcher-less, answering on every host. */
+const legacyCatchAll: Route = {
+  "@id": DASHBOARD_ROUTE_ID,
+  handle: [
+    { handler: "reverse_proxy", upstreams: [{ dial: "musdash-host:8000" }] },
+  ],
+  terminal: true,
+}
+
+/** Whether a `host` key appears anywhere in a JSON value. */
+function hasHostKey(v: unknown): boolean {
+  if (Array.isArray(v)) return v.some(hasHostKey)
+  if (v !== null && typeof v === "object") {
+    return Object.entries(v).some(([k, x]) => k === "host" || hasHostKey(x))
+  }
+  return false
+}
+
+describe("IP-literal pattern (D55)", () => {
+  const re = new RegExp(IP_LITERAL_HOST_PATTERN)
+
+  test.each([
+    "127.0.0.1",
+    "168.235.65.204",
+    "::1",
+    "[::1]",
+    "2001:db8::1",
+    "[2001:db8::1]",
+    "999.1.1.1",
+  ])("accepts %p", (host) => {
+    expect(re.test(host)).toBe(true)
+  })
+
+  test.each([
+    "168.235.65.204.sslip.io",
+    "random-x.168.235.65.204.sslip.io",
+    "example.com",
+    "dash.example.com",
+    "localhost",
+    "1.2.3",
+    "",
+  ])("rejects %p", (host) => {
+    expect(re.test(host)).toBe(false)
+  })
+
+  test("contains no single quote, so it cannot break out of the CEL string", () => {
+    expect(IP_LITERAL_HOST_PATTERN.includes("'")).toBe(false)
+  })
+})
+
+describe("tail route bodies (D55)", () => {
+  // Pinned as literals, not derived from the constant: this is the exact string
+  // verified against Caddy's RE2/CEL on the VPS (D55). The expression carries
+  // DOUBLED backslashes, which CEL's single-quoted literal unescapes back to the
+  // pattern's single ones; a derived expectation would follow any regression.
+  test("the pattern and CEL expression are the VPS-verified literals", () => {
+    expect(IP_LITERAL_HOST_PATTERN).toBe(
+      String.raw`^([0-9]{1,3}(\.[0-9]{1,3}){3}|\[?[0-9a-fA-F:.]*:[0-9a-fA-F:.]*\]?)$`,
+    )
+    expect(dashboardIpRouteBody("h:8000").match).toEqual([
+      {
+        expression: String.raw`{http.request.host}.matches('^([0-9]{1,3}(\\.[0-9]{1,3}){3}|\\[?[0-9a-fA-F:.]*:[0-9a-fA-F:.]*\\]?)$')`,
+      },
+    ])
+  })
+
+  test("the IP route matches by CEL expression, never by host", () => {
+    const body = dashboardIpRouteBody("h:8000")
+    expect(body["@id"]).toBe(DASHBOARD_ROUTE_ID)
+    expect(body.match).toEqual([
+      { expression: `{http.request.host}.matches('${celPattern}')` },
+    ])
+    expect(body.handle).toEqual([
+      { handler: "reverse_proxy", upstreams: [{ dial: "h:8000" }] },
+    ])
+    expect(body.terminal).toBe(true)
+    expect(hasHostKey(body)).toBe(false)
+  })
+
+  test("the not-found route is a matcher-less, bodiless, terminal 404", () => {
+    const body = notFoundRouteBody()
+    expect(body["@id"]).toBe(NOT_FOUND_ROUTE_ID)
+    expect("match" in body).toBe(false)
+    expect(body.handle).toEqual([
+      { handler: "static_response", status_code: 404 },
+    ])
+    expect(body.terminal).toBe(true)
+    // The whole route, so a stray body/headers field anywhere fails.
+    expect(body).toStrictEqual({
+      "@id": NOT_FOUND_ROUTE_ID,
+      handle: [{ handler: "static_response", status_code: 404 }],
+      terminal: true,
     })
+  })
+})
+
+describe("ensureDashboardRoutes (D55)", () => {
+  const seed = () => {
+    routes = [
+      resourceRoute("musdash-a", "a.example.com", "n:80"),
+      legacyCatchAll,
+      resourceRoute("musdash-b", "b.example.com", "m:80"),
+    ]
+  }
+
+  test("with a hostname: host route, IP route, 404, after every resource", async () => {
+    seed()
+    await ensureDashboardRoutes("dash.example.com", client)
+    expect(ids()).toEqual([
+      "musdash-a",
+      "musdash-b",
+      DASHBOARD_HOST_ROUTE_ID,
+      DASHBOARD_ROUTE_ID,
+      NOT_FOUND_ROUTE_ID,
+    ])
+    const dashboard = routes.find((r) => r["@id"] === DASHBOARD_ROUTE_ID)
+    expect(dashboard?.match).toEqual([
+      { expression: `{http.request.host}.matches('${celPattern}')` },
+    ])
+    expect(routes.filter((r) => !("match" in r)).map((r) => r["@id"])).toEqual([
+      NOT_FOUND_ROUTE_ID,
+    ])
+  })
+
+  test("without a hostname: IP route then 404, and idempotent", async () => {
+    seed()
+    await ensureDashboardRoutes(undefined, client)
+    const expected = [
+      "musdash-a",
+      "musdash-b",
+      DASHBOARD_ROUTE_ID,
+      NOT_FOUND_ROUTE_ID,
+    ]
+    expect(ids()).toEqual(expected)
+    await ensureDashboardRoutes(undefined, client)
+    expect(ids()).toEqual(expected)
+  })
+
+  test("clearing the hostname removes the host route", async () => {
+    seed()
+    await ensureDashboardRoutes("dash.example.com", client)
+    await ensureDashboardRoutes(undefined, client)
+    expect(ids()).not.toContain(DASHBOARD_HOST_ROUTE_ID)
+    expect(new Set(ids()).size).toBe(ids().length)
+  })
+
+  test("the tail id set is exactly the ids it writes", async () => {
+    expect([...DASHBOARD_TAIL_ROUTE_IDS].sort()).toEqual(
+      [DASHBOARD_HOST_ROUTE_ID, DASHBOARD_ROUTE_ID, NOT_FOUND_ROUTE_ID].sort(),
+    )
+    await ensureDashboardRoutes("dash.example.com", client)
+    await client.upsertRoute({
+      id: "musdash-a",
+      hosts: ["a.example.com"],
+      upstream: "n:80",
+    })
+    for (const id of ids().filter((i) => i !== "musdash-a")) {
+      expect(DASHBOARD_TAIL_ROUTE_IDS.has(id)).toBe(true)
+    }
+  })
+
+  // The keep-set only matters where it is used: syncResourceRoutes deletes any
+  // `musdash-` route the database does not want. Run the real function with no
+  // wanted resources against the fake, so every non-tail musdash route is stale.
+  test("sync_routes deletes a stale resource route and keeps the whole tail", async () => {
+    const queries = await import("../db/queries.ts")
+    const settings = await import("../settings.ts")
+    const { syncResourceRoutes } = await import("../jobs/routes.ts")
+    const spies = [
+      spyOn(queries, "listAllResources").mockImplementation(() => []),
+      spyOn(settings, "getDashboardHost").mockImplementation(() => undefined),
+      spyOn(caddy, "listRouteIds").mockImplementation(() =>
+        client.listRouteIds(),
+      ),
+      spyOn(caddy, "deleteRoute").mockImplementation((id) =>
+        client.deleteRoute(id),
+      ),
+    ]
+    try {
+      routes = [resourceRoute("musdash-stale", "gone.example.com", "n:80")]
+      await ensureDashboardRoutes("dash.example.com", client)
+      await syncResourceRoutes()
+      // Proves the spies intercepted: the real function read no database and
+      // deleted through the fake, exactly once.
+      expect(spies[0]).toHaveBeenCalledTimes(1)
+      expect(spies[3]?.mock.calls).toEqual([["musdash-stale"]])
+      expect(ids()).toEqual([
+        DASHBOARD_HOST_ROUTE_ID,
+        DASHBOARD_ROUTE_ID,
+        NOT_FOUND_ROUTE_ID,
+      ])
+    } finally {
+      for (const s of spies) s.mockRestore()
+    }
+  })
+})
+
+describe("route order (C-1)", () => {
+  test("a new resource route lands at the front, and the 404 stays last", async () => {
+    await ensureDashboardRoutes("dash.example.com", client)
     await client.upsertRoute({
       id: "musdash-a",
       hosts: ["a.example.com"],
       upstream: "172.18.0.5:80",
     })
+    expect(ids()[0]).toBe("musdash-a")
     await client.upsertRoute({
       id: "musdash-b",
       hosts: ["b.example.com"],
       upstream: "172.18.0.6:80",
     })
-    expect(ids().at(-1)).toBe(DASHBOARD_ROUTE_ID)
-    expect(ids()).toEqual(["musdash-b", "musdash-a", DASHBOARD_ROUTE_ID])
+    expect(ids()[0]).toBe("musdash-b")
+    expect(ids().at(-1)).toBe(NOT_FOUND_ROUTE_ID)
+    expect(ids()).toEqual([
+      "musdash-b",
+      "musdash-a",
+      DASHBOARD_HOST_ROUTE_ID,
+      DASHBOARD_ROUTE_ID,
+      NOT_FOUND_ROUTE_ID,
+    ])
   })
 
   test("a redeploy patches in place and keeps the position", async () => {
-    await client.appendRoute({
-      id: DASHBOARD_ROUTE_ID,
-      hosts: [],
-      upstream: "musdash-host:8000",
-    })
+    await ensureDashboardRoutes(undefined, client)
     await client.upsertRoute({
       id: "musdash-a",
       hosts: ["a.example.com"],
@@ -130,7 +353,7 @@ describe("route order (C-1)", () => {
       upstream: "172.18.0.9:80",
     })
     expect(writes).toEqual(["PATCH /id/musdash-a"])
-    expect(ids()).toEqual(["musdash-a", DASHBOARD_ROUTE_ID])
+    expect(ids()).toEqual(["musdash-a", DASHBOARD_ROUTE_ID, NOT_FOUND_ROUTE_ID])
   })
 })
 
@@ -155,6 +378,25 @@ describe("ensureRoute", () => {
     expect(await client.ensureRoute(moved)).toBe(true)
     expect(writes).toEqual(["PATCH /id/musdash-a"])
   })
+
+  // Upgrade safety: a route stored by a pre-D55 musdash must still compare
+  // equal, or the first boot after upgrading reloads the proxy once per
+  // resource.
+  test("a route stored before D55 is left alone", async () => {
+    routes = [
+      JSON.parse(
+        '{"@id":"musdash-a","match":[{"host":["a.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"n:80"}]}],"terminal":true}',
+      ) as Route,
+    ]
+    expect(
+      await client.ensureRoute({
+        id: "musdash-a",
+        hosts: ["a.example.com"],
+        upstream: "n:80",
+      }),
+    ).toBe(false)
+    expect(writes).toEqual([])
+  })
 })
 
 describe("transport", () => {
@@ -169,14 +411,10 @@ describe("transport", () => {
       hosts: ["a.example.com"],
       upstream: "172.18.0.5:80",
     })
-    await client.appendRoute({
-      id: DASHBOARD_ROUTE_ID,
-      hosts: [],
-      upstream: "musdash-host:8000",
-    })
+    await client.appendRoute(notFoundRouteBody())
     expect(await client.listRouteIds()).toEqual([
       "musdash-a",
-      DASHBOARD_ROUTE_ID,
+      NOT_FOUND_ROUTE_ID,
     ])
   })
 })

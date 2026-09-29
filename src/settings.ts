@@ -74,7 +74,7 @@ export function getPublicUrl(): string | undefined {
 }
 
 /**
- * Reverts to the catch-all-only route.
+ * Reverts to the IP-literal dashboard route alone, with no host route.
  *
  * Deletion rather than an empty string: an absent row falls through to the
  * environment, which is what an install that never used this page expects. An

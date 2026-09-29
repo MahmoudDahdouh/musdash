@@ -1550,6 +1550,9 @@ The accepted cost is unchanged from D20 — the dashboard answers on any `Host`
 header — and a foreign host gets a login page whose session cookie is scoped to
 the host that set it.
 
+_Narrowed by D55: the fallback now answers IP literals only, and any other
+unmatched name gets a 404._
+
 ### D25 — the hostname lives in the database, with the env as a fallback
 
 `settings.dashboard_host` wins when the row exists; `MUSDASH_DASHBOARD_HOST` is
@@ -3384,3 +3387,52 @@ does. Only the default: a `MUSDASH_SRC` the operator set is their checkout,
 and fetching over it — or reaching the clone branch's `rm -rf` when it is not
 a git repository — would destroy their changes. RUNNING.md now leads with the
 one-liner, which never had the bug.
+
+### D55 — the dashboard's fallback answers IP literals only; any other name gets a 404
+
+D20 and D24 accepted that "the dashboard answers on any `Host` header". On the
+2GB host that turned out to mean more than a foreign login page: after
+`new-saas` was deleted, `http://new-saas.<ip>.sslip.io/login` served the musdash
+sign-in page, as did `random-x.<ip>.sslip.io` and every other name pointed at the
+box. A deleted app's URL, a typo or stale DNS showed the operator's dashboard —
+over plain HTTP — and told every visitor where to log in. A reused HTTP/2
+connection reached it over HTTPS too, since Caddy routes by `Host`, not SNI.
+
+D20's reason for a catch-all was that "a host matcher cannot express 'whatever
+address the operator typed'". True of `host`, but the need was only ever the
+bare IP, and another matcher expresses that. **The tail `ensureDashboardRoutes`
+writes is now three routes, in this order:** `musdash-dashboard-host` (the
+dashboard hostname, when set), `musdash-dashboard` (an `expression` matcher on
+`{http.request.host}` accepting any IPv4 or IPv6 literal), and
+`musdash-not-found` (no matcher, `static_response` 404, empty body, last).
+
+**Never a `host` matcher for the IP route.** Every name in a `host` matcher is a
+managed name to automatic HTTPS, which would redirect the bare IP to an
+`https://<ip>/` that can never have a certificate — the D24 lockout. An
+`expression` is invisible to automatic HTTPS. `{http.request.host}` drops the
+port, and drops IPv6 brackets only when a port is present, so the pattern
+accepts both forms. Checked against caddy v2.11.4 in a throwaway container:
+`127.0.0.1`, `<ip>:80`, `[::1]`, `[::1]:80` and `[2001:db8::1]` matched;
+`<ip>.sslip.io`, `random-x.<ip>.sslip.io`, `example.com`, `1.2.3` and an
+HTTP/1.0 request with no `Host` fell through to the 404.
+
+**Any IP literal, not this server's addresses.** Learning our own public IP is
+unreliable behind NAT, and the D27 probe sends `Host: 127.0.0.1`, which must keep
+reaching the dashboard. A request naming someone else's IP only reaches this box
+if it was sent here.
+
+**The pattern is a compile-time constant.** Nothing from config or the database
+is interpolated into CEL; the dashboard hostname only ever goes into a `host`
+matcher. The 404 carries no body, so no user-facing string lives in TypeScript.
+Resource route JSON is unchanged, so an upgrade rewrites no resource route; the
+tail ids are one set, `DASHBOARD_TAIL_ROUTE_IDS`, which `sync_routes` keeps —
+a tail route outside it would be deleted on the next domain edit.
+
+**What stops working.** Reaching the dashboard through a name that is neither
+the configured dashboard hostname nor an IP: a bookmarked `<ip>.sslip.io`, a
+tunnel or load balancer forwarding to Caddy :80 under its own name (with
+`MUSDASH_PUBLIC_URL` set and no dashboard hostname, GitHub webhooks on that
+path too), and `http://localhost:<port>` over an SSH tunnel to :80. RUNNING.md
+names the fixes: set the dashboard hostname, or point the tunnel at :8000. The
+cost of the extra route is one more delete and append per bootstrap or Settings
+save, each a full reload (D30).

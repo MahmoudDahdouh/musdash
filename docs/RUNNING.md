@@ -282,8 +282,11 @@ and Caddy volumes; and starts the systemd unit.
 http://<server-ip>
 ```
 
-Caddy serves the dashboard on port 80 as a catch-all route, so the bare IP works
-with no DNS at all. Create your admin account and start adding projects.
+Caddy serves the dashboard on port 80 to any request addressed to an IP, so the
+bare IP works with no DNS at all. Create your admin account and start adding
+projects. A request for any hostname musdash does not know — a deleted app's
+domain, a typo, `<server-ip>.sslip.io` — gets an empty 404, not the dashboard
+(D55).
 
 **This is plain HTTP.** No certificate authority issues certificates for an IP
 address, so until you attach a domain the admin session cookie travels in
@@ -303,7 +306,8 @@ Point your domain's A record at the server:
 Then in the dashboard: create a project, add a resource, deploy it, and open its
 **Domains** tab. Add `example.com`. Caddy obtains a certificate automatically and
 routes the domain to that container. Resource routes carry a host matcher and are
-evaluated before the dashboard's catch-all, so your app wins its own domain.
+evaluated before the dashboard's routes, so your app wins its own domain. When
+you remove the domain or delete the resource, the name answers 404.
 
 ### B4. Move the dashboard onto a domain (recommended)
 
@@ -315,6 +319,13 @@ stored in SQLite, a job pushes the route to Caddy within a second, and Caddy
 obtains a certificate for the name automatically. The server's bare address
 keeps working over plain HTTP as a fallback, so a DNS or certificate problem
 cannot lock you out.
+
+The dashboard answers only on this hostname and on IP addresses. If you reach
+it any other way — a bookmarked `<server-ip>.sslip.io`, a tunnel or load
+balancer that forwards to Caddy's port 80 under its own name, or GitHub
+webhooks sent to such a name — those requests get a 404. Set that name here, or
+point the tunnel at port 8000 instead of 80. An SSH tunnel works the same way:
+forward to `localhost:8000`, not `:80`.
 
 The page tells you if the name does not resolve to this server, and if the proxy
 cannot reach the dashboard — see the firewall note below, which is the usual
