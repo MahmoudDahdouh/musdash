@@ -4146,3 +4146,54 @@ two resources with one display name in one environment would only confuse.
 **Unchanged:** environment names still follow the slug rule — they are part of
 the wildcard auto-domain and have no slug of their own. Project names take the
 display rule on the server too, where before only their length was checked.
+
+### D66 — automatic hostnames are random, stored once, and default to sslip.io
+
+PHASES §10 specified `<resource>-<environment>.<wildcard>`, which needed a
+wildcard DNS record before any resource had a URL, and which `routeHosts`
+recomputed on every sync from the current names. The request was for names
+like `brave-otter.168.235.65.204.sslip.io`.
+
+**The base.** `MUSDASH_WILDCARD_DOMAIN` when set — the operator did the DNS
+work and wants names under it. Otherwise `<public-ip>.sslip.io`, which resolves
+to the IP inside it with no DNS setup. Otherwise none, as before. The public IP
+is a `public_ip` settings row with `MUSDASH_PUBLIC_IP` as its seed, the same
+precedence as the dashboard host: a row wins, an empty row means "none".
+`install.sh` seeds it from the first IPv4 `hostname -I` lists, and writes it
+commented out when that is a private or carrier-grade NAT address. **musdash
+never discovers the address itself**: D55 already found that unreliable behind
+NAT, and an outbound "what is my IP" call would break the firewalled-host rule.
+IPv4 only; an IPv6-only host uses a wildcard domain.
+
+**The label.** `<adjective>-<noun>` from two vendored 128-word lists
+(`src/domains/words.ts`, no dependency). Five draws against `domainExists`, then
+a pair with a 4-hex suffix. Every candidate goes through `isValidHostname` and
+is refused if it equals the dashboard host (N-3).
+
+**Stored once, never recomputed.** Creation writes the host as the resource's
+`is_auto` row. `routeHosts` now returns the rows minus the dashboard host and
+nothing else, and `autoDomainFor` is gone. So a rename, an environment rename
+or a changed base never moves a live URL, and a redeploy never asks Let's
+Encrypt for a certificate it already issued. A resource with no automatic row
+(created before a base existed, or whose row was removed) gets a **Generate
+automatic domain** button on its Domains tab; changing the public IP affects
+only names generated afterwards.
+
+**The upgrade.** A resource created before its wildcard existed was routed on
+`<slug>-<env>.<wildcard>` only through the recomputation. `migrate()` stores
+that host as a row once, for every resource with no automatic row, when a
+wildcard is set, then records a settings flag so a row the operator later
+removes stays removed. It lives in `migrate()` because it needs config, which a
+SQL migration cannot see.
+
+**Risks accepted.** sslip.io is a third party: if it is down, the URL is dead
+and a first deploy waits D39's full 30 seconds for a certificate; custom
+domains are unaffected. Whether `sslip.io` is on the Public Suffix List — and
+so whether Let's Encrypt's 50-per-week limit is per `<ip>.sslip.io` or shared by
+every sslip.io user — could not be checked from the build environment; the
+generate-once rule keeps musdash's own draw on it to one certificate per
+resource. The Settings card says to attach a real domain before relying on an
+app.
+
+**Not verified on a real host yet:** issuance for a `<pair>.<ip>.sslip.io` name
+(staging first), and the installer's seed on a provider image.

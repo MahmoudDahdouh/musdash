@@ -62,9 +62,11 @@ Then open `http://<server-ip>` (port 80, through Caddy) and create your admin
 account. Port 8000 answers only loopback and private addresses — Caddy's among
 them — and refuses the public internet with a 403 (D31).
 
-To get automatic HTTPS subdomains, point a wildcard A record
-(`*.mus.example.com`) at the host and set `MUSDASH_WILDCARD_DOMAIN` and
-`MUSDASH_ACME_EMAIL` in `/opt/musdash/musdash.env`.
+Every resource gets an automatic HTTPS name such as
+`brave-otter.<server-ip>.sslip.io` with no DNS work; set `MUSDASH_ACME_EMAIL` in
+`/opt/musdash/musdash.env`. To use your own domain for those names instead,
+point a wildcard A record (`*.mus.example.com`) at the host and set
+`MUSDASH_WILDCARD_DOMAIN`.
 
 ## Configuration
 
@@ -74,6 +76,7 @@ To get automatic HTTPS subdomains, point a wildcard A record
 | `MUSDASH_DATA_DIR`           | `./data`               | SQLite, logs, secret key                     |
 | `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock` |                                              |
 | `MUSDASH_WILDCARD_DOMAIN`    | —                      | e.g. `mus.example.com`                       |
+| `MUSDASH_PUBLIC_IP`          | seeded by installer    | IPv4 for `<name>.<ip>.sslip.io` auto-domains |
 | `MUSDASH_ACME_EMAIL`         | —                      | Required for automatic HTTPS                 |
 | `MUSDASH_ACME_STAGING`       | `true`                 | Safe default; set `false` in production      |
 | `MUSDASH_NETWORK`            | `musdash`              | Must be a user-defined network               |

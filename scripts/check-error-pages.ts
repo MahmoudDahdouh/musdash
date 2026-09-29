@@ -91,6 +91,8 @@ const SENTENCES: Record<ErrorKey, string> = {
     "That is not a repository reference. With a GitHub account chosen, enter the repository as owner/name, such as acme/web.",
   "deploy-already-started":
     "This deploy was not cancelled, because it had already started. Only a deploy that is still queued can be cancelled.",
+  "public-ip-invalid":
+    "That is not an IPv4 address. Enter the address the internet reaches this server on, such as 203.0.113.7.",
 }
 
 const FORBIDDEN_SENTENCE =
@@ -619,6 +621,14 @@ try {
     withCsrf({ confirm: SENTINEL }),
     "/settings?error=github-confirm",
   )
+  await keyed(
+    "public address not an IPv4 address (D66)",
+    "public-ip-invalid",
+    "POST",
+    "/settings/public-ip",
+    withCsrf({ ip: SENTINEL }),
+    "/settings?error=public-ip-invalid",
+  )
 
   // ---- criterion 5: unknown keys render nothing and echo nothing
   for (const page of [p, r, "/settings"]) {
@@ -723,7 +733,8 @@ try {
     "POST",
     `/e/${eid}/resources`,
     {
-      name: SENTINEL,
+      // A display name is free text since D65; ";" is outside its rule.
+      name: `${SENTINEL};`,
       image: "nginx:alpine",
     },
   )
@@ -733,7 +744,7 @@ try {
     "POST",
     `/e/${eid}/resources/git`,
     {
-      name: SENTINEL,
+      name: `${SENTINEL};`,
       repo: SENTINEL,
       branch: "main",
     },

@@ -1,6 +1,7 @@
+import { isIPv4 } from "node:net"
 import { Elysia, t } from "elysia"
 import { resolveSession, SESSION_COOKIE, verifyCsrf } from "../auth.ts"
-import { autoDomainFor, isValidHostname } from "../caddy/client.ts"
+import { isValidHostname } from "../caddy/client.ts"
 import { config } from "../config.ts"
 import { randomToken, safeEqual } from "../crypto.ts"
 import { isValidImageRef, isValidResourceName } from "../docker/client.ts"
@@ -74,11 +75,15 @@ import { resourceState } from "../resource-state.ts"
 import { dashboardHostView } from "../settings-view.ts"
 import {
   getDashboardHost,
+  getPublicIp,
   getPublicUrl,
   SETTING_GITHUB_MANIFEST_STATE,
+  SETTING_PUBLIC_IP,
   setDashboardHost,
+  setPublicIp,
 } from "../settings.ts"
 import { renderPage } from "../views/render.ts"
+import { assignAutoDomain, autoDomainBase } from "../domains/auto.ts"
 import { parseContainerPort } from "./container-port.ts"
 import { errorKeyFromQuery, withError } from "./errors.ts"
 import { checkGitSource } from "./git-source.ts"
@@ -385,9 +390,8 @@ export const appRoutes = new Elysia()
         memoryLimitMb: body.memoryLimitMb ?? config.defaultMemoryMb,
       })
 
-      // Give it its automatic subdomain up front, so deploying is one click.
-      const auto = autoDomainFor(resource.slug, environment.name)
-      if (auto && !domainExists(auto)) addDomain(resource.id, auto, true)
+      // Give it its automatic hostname up front, so deploying is one click.
+      assignAutoDomain(resource.id)
 
       return redirect(`/r/${resource.id}`, 303)
     },
@@ -460,8 +464,7 @@ export const appRoutes = new Elysia()
         memoryLimitMb: body.memoryLimitMb ?? config.defaultMemoryMb,
       })
 
-      const auto = autoDomainFor(resource.slug, environment.name)
-      if (auto && !domainExists(auto)) addDomain(resource.id, auto, true)
+      assignAutoDomain(resource.id)
 
       return redirect(`/r/${resource.id}`, 303)
     },
@@ -522,7 +525,9 @@ export const appRoutes = new Elysia()
           state: resourceState(resource, latestDeploymentStatus(resource.id)),
           deployments,
           domains: listDomains(resource.id),
-          autoDomain: autoDomainFor(resource.slug, environment.name),
+          // Where a "Generate automatic domain" press would put one, when the
+          // resource has none (D66). Never a hostname: that is only in rows.
+          autoBase: autoDomainBase(),
           // Keys, origins and scopes — never values. resolveEnvKeys does not
           // decrypt, so the Resolved table carries no plaintext; the edit
           // boxes below are the one place values render.
@@ -693,6 +698,24 @@ export const appRoutes = new Elysia()
       return redirect(`/r/${ctx.resource.id}?tab=domains`, 303)
     },
     { body: t.Object({ host: t.String(), csrf: t.String() }) },
+  )
+
+  /**
+   * Gives a resource an automatic hostname it does not have: one created
+   * before a base domain existed, or whose automatic row was removed (D66).
+   * The button shows only when a base exists and the resource has none, so
+   * either refusal here is a stale tab or a hand-made request.
+   */
+  .post(
+    "/r/:resourceId/domains/auto",
+    ({ params, redirect, session }) => {
+      const ctx = getResourceContext(params.resourceId)
+      if (!ctx) return statusFor(session, 404)
+      if (!autoDomainBase()) return statusFor(session, 400)
+      if (assignAutoDomain(ctx.resource.id)) enqueue("sync_routes", {})
+      return redirect(`/r/${ctx.resource.id}?tab=domains`, 303)
+    },
+    { body: t.Object({ csrf: t.String() }) },
   )
 
   .post(
@@ -985,6 +1008,14 @@ export const appRoutes = new Elysia()
           // says "applying" — so the page does not say it twice (M-3), while an
           // unrelated flash no longer hides the note (N-11).
           hostJustSaved: query.saved === "host",
+          publicIp: {
+            value: getPublicIp(),
+            fromEnv:
+              getSetting(SETTING_PUBLIC_IP) === undefined &&
+              config.publicIp !== undefined,
+            wildcard: config.wildcardDomain,
+            justSaved: query.saved === "ip",
+          },
         },
         // The layout renders the flash, above the page head. Settings is the
         // first route to hand it one; the page no longer renders its own.
@@ -1049,6 +1080,25 @@ export const appRoutes = new Elysia()
     {
       body: t.Object({ host: t.String({ maxLength: 300 }), csrf: t.String() }),
     },
+  )
+
+  /**
+   * Sets, or clears, the public IPv4 address automatic sslip.io hostnames use
+   * (D66). Only new automatic hostnames follow it: existing ones are rows, and
+   * moving them would move live URLs. An empty value writes an empty row, so
+   * MUSDASH_PUBLIC_IP stops applying too.
+   */
+  .post(
+    "/settings/public-ip",
+    ({ body, redirect }) => {
+      const ip = body.ip.trim()
+      if (ip !== "" && !isIPv4(ip)) {
+        return redirect(withError("/settings", "public-ip-invalid"), 303)
+      }
+      setPublicIp(ip)
+      return redirect("/settings?saved=ip", 303)
+    },
+    { body: t.Object({ ip: t.String({ maxLength: 64 }), csrf: t.String() }) },
   )
 
   /**

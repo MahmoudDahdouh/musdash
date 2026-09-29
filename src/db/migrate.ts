@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite"
+import { persistLegacyAutoDomains } from "../domains/auto.ts"
 import { db as defaultDb } from "./index.ts"
 import { runMigrations } from "./migrations.ts"
 
@@ -8,5 +9,9 @@ import { runMigrations } from "./migrations.ts"
  * them against `:memory:`.
  */
 export function migrate(database: Database = defaultDb): string[] {
-  return runMigrations(database)
+  const applied = runMigrations(database)
+  // A one-time data step that needs config, which SQL cannot see (D66). Only
+  // on the process's own connection: queries.ts writes through that one.
+  if (database === defaultDb) persistLegacyAutoDomains()
+  return applied
 }

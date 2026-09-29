@@ -141,7 +141,7 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
   let image = payload.image
   const ctx = getResourceContext(resourceId)
   if (!ctx) throw new Error(`resource ${resourceId} no longer exists`)
-  const { resource, environment, project } = ctx
+  const { resource, project } = ctx
 
   // Filled by resolveEnvVars inside the try below, but declared here so that
   // emit/safe exist before resolution runs — a failure DURING resolution is
@@ -407,7 +407,7 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     emit("Health check passed")
 
     // 8a. switch the route BEFORE touching the old container
-    const hosts = routeHosts(resourceId, resource.slug, environment.name)
+    const hosts = routeHosts(resourceId)
     // Hosts this deploy puts on the route for the first time. Stays empty when
     // no route is written, so the certificate wait below never runs then.
     let newHosts: string[] = []

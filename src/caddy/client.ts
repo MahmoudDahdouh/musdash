@@ -476,15 +476,6 @@ export function routeIdFor(resourceId: string): string {
   return `${ROUTE_ID_PREFIX}${resourceId}`
 }
 
-/** `<resource>-<environment>.<wildcard>` (§10). */
-export function autoDomainFor(
-  resourceSlug: string,
-  environmentName: string,
-): string | null {
-  if (!config.wildcardDomain) return null
-  return `${resourceSlug}-${environmentName}.${config.wildcardDomain}`.toLowerCase()
-}
-
 /**
  * Stable id for the dashboard's IP-literal route. The id predates D55, when this
  * was a matcher-less catch-all; it is kept so an upgraded proxy's old route is

@@ -170,6 +170,61 @@ ufw deny 8000/tcp</code></pre>
   </details>
 </div>
 
+<div class="card card-prose stack" id="public-address">
+  <h2 class="card-title">Automatic domains</h2>
+  <% if (it.publicIp.wildcard) { %>
+  <p class="muted">
+    New resources get a random name under
+    <span class="mono"><%= it.publicIp.wildcard %></span>, from
+    <code>MUSDASH_WILDCARD_DOMAIN</code>. The address below is not used while
+    that is set.
+  </p>
+  <% } else if (it.publicIp.value) { %>
+  <p class="muted">
+    New resources get a random name such as
+    <span class="mono">brave-otter.<%= it.publicIp.value %>.sslip.io</span>.
+    sslip.io answers every such name with the address inside it, so no DNS
+    setup is needed. It is a free public service: good for trying things out,
+    but attach a domain of your own before you rely on an app.
+  </p>
+  <% } else { %>
+  <p class="muted">
+    Enter this server's public IP address and new resources get a random name
+    such as <span class="mono">brave-otter.203.0.113.7.sslip.io</span>, with
+    HTTPS and no DNS setup.
+  </p>
+  <% } %>
+  <form method="post" action="/settings/public-ip" class="stack">
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <div class="field">
+      <label class="label" for="public-ip">Public IPv4 address</label>
+      <input
+        id="public-ip"
+        name="ip"
+        value="<%= it.publicIp.value || '' %>"
+        placeholder="203.0.113.7"
+        inputmode="decimal"
+        autocomplete="off"
+        spellcheck="false"
+        aria-describedby="public-ip-hint"
+      />
+      <p class="hint" id="public-ip-hint">
+        The address the internet reaches this server on<% if (it.publicIp.fromEnv) { %>, currently from
+        <code>MUSDASH_PUBLIC_IP</code><% } %>. Existing automatic domains keep
+        their address; only new ones use a change. Leave it empty to stop
+        generating them.
+      </p>
+    </div>
+    <div class="row end">
+      <% if (it.publicIp.justSaved) { %><span class="muted" role="status">Saved.</span><% } %>
+      <button class="btn btn-primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Save
+      </button>
+    </div>
+  </form>
+</div>
+
 <%
   var restartOk = it.host.restart.available && !it.host.restart.blockedReason
 %>

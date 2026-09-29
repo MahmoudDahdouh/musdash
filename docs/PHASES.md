@@ -352,7 +352,7 @@ CREATE TABLE domains (
   id             TEXT PRIMARY KEY,
   resource_id    TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
   host           TEXT NOT NULL UNIQUE,
-  is_auto        INTEGER NOT NULL DEFAULT 0,   -- generated from wildcard
+  is_auto        INTEGER NOT NULL DEFAULT 0,   -- generated, never recomputed (D66)
   created_at     TEXT NOT NULL
 ) STRICT;
 
@@ -491,9 +491,10 @@ objects so each route can be replaced or deleted independently:
 **Automatic HTTPS** activates when a route has a host matcher and an ACME email
 is configured. Store the admin email in settings on first run.
 
-**Auto-generated domains:** `<resource-name>-<environment-name>.<WILDCARD_DOMAIN>`.
-The operator sets `WILDCARD_DOMAIN` at install time and points a `*` A record at
-the server. Users get a working HTTPS URL with zero DNS work.
+**Auto-generated domains:** `<adjective>-<noun>.<WILDCARD_DOMAIN>`, or
+`<adjective>-<noun>.<public-ip>.sslip.io` with no wildcard, generated once at
+creation and stored (D66 supersedes the `<resource>-<environment>` scheme).
+Users get a working HTTPS URL with zero DNS work.
 
 **During development, use the Let's Encrypt staging endpoint.** Production
 rate limits are 50 certificates per registered domain per week and you will hit

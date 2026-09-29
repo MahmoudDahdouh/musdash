@@ -1,20 +1,20 @@
 import {
-  autoDomainFor,
   caddy,
   DASHBOARD_TAIL_ROUTE_IDS,
   ROUTE_ID_PREFIX,
   type RouteSpec,
   routeIdFor,
 } from "../caddy/client.ts"
-import { getEnvironment, listAllResources, listDomains } from "../db/queries.ts"
+import { listAllResources, listDomains } from "../db/queries.ts"
 import type { Resource } from "../db/schema.ts"
 import { docker } from "../docker/impl.ts"
 import { logger } from "../log.ts"
 import { getDashboardHost } from "../settings.ts"
 
 /**
- * Every hostname a resource answers on: its attached domains plus the auto
- * subdomain, when a wildcard domain is configured — minus the dashboard's own.
+ * Every hostname a resource answers on: its `domains` rows, the automatic one
+ * included, minus the dashboard's own. Rows only — an automatic hostname is
+ * generated once and stored, never recomputed here (D66).
  *
  * Resource routes sit ahead of the dashboard's in Caddy (C-1), so a resource
  * carrying the dashboard's hostname would take that name, and every login typed
@@ -23,24 +23,17 @@ import { getDashboardHost } from "../settings.ts"
  * here is what makes the guarantee hold whichever way the collision arrived
  * (N-3).
  */
-export function routeHosts(
-  resourceId: string,
-  resourceSlug: string,
-  environmentName: string,
-): string[] {
+export function routeHosts(resourceId: string): string[] {
   const dashboard = getDashboardHost()
-  const hosts = listDomains(resourceId).map((d) => d.host)
-  const auto = autoDomainFor(resourceSlug, environmentName)
-  if (auto && !hosts.includes(auto)) hosts.push(auto)
-  return hosts.filter((h) => h !== dashboard)
+  return listDomains(resourceId)
+    .map((d) => d.host)
+    .filter((h) => h !== dashboard)
 }
 
 /** The hosts a resource should be routed on, or [] when it should not be. */
 function wantedHosts(resource: Resource): string[] {
   if (resource.desiredState !== "running" || !resource.containerPort) return []
-  const environment = getEnvironment(resource.environmentId)
-  if (!environment) return []
-  return routeHosts(resource.id, resource.slug, environment.name)
+  return routeHosts(resource.id)
 }
 
 /**

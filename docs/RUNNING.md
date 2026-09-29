@@ -48,8 +48,8 @@ today** is not built yet.
   **Deploy this again** on a finished deployment that names a commit or an image
   (D61).
 - Live deploy and container logs over SSE.
-- Automatic HTTPS at `<resource>-<environment>.<wildcard-domain>`, plus custom
-  domains.
+- Automatic HTTPS at a random name such as `brave-otter.<server-ip>.sslip.io`
+  (or under your own wildcard domain), plus custom domains.
 - A reconciler that restarts anything that disappears — a reboot or a stray
   `docker rm -f` heals within 30 seconds.
 - Two managed sidecars, started and self-healed by musdash itself: **Caddy**
@@ -352,8 +352,16 @@ and the Settings page has a **Restart musdash** button for exactly that:
 MUSDASH_ACME_EMAIL=you@example.com
 ```
 
-Optionally add `*.mus.example.com` and set `MUSDASH_WILDCARD_DOMAIN` to give
-every resource a free auto-subdomain alongside its real domain.
+Every new resource gets a free automatic name such as
+`brave-otter.<server-ip>.sslip.io`. The installer seeds the server's public IP
+(`MUSDASH_PUBLIC_IP`); **Settings -> Automatic domains** changes or clears it.
+sslip.io is a free public DNS service that answers each such name with the
+address inside it, so there is nothing to configure — but it is a third party,
+so attach a domain of your own before you rely on an app. To get the random
+names under your own domain instead, add `*.mus.example.com` and set
+`MUSDASH_WILDCARD_DOMAIN`. An automatic name is chosen once, when the resource is
+created, and never changes; remove it on the Domains tab like any other, and
+**Generate automatic domain** there gives a resource one it lacks.
 
 ### B5. Firewall
 
@@ -457,9 +465,10 @@ its App under your GitHub settings: the key it was created with is gone.
 3. Set the container port and an optional health path.
 4. **Deploy.** The route handler enqueues a job and redirects immediately — the
    UI never waits on Docker. Watch the deploy log stream live.
-5. If a wildcard domain is configured, the resource is reachable at
-   `<resource>-<environment>.<wildcard-domain>` with a certificate issued
-   automatically.
+5. If a public IP or a wildcard domain is configured, the resource is
+   reachable at its automatic name, such as
+   `https://brave-otter.<server-ip>.sslip.io`, with a certificate issued
+   automatically. The Domains tab shows it.
 
 ### Deploy from a git repository
 
@@ -562,25 +571,26 @@ this again** ignore markers.
 Read once at startup by [src/config.ts](../src/config.ts) and frozen. Changing
 any of these requires a restart.
 
-| Variable                     | Default                | Notes                                                                 |
-| ---------------------------- | ---------------------- | --------------------------------------------------------------------- |
-| `MUSDASH_PORT`               | `8000`                 | Binds `0.0.0.0`; public peers get a 403 (D31), the firewall is extra  |
-| `MUSDASH_DATA_DIR`           | `./data`               | SQLite, `secret.key` (0600), logs, build cache                        |
-| `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock` | Must be a real unix socket                                            |
-| `MUSDASH_DASHBOARD_HOST`     | —                      | Fallback only — the Settings page wins once a hostname is saved there |
-| `MUSDASH_WILDCARD_DOMAIN`    | —                      | e.g. `mus.example.com`; needed for auto-domains                       |
-| `MUSDASH_ACME_EMAIL`         | —                      | Required for automatic HTTPS                                          |
-| `MUSDASH_PUBLIC_URL`         | derived from the host  | Fallback only; for a tunnel or private-network LB fronting musdash    |
-| `MUSDASH_ACME_STAGING`       | `true`                 | Safe default — set `false` deliberately, on real DNS                  |
-| `MUSDASH_BUILD_CACHE_GB`     | `10`                   | Layer cache ceiling, on disk and in the build daemon                  |
-| `MUSDASH_BUILDKIT_MEMORY_MB` | sized from host memory | BuildKit memory cap; ≥ 192, below the host's memory (D33)             |
-| `MUSDASH_RAILPACK_BIN`       | `railpack`             | Shelled out to, not linked                                            |
-| `MUSDASH_BUILDCTL_BIN`       | `buildctl`             | Shelled out to, not linked                                            |
-| `MUSDASH_NETWORK`            | `musdash`              | Must be user-defined                                                  |
-| `MUSDASH_DEFAULT_MEMORY_MB`  | `512`                  | Per-container hard limit; there is no "unlimited"                     |
-| `MUSDASH_HEALTH_TIMEOUT_SEC` | `60`                   | How long a new container has to pass the gate                         |
-| `MUSDASH_LOG_LEVEL`          | `info`                 | `trace`…`fatal`                                                       |
-| `NODE_ENV`                   | —                      | `production` enables the loopback bind                                |
+| Variable                     | Default                 | Notes                                                                 |
+| ---------------------------- | ----------------------- | --------------------------------------------------------------------- |
+| `MUSDASH_PORT`               | `8000`                  | Binds `0.0.0.0`; public peers get a 403 (D31), the firewall is extra  |
+| `MUSDASH_DATA_DIR`           | `./data`                | SQLite, `secret.key` (0600), logs, build cache                        |
+| `MUSDASH_DOCKER_SOCKET`      | `/var/run/docker.sock`  | Must be a real unix socket                                            |
+| `MUSDASH_DASHBOARD_HOST`     | —                       | Fallback only — the Settings page wins once a hostname is saved there |
+| `MUSDASH_WILDCARD_DOMAIN`    | —                       | e.g. `mus.example.com`; auto-domains go under it instead of sslip.io  |
+| `MUSDASH_PUBLIC_IP`          | seeded by the installer | Fallback only; the IPv4 that `<name>.<ip>.sslip.io` auto-domains use  |
+| `MUSDASH_ACME_EMAIL`         | —                       | Required for automatic HTTPS                                          |
+| `MUSDASH_PUBLIC_URL`         | derived from the host   | Fallback only; for a tunnel or private-network LB fronting musdash    |
+| `MUSDASH_ACME_STAGING`       | `true`                  | Safe default — set `false` deliberately, on real DNS                  |
+| `MUSDASH_BUILD_CACHE_GB`     | `10`                    | Layer cache ceiling, on disk and in the build daemon                  |
+| `MUSDASH_BUILDKIT_MEMORY_MB` | sized from host memory  | BuildKit memory cap; ≥ 192, below the host's memory (D33)             |
+| `MUSDASH_RAILPACK_BIN`       | `railpack`              | Shelled out to, not linked                                            |
+| `MUSDASH_BUILDCTL_BIN`       | `buildctl`              | Shelled out to, not linked                                            |
+| `MUSDASH_NETWORK`            | `musdash`               | Must be user-defined                                                  |
+| `MUSDASH_DEFAULT_MEMORY_MB`  | `512`                   | Per-container hard limit; there is no "unlimited"                     |
+| `MUSDASH_HEALTH_TIMEOUT_SEC` | `60`                    | How long a new container has to pass the gate                         |
+| `MUSDASH_LOG_LEVEL`          | `info`                  | `trace`…`fatal`                                                       |
+| `NODE_ENV`                   | —                       | `production` enables the loopback bind                                |
 
 ---
 

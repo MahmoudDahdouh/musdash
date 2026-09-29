@@ -311,6 +311,18 @@ else
   DASHBOARD_HOST_LINE="#MUSDASH_DASHBOARD_HOST=mus.example.com"
 fi
 
+# The seed for automatic sslip.io domains (D66). The first address `hostname -I`
+# lists is the public one on most VPSes; a private or carrier-grade NAT address
+# is not, so it is written commented out and the operator sets the real one in
+# Settings. musdash never guesses this itself.
+PUBLIC_IP="${MUSDASH_PUBLIC_IP:-$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)}"
+case "$PUBLIC_IP" in
+  "" | 10.* | 127.* | 192.168.* | 169.254.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* \
+    | 100.6[4-9].* | 100.[7-9][0-9].* | 100.1[01][0-9].* | 100.12[0-7].*)
+    PUBLIC_IP_LINE="#MUSDASH_PUBLIC_IP=203.0.113.7" ;;
+  *) PUBLIC_IP_LINE="MUSDASH_PUBLIC_IP=$PUBLIC_IP" ;;
+esac
+
 if [ ! -f "$ENV_FILE" ]; then
   log "Writing $ENV_FILE"
   cat > "$ENV_FILE" <<EOF
@@ -330,9 +342,12 @@ MUSDASH_NETWORK=$NETWORK
 #   - GitHub cannot be connected; its App requires a public HTTPS URL
 ${DASHBOARD_HOST_LINE}
 
-# Point a wildcard A record (*.example.com) at this host to get automatic
-# HTTPS subdomains for every resource. Optional: without it, resources have no
-# auto-subdomain and you attach real domains on each resource's Domains tab.
+# Every new resource gets a random HTTPS name such as
+# brave-otter.<this IP>.sslip.io, which needs no DNS work. The Settings page
+# can change or clear the address; this line is only its seed.
+${PUBLIC_IP_LINE}
+# Point a wildcard A record (*.example.com) at this host and set this to get
+# the random names under your own domain instead of sslip.io.
 #MUSDASH_WILDCARD_DOMAIN=mus.example.com
 # Not needed to connect GitHub: the App's redirect and webhook URLs are derived
 # from the dashboard host above. Set this only when something else fronts

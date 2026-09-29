@@ -26,6 +26,7 @@ export const ERROR_KEYS = [
   "source-repo-required",
   "repo-invalid",
   "deploy-already-started",
+  "public-ip-invalid",
 ] as const
 
 export type ErrorKey = (typeof ERROR_KEYS)[number]

@@ -25,6 +25,9 @@ export const SETTING_DASHBOARD_HOST_APPLIED = "dashboard_host_applied"
 /** JSON: the DNS and reachability probe results from the last apply. */
 export const SETTING_DASHBOARD_CHECK = "dashboard_check"
 
+/** The IPv4 address automatic sslip.io hostnames resolve to (D66). */
+export const SETTING_PUBLIC_IP = "public_ip"
+
 /** The manifest-flow nonce, held here so a restart cannot strand it. */
 export const SETTING_GITHUB_MANIFEST_STATE = "github_manifest_state"
 
@@ -46,6 +49,22 @@ export function getDashboardHost(): string | undefined {
 
 export function setDashboardHost(host: string): void {
   setSetting(SETTING_DASHBOARD_HOST, host.toLowerCase())
+}
+
+/**
+ * The server's public IPv4 address, database first, with the same precedence
+ * as the dashboard host: the env var seeds it, a row wins, and an empty row
+ * means "none" so clearing it from the UI sticks.
+ */
+export function getPublicIp(): string | undefined {
+  const row = getSetting(SETTING_PUBLIC_IP)
+  if (row !== undefined) return row === "" ? undefined : row
+  return config.publicIp
+}
+
+/** Empty clears it, including the environment's value. */
+export function setPublicIp(ip: string): void {
+  setSetting(SETTING_PUBLIC_IP, ip)
 }
 
 /**

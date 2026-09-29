@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs"
+import { isIPv4 } from "node:net"
 import { isAbsolute, resolve } from "node:path"
 import { z } from "zod"
 
@@ -27,6 +28,14 @@ const schema = z.object({
   // Optional so a fresh install still boots and can reach the setup page.
   // Absence is fatal only where a domain is actually needed (route creation).
   MUSDASH_WILDCARD_DOMAIN: z.string().min(1).optional(),
+  // The IPv4 address the internet reaches this box on — the FALLBACK for the
+  // `public_ip` settings row. With no wildcard domain, automatic hostnames go
+  // under `<ip>.sslip.io` (D66). install.sh seeds it; musdash never guesses it,
+  // since a NATed box cannot see its own public address (D55).
+  MUSDASH_PUBLIC_IP: z
+    .string()
+    .refine((v) => isIPv4(v), { message: "must be an IPv4 address" })
+    .optional(),
   MUSDASH_ACME_EMAIL: z.string().email().optional(),
 
   // FALLBACK ONLY. The public address is normally DERIVED from the dashboard
@@ -156,6 +165,7 @@ export const config = Object.freeze({
   network: env.MUSDASH_NETWORK,
 
   wildcardDomain: env.MUSDASH_WILDCARD_DOMAIN,
+  publicIp: env.MUSDASH_PUBLIC_IP,
   dashboardHost: env.MUSDASH_DASHBOARD_HOST?.toLowerCase(),
   hostGatewayIp: env.MUSDASH_HOST_GATEWAY,
   acmeEmail: env.MUSDASH_ACME_EMAIL,
