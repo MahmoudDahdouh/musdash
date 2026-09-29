@@ -298,6 +298,12 @@
   </p>
   <% } %>
   <% } %>
+  <% if (it.domains.some(function (d) { return d.isAuto && d.host.endsWith('.sslip.io'); })) { %>
+  <p class="muted">
+    The automatic name uses sslip.io, a free public DNS service. It is good for
+    trying things out; attach a domain of your own before you rely on this app.
+  </p>
+  <% } %>
   <ul class="plain">
     <% it.domains.forEach(function (d) { %>
     <li class="row between">

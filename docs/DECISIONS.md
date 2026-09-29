@@ -4179,12 +4179,19 @@ Encrypt for a certificate it already issued. A resource with no automatic row
 automatic domain** button on its Domains tab; changing the public IP affects
 only names generated afterwards.
 
-**The upgrade.** A resource created before its wildcard existed was routed on
-`<slug>-<env>.<wildcard>` only through the recomputation. `migrate()` stores
-that host as a row once, for every resource with no automatic row, when a
-wildcard is set, then records a settings flag so a row the operator later
-removes stays removed. It lives in `migrate()` because it needs config, which a
-SQL migration cannot see.
+**The upgrade.** Before D66 every resource was also routed on
+`<slug>-<env>.<wildcard>` for the wildcard set at the time, through the
+recomputation alone when no row held it: a resource created before the wildcard
+existed, one whose host collided at creation, or one created under an older
+wildcard. `migrate()` stores that exact host once for every resource, when a
+wildcard is set and no row anywhere already holds it, then records a settings
+flag so a row the operator later removes stays removed. The check is on the
+exact host, not on "has an automatic row", or the older-wildcard case would lose
+its current URL; `legacyAutoHosts` is a pure function with its own test. It
+lives in `migrate()` because it needs config, which a SQL migration cannot see.
+The Settings form refuses a private, loopback, link-local or carrier-grade NAT
+address, the same ranges the installer writes commented out: an sslip.io name
+for one resolves but can never get a certificate.
 
 **Risks accepted.** sslip.io is a third party: if it is down, the URL is dead
 and a first deploy waits D39's full 30 seconds for a certificate; custom
@@ -4223,7 +4230,8 @@ last. Re-reading picks up a resource created after the delete was pressed. A
 crash part-way leaves the remaining rows, and lease recovery runs the job
 again; a second run of a finished job does nothing. The handler does not
 enqueue a second job while one is pending, and the project page shows
-"being deleted" until it runs, since a running build can hold it for minutes.
+"being deleted" while the job is pending or running, since a running build can
+hold it for minutes.
 `runRemove` now also cancels the resource's queued deploys before its row goes,
 so they end as cancelled rather than failing on a missing row.
 
@@ -4259,7 +4267,9 @@ status `queued` (it published only `status` before), so a queued deploy shows at
 once; the deployment page ignores it because its initial status is already
 `queued`.
 
-**One toast, not one per row.** It names the running (or first queued) deploy as
+**One toast, not one per row.** The list is sorted running first, then oldest
+queued, since a retrying deploy can run out of creation order. It names the
+running (or first queued) deploy as
 "project / resource" with the live status label from `@status`, plus
 "+N queued". It is not dismissible: dismissal that survives navigation would
 need client-side state, and the toast is small and always leads somewhere.
@@ -4289,9 +4299,10 @@ project's redirect point there. The project and environment tree stays nested
 under Projects, and Settings stays pinned at the bottom. `LayoutOptions.section`
 (`home`, `projects`, `settings`) replaces the `activeSettings` flag and the
 "highlight Projects when nothing else is active" rule; passing
-`activeProjectId` implies `projects`. Exactly one link says
-`aria-current="page"`, and inside a project it is the tree's link, not
-Projects — `src/views/nav.test.ts` pins that down.
+`activeProjectId` implies `projects`. On Home, Projects and Settings exactly
+one link says `aria-current="page"`. Inside a project none does: the tree's
+project link says `aria-current="true"`, as it did before, and Projects is only
+highlighted. `src/views/nav.test.ts` pins both down.
 
 **The icons are copied, not installed.** `@hugeicons/core-free-icons` 4.3.5 is
 MIT and ships 80 MB of per-icon modules; using four kilobytes of it through the

@@ -92,7 +92,7 @@ const SENTENCES: Record<ErrorKey, string> = {
   "deploy-already-started":
     "This deploy was not cancelled, because it had already started. Only a deploy that is still queued can be cancelled.",
   "public-ip-invalid":
-    "That is not an IPv4 address. Enter the address the internet reaches this server on, such as 203.0.113.7.",
+    "That is not a public IPv4 address. Enter the address the internet reaches this server on, such as 203.0.113.7.",
   "project-confirm":
     "The project was not deleted, because the name you typed did not match. Type the project's name exactly to confirm.",
 }

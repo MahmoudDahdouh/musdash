@@ -311,6 +311,13 @@ else
   DASHBOARD_HOST_LINE="#MUSDASH_DASHBOARD_HOST=mus.example.com"
 fi
 
+# An operator-supplied address is checked here, not left to musdash: config
+# refuses a non-IPv4 MUSDASH_PUBLIC_IP, and the service would not start.
+if [ -n "${MUSDASH_PUBLIC_IP:-}" ] && ! printf '%s\n' "$MUSDASH_PUBLIC_IP" \
+  | awk -F. 'NF == 4 && $0 ~ /^[0-9.]+$/ { for (i = 1; i <= 4; i++) if ($i == "" || $i > 255) exit 1; ok = 1 } END { exit !ok }'; then
+  die "MUSDASH_PUBLIC_IP must be an IPv4 address such as 203.0.113.7, not $MUSDASH_PUBLIC_IP"
+fi
+
 # The seed for automatic sslip.io domains (D66). The first address `hostname -I`
 # lists is the public one on most VPSes; a private or carrier-grade NAT address
 # is not, so it is written commented out and the operator sets the real one in

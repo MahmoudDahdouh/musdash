@@ -1320,8 +1320,9 @@ export interface ActiveDeployment {
 }
 
 /**
- * Every deployment queued or running, oldest first — so the running one, which
- * the single worker claimed first, leads. One statement per call, like
+ * Every deployment queued or running: the running one first, then the queue
+ * oldest first. Sorted rather than trusting creation order, because a deploy
+ * waiting to retry, or claimed after an older one, can run out of that order. One statement per call, like
  * navTree(): the layout reads it on every signed-in render, and the activity
  * stream re-reads it on each deployment event rather than holding a copy.
  * Cancelled rows are not in it (D59).
@@ -1340,7 +1341,10 @@ export function activeDeployments(): ActiveDeployment[] {
     .innerJoin(environments, eq(environments.id, resources.environmentId))
     .innerJoin(projects, eq(projects.id, environments.projectId))
     .where(inArray(deployments.status, ["queued", "running"]))
-    .orderBy(deployments.createdAt)
+    .orderBy(
+      desc(sql`${deployments.status} = 'running'`),
+      deployments.createdAt,
+    )
     .all()
     .map((d) => ({
       id: d.id,

@@ -1,4 +1,3 @@
-import { isValidHostname } from "../caddy/client.ts"
 import { config } from "../config.ts"
 import {
   addDomain,
@@ -11,7 +10,11 @@ import {
 } from "../db/queries.ts"
 import { logger } from "../log.ts"
 import { getDashboardHost, getPublicIp } from "../settings.ts"
-import { generateAutoHost } from "./generate.ts"
+import {
+  generateAutoHost,
+  type LegacyAutoCandidate,
+  legacyAutoHosts,
+} from "./generate.ts"
 
 /**
  * Automatic hostnames (D66): `<adjective>-<noun>.<base>`, generated once when a
@@ -58,8 +61,8 @@ const SETTING_LEGACY_AUTO_PERSISTED = "legacy_auto_domains_persisted"
  *
  * Before D66 the auto host was recomputed on every route sync as
  * `<name>-<env>.<wildcard>`, and a resource created before the wildcard was
- * set, or whose host collided at creation, had it only in that recomputation —
- * never as a row. Routes now carry rows only, so without this those resources
+ * set, whose host collided at creation, or created under an older wildcard,
+ * had its current one only in that recomputation — never as a row. Routes now carry rows only, so without this those resources
  * would lose a working URL on the first sync after upgrading. Runs once: after
  * that, an auto row the operator removes must stay removed. Needs config, which
  * a SQL migration cannot see, so it runs from migrate() rather than from 0007.
@@ -68,21 +71,28 @@ export function persistLegacyAutoDomains(): void {
   if (getSetting(SETTING_LEGACY_AUTO_PERSISTED) !== undefined) return
   const wildcard = config.wildcardDomain?.toLowerCase()
   if (wildcard) {
-    const dashboard = getDashboardHost()
-    let stored = 0
+    const candidates: LegacyAutoCandidate[] = []
     for (const resource of listAllResources()) {
-      if (listDomains(resource.id).some((d) => d.isAuto === 1)) continue
       const environment = getEnvironment(resource.environmentId)
       if (!environment) continue
-      const host = `${resource.slug}-${environment.name}.${wildcard}`
-      if (!isValidHostname(host) || host === dashboard || domainExists(host)) {
-        continue
-      }
-      addDomain(resource.id, host, true)
-      stored++
+      candidates.push({
+        resourceId: resource.id,
+        slug: resource.slug,
+        environmentName: environment.name,
+      })
     }
-    if (stored > 0) {
-      logger.info({ stored }, "stored the wildcard auto hostnames as rows")
+    const rows = legacyAutoHosts(
+      candidates,
+      wildcard,
+      getDashboardHost(),
+      domainExists,
+    )
+    for (const { resourceId, host } of rows) addDomain(resourceId, host, true)
+    if (rows.length > 0) {
+      logger.info(
+        { stored: rows.length },
+        "stored the wildcard auto hostnames as rows",
+      )
     }
   }
   setSetting(SETTING_LEGACY_AUTO_PERSISTED, "1")

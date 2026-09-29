@@ -12,6 +12,7 @@ import {
   type StatusEvent,
 } from "../events.ts"
 import type { LogLine } from "../docker/client.ts"
+import { logger } from "../log.ts"
 import { tail } from "../logs/buffer.ts"
 
 /**
@@ -155,7 +156,18 @@ export const sseRoutes = new Elysia()
    */
   .get("/events", () =>
     eventStream((send) => {
-      const snapshot = () => send(frame("active", activeDeployments()))
+      // Runs inside publishDeployment's emit, so a failing read must not throw
+      // into the deploy or the handler that published; the next event retries.
+      const snapshot = () => {
+        try {
+          send(frame("active", activeDeployments()))
+        } catch (err) {
+          logger.warn(
+            { err: (err as Error).message },
+            "activity snapshot failed",
+          )
+        }
+      }
       snapshot()
       return subscribeAllDeployments(snapshot)
     }),

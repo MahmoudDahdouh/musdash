@@ -28,6 +28,9 @@ test("deleting a project cascades to environments, resources and their rows", ()
     `INSERT INTO domains (id, resource_id, host, is_auto, created_at) VALUES ('m1', 'r1', 'brave-otter.1.2.3.4.sslip.io', 1, '${at}')`,
   )
   db.run(
+    `INSERT INTO env_vars (id, resource_id, key, value_encrypted, created_at) VALUES ('v1', 'r1', 'K', x'00', '${at}')`,
+  )
+  db.run(
     `INSERT INTO shared_env_vars (id, project_id, environment_id, key, value_encrypted, scope, created_at) VALUES ('s1', NULL, 'e1', 'A', x'00', 'runtime', '${at}'), ('s2', 'p1', NULL, 'B', x'00', 'runtime', '${at}')`,
   )
 
@@ -37,6 +40,7 @@ test("deleting a project cascades to environments, resources and their rows", ()
   expect(count("resources")).toBe(0)
   expect(count("deployments")).toBe(0)
   expect(count("domains")).toBe(0)
+  expect(count("env_vars")).toBe(0)
   expect(count("shared_env_vars")).toBe(1)
 
   db.run("DELETE FROM projects WHERE id = 'p1'")

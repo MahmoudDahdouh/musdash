@@ -1,4 +1,3 @@
-import { isIPv4 } from "node:net"
 import { Elysia, t } from "elysia"
 import { resolveSession, SESSION_COOKIE, verifyCsrf } from "../auth.ts"
 import { isValidHostname } from "../caddy/client.ts"
@@ -25,7 +24,6 @@ import {
   getResourceContext,
   getSetting,
   getSharedEnvText,
-  activeDeployments,
   latestDeploymentStatus,
   listAllResources,
   listDeployments,
@@ -70,7 +68,7 @@ import {
 } from "../jobs/deploy.ts"
 import { logger } from "../log.ts"
 import { tail } from "../logs/buffer.ts"
-import { enqueue, findPendingJob } from "../queue/index.ts"
+import { enqueue, findLeasedJobs, findPendingJob } from "../queue/index.ts"
 import {
   requestRestart,
   restartBlockedReason,
@@ -89,6 +87,7 @@ import {
 } from "../settings.ts"
 import { renderPage } from "../views/render.ts"
 import { assignAutoDomain, autoDomainBase } from "../domains/auto.ts"
+import { isPublicIPv4 } from "../domains/generate.ts"
 import { parseContainerPort } from "./container-port.ts"
 import { errorKeyFromQuery, withError } from "./errors.ts"
 import { checkGitSource } from "./git-source.ts"
@@ -151,6 +150,21 @@ function normalizeHost(raw: string): string {
     .replace(/:\d+$/, "")
     .replace(/\.$/, "")
     .toLowerCase()
+}
+
+/**
+ * Whether a remove_project or remove_environment job is waiting or running for
+ * this parent — the page says "being deleted" until the job is done, which a
+ * running build ahead of it can delay by minutes (D67).
+ */
+function removalQueued(
+  type: "remove_project" | "remove_environment",
+  fields: Record<string, string>,
+): boolean {
+  return (
+    findPendingJob(type, fields) !== null ||
+    findLeasedJobs(type, fields).length > 0
+  )
 }
 
 /** The three scoped textareas every env form posts. */
@@ -261,6 +275,8 @@ export const appRoutes = new Elysia()
       ...d,
       duration: formatDuration(d.startedAt, d.finishedAt),
     }))
+    // The toast's list, read once for both the page and the layout.
+    const frame = layout(session, "Home", { section: "home" })
     return html(
       renderPage(
         "home",
@@ -268,10 +284,10 @@ export const appRoutes = new Elysia()
           projectCount: projects.length,
           resourceCount,
           states,
-          active: activeDeployments(),
+          active: frame.active ?? [],
           recent,
         },
-        layout(session, "Home", { section: "home" }),
+        frame,
       ),
     )
   })
@@ -327,10 +343,9 @@ export const appRoutes = new Elysia()
       environment,
       // A delete was pressed and the job has not run yet — usually a second,
       // longer behind a running build (D67).
-      deleting:
-        findPendingJob("remove_environment", {
-          environmentId: environment.id,
-        }) !== null,
+      deleting: removalQueued("remove_environment", {
+        environmentId: environment.id,
+      }),
       sharedEnv: listSharedEnvKeys({ environmentId: environment.id }),
       envText: showEnv
         ? getSharedEnvText({ environmentId: environment.id })
@@ -353,9 +368,7 @@ export const appRoutes = new Elysia()
           project,
           environments,
           tab,
-          deleting:
-            findPendingJob("remove_project", { projectId: project.id }) !==
-            null,
+          deleting: removalQueued("remove_project", { projectId: project.id }),
           projectEnv: listSharedEnvKeys({ projectId: project.id }),
           envText: showEnv
             ? getSharedEnvText({ projectId: project.id })
@@ -434,7 +447,12 @@ export const appRoutes = new Elysia()
     ({ params, body, redirect, session }) => {
       const project = getProject(params.projectId)
       if (!project) return statusFor(session, 404)
-      if (normalizeDisplayName(body.confirm) !== project.name) {
+      // Both sides normalized: a name saved before D65 may hold a double space
+      // that nobody could otherwise type back exactly.
+      if (
+        normalizeDisplayName(body.confirm) !==
+        normalizeDisplayName(project.name)
+      ) {
         return redirect(
           withError(`/p/${project.id}?tab=settings`, "project-confirm"),
           303,
@@ -1257,7 +1275,7 @@ export const appRoutes = new Elysia()
     "/settings/public-ip",
     ({ body, redirect }) => {
       const ip = body.ip.trim()
-      if (ip !== "" && !isIPv4(ip)) {
+      if (ip !== "" && !isPublicIPv4(ip)) {
         return redirect(withError("/settings", "public-ip-invalid"), 303)
       }
       setPublicIp(ip)
