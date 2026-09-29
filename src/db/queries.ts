@@ -533,6 +533,9 @@ export function createDeployment(args: {
     commitAuthor: args.commitAuthor ?? null,
     gitRepo: args.gitRepo ?? null,
     buildFingerprint: args.buildFingerprint ?? null,
+    // Not an argument: only a build that switches sets it (onAutoWebpack), so
+    // no copy of an earlier row can carry it over.
+    autoWebpackCapMib: null,
     createdAt: nowIso(),
   }
   orm.insert(deployments).values(deployment).run()

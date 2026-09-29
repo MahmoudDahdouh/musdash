@@ -53,6 +53,15 @@ export interface BuildRequest {
   redactSecrets: readonly string[]
   /** Skips the layer cache; see BuildContext.noCache. */
   noCache?: boolean
+  /**
+   * BuildKit's memory cap as the job read it before the fingerprint, or null
+   * when the daemon could not be asked. Passed in rather than read here so the
+   * "may use up to" line, the memory advice, the fingerprint and the webpack
+   * decision all describe the same reading.
+   */
+  buildkitLimitBytes: number | null
+  /** See BuildContext.railpackBuildCmd. */
+  railpackBuildCmd?: string
   onLog: (line: string) => void
 }
 
@@ -95,10 +104,12 @@ export async function buildImage(req: BuildRequest): Promise<void> {
   // The cap is read from the daemon rather than recomputed, so an override
   // and the host-sized value are reported the same way. Said up front: a
   // build that needs more than this will not fit, and on the 1GB host nothing
-  // told the user so before, during or after (P-8).
-  const capMb = await buildkitMemory().then((m) =>
-    m === null ? null : Math.round(m.limitBytes / MIB),
-  )
+  // told the user so before, during or after (P-8). The job's one reading,
+  // not a second one, so this line cannot disagree with the webpack decision.
+  const capMb =
+    req.buildkitLimitBytes === null
+      ? null
+      : Math.round(req.buildkitLimitBytes / MIB)
   if (capMb !== null) onLog(`BuildKit may use up to ${capMb} MiB of memory`)
 
   const ctx: BuildContext = {
@@ -108,6 +119,7 @@ export async function buildImage(req: BuildRequest): Promise<void> {
     buildArgs: req.buildArgs,
     dockerfilePath: req.dockerfilePath,
     noCache: req.noCache,
+    railpackBuildCmd: req.railpackBuildCmd,
     onLog,
     timeoutMs: BUILD_TIMEOUT_MS,
     stall: {

@@ -79,6 +79,7 @@ import {
   setDashboardHost,
 } from "../settings.ts"
 import { renderPage } from "../views/render.ts"
+import { parseContainerPort } from "./container-port.ts"
 import { errorKeyFromQuery, withError } from "./errors.ts"
 import { checkGitSource } from "./git-source.ts"
 import { layout, statusFor } from "./layout.ts"
@@ -355,6 +356,12 @@ export const appRoutes = new Elysia()
       // The name field's pattern already refuses a bad name, so reaching this
       // is a hand-made request: a status page, not a notice.
       if (!isValidResourceName(body.name)) return statusFor(session, 400)
+      // Blank means "no port". The input's min/max refuses an out-of-range
+      // value, so a refusal here is almost always a hand-made request; the
+      // rare browser-valid spelling it also refuses (80.0, 1e3) gets the same
+      // status page.
+      const containerPort = parseContainerPort(body.containerPort)
+      if (!containerPort.ok) return statusFor(session, 400)
       const back = `/p/${environment.projectId}`
       if (!isValidImageRef(body.image)) {
         return redirect(withError(back, "image-invalid"), 303)
@@ -367,7 +374,7 @@ export const appRoutes = new Elysia()
         environmentId: environment.id,
         name: body.name,
         image: body.image,
-        containerPort: body.containerPort ?? null,
+        containerPort: containerPort.port,
         healthPath: body.healthPath?.trim() || null,
         memoryLimitMb: body.memoryLimitMb ?? config.defaultMemoryMb,
       })
@@ -382,7 +389,9 @@ export const appRoutes = new Elysia()
       body: t.Object({
         name: t.String(),
         image: t.String(),
-        containerPort: t.Optional(t.Numeric()),
+        // A string, not Numeric: an empty number input submits "". See
+        // container-port.ts.
+        containerPort: t.Optional(t.String()),
         healthPath: t.Optional(t.String()),
         memoryLimitMb: t.Optional(t.Numeric()),
         csrf: t.String(),
@@ -404,6 +413,8 @@ export const appRoutes = new Elysia()
       if (!environment) return statusFor(session, 404)
 
       if (!isValidResourceName(body.name)) return statusFor(session, 400)
+      const containerPort = parseContainerPort(body.containerPort)
+      if (!containerPort.ok) return statusFor(session, 400)
       const back = `/p/${environment.projectId}`
       if (findResourceByNameInEnv(environment.id, body.name)) {
         return redirect(withError(back, "resource-name-taken"), 303)
@@ -437,7 +448,7 @@ export const appRoutes = new Elysia()
         dockerfilePath: body.dockerfilePath?.trim() || null,
         buildContext: body.buildContext?.trim() || null,
         installationId,
-        containerPort: body.containerPort ?? null,
+        containerPort: containerPort.port,
         healthPath: body.healthPath?.trim() || null,
         memoryLimitMb: body.memoryLimitMb ?? config.defaultMemoryMb,
       })
@@ -458,7 +469,7 @@ export const appRoutes = new Elysia()
         pack: t.Optional(t.String()),
         dockerfilePath: t.Optional(t.String()),
         buildContext: t.Optional(t.String()),
-        containerPort: t.Optional(t.Numeric()),
+        containerPort: t.Optional(t.String()),
         healthPath: t.Optional(t.String()),
         memoryLimitMb: t.Optional(t.Numeric()),
         csrf: t.String(),
@@ -693,6 +704,11 @@ export const appRoutes = new Elysia()
       const ctx = getResourceContext(params.resourceId)
       if (!ctx) return statusFor(session, 404)
 
+      // Parsed before any write, so a refused request stores nothing — not
+      // even the image. Blank clears the port.
+      const containerPort = parseContainerPort(body.containerPort)
+      if (!containerPort.ok) return statusFor(session, 400)
+
       // The image field belongs to an image resource. A git resource builds its
       // own, so accepting one here would overwrite the repository spec and stop
       // it rebuilding — setResourceImage refuses, and this turns that refusal
@@ -707,7 +723,7 @@ export const appRoutes = new Elysia()
         setResourceImage(ctx.resource.id, body.image)
       }
       updateResource(ctx.resource.id, {
-        containerPort: body.containerPort ?? null,
+        containerPort: containerPort.port,
         healthPath: body.healthPath?.trim() || null,
         memoryLimitMb: body.memoryLimitMb ?? config.defaultMemoryMb,
       })
@@ -720,7 +736,7 @@ export const appRoutes = new Elysia()
     {
       body: t.Object({
         image: t.String(),
-        containerPort: t.Optional(t.Numeric()),
+        containerPort: t.Optional(t.String()),
         healthPath: t.Optional(t.String()),
         memoryLimitMb: t.Optional(t.Numeric()),
         csrf: t.String(),

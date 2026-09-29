@@ -178,6 +178,21 @@ describe("runBuilder", () => {
     await expect(run).rejects.not.toThrow(/ADVICE/)
   })
 
+  test("a rejected --webpack that musdash added says so, and where to override it", async () => {
+    // The package.json named Next.js 16 but an older one was installed; the
+    // flag came from the automatic switch, not from an inherited variable.
+    const run = sh(
+      'echo "#21 0.403 > next build --webpack"; echo "#21 0.862 Unknown or unexpected option: --webpack"; exit 1',
+      ctx({ railpackBuildCmd: "next build --webpack" }),
+    )
+
+    await expect(run).rejects.toThrow(/sh exited with code 1/)
+    await expect(run).rejects.toThrow(/RAILPACK_BUILD_CMD/)
+    await expect(run).rejects.toThrow(/this resource/)
+    await expect(run).rejects.not.toThrow(/inherited/)
+    await expect(run).rejects.not.toThrow(/project or environment/)
+  })
+
   test("any other failed build does not mention --webpack", async () => {
     const run = sh(
       'echo "#21 0.403 > next build --webpack"; echo "#21 1.2 Type error: Cannot find name foo"; exit 1',

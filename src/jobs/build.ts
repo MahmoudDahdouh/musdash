@@ -1,7 +1,16 @@
 import { cpSync, existsSync } from "node:fs"
+import { buildkitMemory } from "../build/bootstrap.ts"
 import { buildFingerprint, fingerprintKey } from "../build/fingerprint.ts"
 import { builtImageTag } from "../build/images.ts"
 import { buildImage, detectBuildPack } from "../build/index.ts"
+import {
+  belowTurbopackCap,
+  parseRailpackInfo,
+  readPackageJson,
+  readPackageLock,
+  resolveAutoWebpack,
+} from "../build/next-webpack.ts"
+import { railpackInfo } from "../build/railpack.ts"
 import {
   scanUnsupportedSource,
   UnsupportedSourceError,
@@ -130,6 +139,12 @@ export interface BuildOptions {
    * user did not pick.
    */
   commitSha?: string
+  /**
+   * Called with BuildKit's cap in MiB when this build switches a Next.js 16+
+   * app to webpack, before the build runs — so a switched build that then
+   * fails still records that it was switched.
+   */
+  onAutoWebpack?: (capMib: number) => void
 }
 
 /**
@@ -185,6 +200,13 @@ export async function buildFromSource(
   // the two calls, and the deployment row would record a commit that is not
   // the one that was built.
   const commit = await sourceFetcher.resolve(request)
+  // BuildKit's cap, read once for the whole build: the fingerprint, the
+  // webpack decision and the build's own "may use up to" line all use this
+  // reading, so they cannot disagree. Null when the daemon cannot be asked,
+  // which never switches anything.
+  const buildkitLimitBytes = await buildkitMemory().then(
+    (m) => m?.limitBytes ?? null,
+  )
   if (commit) {
     emit(`At commit ${commit.sha.slice(0, 7)}`)
     // Over every input that decides what the build produces, taken from the
@@ -199,6 +221,7 @@ export async function buildFromSource(
       dockerfilePath: source.dockerfilePath ?? null,
       buildContext: source.buildContext ?? null,
       buildVars: buildArgs,
+      buildkitBelowTurbopack: belowTurbopackCap(buildkitLimitBytes),
     })
     onCommit(commit, { repo: source.repo, fingerprint })
 
@@ -246,6 +269,19 @@ export async function buildFromSource(
         : source.pack
     emit(`Building with ${pack}`)
 
+    const railpackBuildCmd =
+      pack === "railpack"
+        ? await autoWebpack(
+            deploymentId,
+            dir,
+            contextDir,
+            buildkitLimitBytes,
+            buildArgs,
+            emit,
+            opts.onAutoWebpack,
+          )
+        : undefined
+
     await buildImage({
       contextDir,
       tag,
@@ -257,6 +293,8 @@ export async function buildFromSource(
       buildArgs,
       redactSecrets,
       noCache: config.buildNoCache,
+      buildkitLimitBytes,
+      railpackBuildCmd,
       onLog: emit,
     })
     return { image: tag, reused: false }
@@ -265,4 +303,48 @@ export async function buildFromSource(
     // images, and a failed build leaves the largest ones.
     removeBuildDir(deploymentId)
   }
+}
+
+/**
+ * The build command for a Railpack build, when a Next.js 16+ app has to leave
+ * Turbopack for webpack to fit BuildKit's cap; undefined otherwise.
+ *
+ * Each fact is gathered only when the decision asks for it (next-webpack.ts),
+ * so a large host reads nothing, an app that is not Next.js 16+ costs one
+ * package.json read, and only an eligible one runs `railpack info` and — under
+ * npm — parses its lockfile. `railpack info` gets the same build variables as
+ * the build. The deploy log line is fixed text plus two numbers — nothing
+ * from the repository reaches it, and the debug line for a skip carries only
+ * the reason.
+ */
+async function autoWebpack(
+  deploymentId: string,
+  buildDir: string,
+  contextDir: string,
+  limitBytes: number | null,
+  buildArgs: Record<string, string>,
+  emit: (line: string) => void,
+  onAutoWebpack: ((capMib: number) => void) | undefined,
+): Promise<string | undefined> {
+  const decision = await resolveAutoWebpack(
+    { limitBytes, buildEnv: buildArgs },
+    {
+      packageJson: () => readPackageJson(buildDir, contextDir),
+      railpackInfo: async () =>
+        parseRailpackInfo(await railpackInfo(contextDir, buildArgs)),
+      packageLock: () => readPackageLock(buildDir, contextDir),
+    },
+  )
+  if (!decision.switch) {
+    logger.debug(
+      { deploymentId, reason: decision.reason },
+      "Railpack build kept its own build command",
+    )
+    return undefined
+  }
+  emit(
+    `Next.js ${decision.nextMajor} needs about 1.25 GiB to build with Turbopack and BuildKit has ${decision.capMib} MiB here, so this build adds --webpack to the build script. Set RAILPACK_BUILD_CMD on this resource to choose the build command yourself.`,
+  )
+  onAutoWebpack?.(decision.capMib)
+  return decision.buildCmd
 }

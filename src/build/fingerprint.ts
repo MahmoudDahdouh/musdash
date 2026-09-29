@@ -35,6 +35,15 @@ export interface FingerprintInputs {
   buildContext: string | null
   /** env.build, post-interpolation. */
   buildVars: Readonly<Record<string, string>>
+  /**
+   * belowTurbopackCap(BuildKit's cap) — whether a Next.js 16+ app would be
+   * switched to webpack (next-webpack.ts). The same inputs build a different
+   * image on either side of it, so a host whose cap moved across it, or an
+   * upgrade that introduced the switch, rebuilds rather than reuses. Last in
+   * the canonical form, and not a label bump: adding it changes every
+   * fingerprint once anyway.
+   */
+  buildkitBelowTurbopack: boolean
 }
 
 /**
@@ -49,8 +58,15 @@ export function buildFingerprint(
   key: Buffer,
   inputs: FingerprintInputs,
 ): string {
-  const { commitSha, repo, pack, dockerfilePath, buildContext, buildVars } =
-    inputs
+  const {
+    commitSha,
+    repo,
+    pack,
+    dockerfilePath,
+    buildContext,
+    buildVars,
+    buildkitBelowTurbopack,
+  } = inputs
   const canonical = JSON.stringify({
     commitSha,
     repo,
@@ -60,6 +76,7 @@ export function buildFingerprint(
     buildVars: Object.keys(buildVars)
       .sort()
       .map((k) => [k, buildVars[k]]),
+    buildkitBelowTurbopack,
   })
   return createHmac("sha256", key).update(canonical).digest("hex")
 }

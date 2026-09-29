@@ -403,7 +403,7 @@
 
     <div class="field">
       <label class="label" for="<%= git %>-port">Container port <span class="opt">optional</span></label>
-      <input id="<%= git %>-port" name="containerPort" type="number" min="1" max="65535" placeholder="3000" aria-describedby="<%= git %>-port-hint" />
+      <input id="<%= git %>-port" name="containerPort" type="number" min="1" max="65535" value="3000" aria-describedby="<%= git %>-port-hint" />
       <p class="hint" id="<%= git %>-port-hint">The port the app listens on. Required to expose it over HTTPS.</p>
     </div>
 
