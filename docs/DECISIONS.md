@@ -3334,6 +3334,15 @@ with 900 MiB, and built inside BuildKit's 960 MiB through musdash. The
 10-minute stall window is unchanged — D50 calls it a guess to revisit, and a
 shorter one only for Turbopack would be another guess.
 
+Addendum: the advice now says to set the variable on the resource. Set on
+the environment, as it was on the 2GB host, it reached a Next.js 13 app too,
+whose `next build` rejects `--webpack` (`Unknown or unexpected option`), and
+the deploy reported only "railpack exited with code 1". A build that prints
+that rejection now says the flag does not exist before Next.js 16 and where
+an inherited `RAILPACK_BUILD_CMD` should live instead. Rejected: warning when
+`RAILPACK_BUILD_CMD` is saved on a project or environment, since a
+monorepo of Next.js 16 apps is a fair reason to put it there.
+
 **A git resource's empty deployments card says Deploy builds the latest
 commit on the branch**, using the same wording as the Deploy confirmation.
 

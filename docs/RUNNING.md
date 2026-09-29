@@ -621,8 +621,11 @@ Actions, for example — and deployed as an image.
 for a one-page app on the 2GB test host and stalls below that — more than the
 ~1 GiB BuildKit gets there. The same app built with webpack in 408 MiB. On a
 2GB host, add the build variable `RAILPACK_BUILD_CMD=npm run build --
---webpack` (or put `next build --webpack` in your Dockerfile); on 1GB, build
-elsewhere (D52).
+--webpack` on that resource (or put `next build --webpack` in your
+Dockerfile); on 1GB, build elsewhere (D52). Do not set it on the project or
+environment: every app there inherits it, and Next.js 15 and older fail with
+`Unknown or unexpected option: --webpack`, since they build with webpack
+already.
 
 Caddy's cap is sized the same way: a quarter of the host's memory, at least
 128 MiB and at most 512 MiB (D46) — 128 MiB on a 512MB host, 224 MiB on 1GB.

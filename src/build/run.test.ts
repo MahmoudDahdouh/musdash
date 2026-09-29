@@ -164,6 +164,29 @@ describe("runBuilder", () => {
     await expect(run).rejects.not.toThrow(/--webpack/)
   })
 
+  test("a Next.js build that rejects --webpack names the flag and where it came from", async () => {
+    // What the 2GB host printed for a Next.js 13 app that inherited
+    // `RAILPACK_BUILD_CMD=npm run build -- --webpack` from its environment.
+    const run = sh(
+      'echo "#21 0.403 > next build --webpack"; echo "#21 0.862 Unknown or unexpected option: --webpack"; exit 1',
+      ctx({ memoryAdvice: "ADVICE" }),
+    )
+
+    await expect(run).rejects.toThrow(/sh exited with code 1/)
+    await expect(run).rejects.toThrow(/no `--webpack` flag/)
+    await expect(run).rejects.toThrow(/RAILPACK_BUILD_CMD/)
+    await expect(run).rejects.not.toThrow(/ADVICE/)
+  })
+
+  test("any other failed build does not mention --webpack", async () => {
+    const run = sh(
+      'echo "#21 0.403 > next build --webpack"; echo "#21 1.2 Type error: Cannot find name foo"; exit 1',
+      ctx(),
+    )
+
+    await expect(run).rejects.toThrow(/sh exited with code 1$/)
+  })
+
   test("a gRPC ResourceExhausted that is not about memory is not called memory", async () => {
     // BuildKit's message-size error shares the status code, and an app's own
     // compiler output can name it too.
