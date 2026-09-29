@@ -1,7 +1,7 @@
 <div class="page-head">
   <nav class="crumbs" aria-label="Breadcrumb">
     <ol>
-      <li><a class="link-quiet" href="/">Projects</a></li>
+      <li><a class="link-quiet" href="/projects">Projects</a></li>
       <li aria-current="page"><%= it.project.name %></li>
     </ol>
   </nav>

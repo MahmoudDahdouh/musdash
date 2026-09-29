@@ -4274,3 +4274,39 @@ already points at Caddy. Assets after this slice: `app.js` 15.8 of 16 KB,
 **Known gap.** A deployment left `running` by a crash reads as running until
 lease recovery re-runs it (`resource-state.ts` documents the same for the
 sidebar); the toast makes that more visible. Not changed here.
+
+### D69 — the sidebar is Home, Projects, Settings, with Hugeicons
+
+The request: sidebar items Home, Projects and Settings, each with an icon from
+Hugeicons.
+
+**Three places.** `/` is now **Home**: the deploys in flight (the same
+`activeDeployments()` as the toast), the ten newest deployments across every
+resource (`recentDeployments()`), and how many resources are in each state. The
+project grid moved to **`/projects`**, which is also where `POST /projects`
+always lived; breadcrumbs, the status page's "Back to projects" and a deleted
+project's redirect point there. The project and environment tree stays nested
+under Projects, and Settings stays pinned at the bottom. `LayoutOptions.section`
+(`home`, `projects`, `settings`) replaces the `activeSettings` flag and the
+"highlight Projects when nothing else is active" rule; passing
+`activeProjectId` implies `projects`. Exactly one link says
+`aria-current="page"`, and inside a project it is the tree's link, not
+Projects — `src/views/nav.test.ts` pins that down.
+
+**The icons are copied, not installed.** `@hugeicons/core-free-icons` 4.3.5 is
+MIT and ships 80 MB of per-icon modules; using four kilobytes of it through the
+package would need tree-shaking, which is a build step. The 16 symbols the
+dashboard uses (15 replacing Lucide one for one, plus `i-home` and `i-folder`)
+were converted to geometry-only `<symbol>`s with coordinates rounded to one
+decimal, which is invisible at 16–24 px. The whole Lucide set was replaced
+rather than mixed, because Hugeicons are drawn at a 1.5 stroke and Lucide at 2;
+`.icon` now strokes at 1.5 and the brand mark keeps 2 through its own
+attribute. The MIT notice sits in an Eta comment beside the sprite, so it
+travels with the copied geometry but never reaches a page. Rollback uses
+`Undo02`, since this set's `RotateLeft01` is a hand gesture; Settings and Log
+out use `Settings03` and `Logout05`, a third the size of the first choices.
+
+**Cost.** The sprite's symbols are 4.6 KB of every signed-in page, against
+2.7 KB of Lucide before; turning the sprite's HTML comment into an Eta comment
+took 0.7 KB of that back. Templates are not under the asset gate. `app.css` is
+31.6 of 32 KB after this slice; Home needed no new classes.

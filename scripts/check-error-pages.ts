@@ -100,7 +100,7 @@ const SENTENCES: Record<ErrorKey, string> = {
 const FORBIDDEN_SENTENCE =
   "Nothing was saved. Go back, reload that page, then try again."
 const HTML_TYPE = "text/html; charset=utf-8"
-const BACK_LINK = '<a class="btn" href="/">Back to projects</a>'
+const BACK_LINK = '<a class="btn" href="/projects">Back to projects</a>'
 const SIDEBAR = '<aside class="sidebar"'
 /** The tables a refused form must leave exactly as they were (criterion 1). */
 const TABLES = [
@@ -375,7 +375,8 @@ function statusProblems(
     problems.push("sidebar on a signed-out page")
   }
   if (!r.body.includes(`<h1>${heading}</h1>`)) problems.push(`no "${heading}"`)
-  if (!r.body.includes(BACK_LINK)) problems.push('no href="/" back link')
+  if (!r.body.includes(BACK_LINK))
+    problems.push('no href="/projects" back link')
   return problems
 }
 

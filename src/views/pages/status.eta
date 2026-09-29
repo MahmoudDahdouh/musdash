@@ -16,5 +16,5 @@
   <h1>Something went wrong</h1>
   <p>The details are in the server logs: <code>journalctl -u musdash</code>.</p>
   <% } %>
-  <p><a class="btn" href="/">Back to projects</a></p>
+  <p><a class="btn" href="/projects">Back to projects</a></p>
 </div>

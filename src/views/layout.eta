@@ -16,38 +16,61 @@
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>
-    <!--
-      Icon sprite. Inline <symbol> definitions referenced by <use href="#i-...">.
-      An icon library would be 625KB at the very smallest for the ~1KB of
-      geometry actually used here, and would need tree-shaking — a build step
-      this project does not have. Geometry from Lucide (ISC licence).
-      Outside the signed-in branch because login and setup notices use it too.
+    <%/*
+      Icon sprite: inline <symbol>s referenced by <use href="#i-...">. An
+      Eta comment, so none of this note reaches the page.
 
+      Geometry from the Hugeicons free set, stroke rounded (D69), copied from
+      @hugeicons/core-free-icons 4.3.5 with coordinates rounded to one decimal.
+      Copied rather than installed: the package is 80 MB of per-icon modules
+      for about 4 KB used here, and taking a subset would need a build step
+      this project does not have. i-mark is musdash's own.
+
+      MIT License. Copyright (c) 2025 Hugeicons. Permission is hereby granted,
+      free of charge, to any person obtaining a copy of this software and
+      associated documentation files (the "Software"), to deal in the Software
+      without restriction, including without limitation the rights to use,
+      copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+      of the Software, and to permit persons to whom the Software is furnished
+      to do so, subject to the following conditions: The above copyright notice
+      and this permission notice shall be included in all copies or substantial
+      portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+      WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+      WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+      NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+      LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+      CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+      THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+      Outside the signed-in branch because login and setup notices use it too.
       Two things here are load-bearing:
       - The wrapper is zero-sized and overflow-hidden rather than display:none,
         which stops <use> rendering in some engines.
-      - No symbol hard-codes `stroke`, so `currentColor` on .icon inherits
-        through <use> and an icon follows its button's colour.
-    -->
+      - No symbol sets `stroke`, so `currentColor` on .icon inherits through
+        <use> and an icon follows its button's colour. Dots are drawn as tiny
+        stroked paths, never fills, for the same reason.
+    */%>
     <svg
       aria-hidden="true"
       style="position: absolute; width: 0; height: 0; overflow: hidden"
     >
-      <symbol id="i-mark" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="4" /><rect width="6" height="6" x="9" y="9" rx="1" fill="currentColor" /></symbol>
-      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14" /><path d="M12 5v14" /></symbol>
-      <symbol id="i-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" /></symbol>
-      <symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></symbol>
-      <symbol id="i-square" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" /></symbol>
-      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
-      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M10 11v6" /><path d="M14 11v6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></symbol>
-      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></symbol>
-      <symbol id="i-log-out" viewBox="0 0 24 24"><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /></symbol>
-      <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></symbol>
-      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 5h16" /><path d="M4 12h16" /><path d="M4 19h16" /></symbol>
-      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></symbol>
-      <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /><path d="M12 9v4" /><path d="M12 17h.01" /></symbol>
-      <symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="m15 9-6 6" /><path d="m9 9 6 6" /></symbol>
-      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></symbol>
+      <symbol id="i-mark" viewBox="0 0 24 24" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="4" /><rect width="6" height="6" x="9" y="9" rx="1" fill="currentColor" /></symbol>
+      <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 12V14.5C3 17.8 3 19.4 4 20.5C5.1 21.5 6.7 21.5 10 21.5H14C17.3 21.5 18.9 21.5 20 20.5C21 19.4 21 17.8 21 14.5V12C21 10.3 21 9.5 20.6 8.7C20.3 8 19.6 7.5 18.3 6.5L16.3 4.9C14.2 3.3 13.2 2.5 12 2.5C10.8 2.5 9.8 3.3 7.7 4.9L5.7 6.5C4.4 7.5 3.7 8 3.4 8.7C3 9.5 3 10.3 3 12Z" /></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M8 7H16.8C18.9 7 19.9 7 20.7 7.5C21 7.7 21.3 8 21.5 8.3C22 9.1 22 10.1 22 12.3C22 15.8 22 17.5 21.2 18.8C20.8 19.3 20.3 19.8 19.8 20.2C18.5 21 16.8 21 13.3 21H12C7.3 21 4.9 21 3.5 19.5C2 18.1 2 15.7 2 11V7.9C2 6.1 2 5.2 2.4 4.5C2.7 4.1 3.1 3.7 3.5 3.4C4.2 3 5.1 3 6.9 3C8.1 3 8.7 3 9.2 3.2C10.4 3.6 10.8 4.7 11.4 5.7L12 7" /></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 4V20M20 12H4" /></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M18.9 12.8C18.5 14.2 16.9 15.1 13.5 17C10.3 18.9 8.7 19.8 7.4 19.4C6.8 19.3 6.4 19 6 18.6C5 17.6 5 15.7 5 12C5 8.3 5 6.4 6 5.4C6.4 5 6.8 4.7 7.4 4.6C8.7 4.2 10.3 5.1 13.5 7C16.9 8.9 18.5 9.8 18.9 11.2C19 11.7 19 12.3 18.9 12.8Z" /></symbol>
+      <symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M12 21C17 21 21 17 21 12C21 7 17 3 12 3C8.7 3 5.8 4.8 4.2 7.5" /><path d="M3 3V4.3C3 6.5 3 7.6 3.7 8.2C4.4 8.8 5.5 8.6 7.7 8.2L9 8" /></symbol>
+      <symbol id="i-square" viewBox="0 0 24 24"><path d="M4 12C4 8.7 4 7.1 4.8 5.9C5.1 5.5 5.5 5.1 5.9 4.8C7.1 4 8.7 4 12 4C15.3 4 16.9 4 18.1 4.8C18.5 5.1 18.9 5.5 19.2 5.9C20 7.1 20 8.7 20 12C20 15.3 20 16.9 19.2 18.1C18.9 18.5 18.5 18.9 18.1 19.2C16.9 20 15.3 20 12 20C8.7 20 7.1 20 5.9 19.2C5.5 18.9 5.1 18.5 4.8 18.1C4 16.9 4 15.3 4 12Z" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 14L8.5 17.5L19 6.5" /></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M19.5 5.5L18.9 15.5C18.7 18.1 18.6 19.4 18 20.3C17.7 20.7 17.3 21.1 16.8 21.4C15.8 22 14.6 22 12 22C9.4 22 8.1 22 7.2 21.4C6.7 21.1 6.3 20.7 6 20.3C5.3 19.4 5.3 18.1 5.1 15.5L4.5 5.5" /><path d="M3 5.5H21M16.1 5.5L15.4 4.1C14.9 3.2 14.7 2.7 14.3 2.4C14.2 2.3 14.1 2.3 14 2.2C13.6 2 13.1 2 12 2C11 2 10.4 2 10 2.2C9.9 2.3 9.8 2.3 9.7 2.4C9.3 2.7 9.1 3.2 8.7 4.2L8.1 5.5" /><path d="M9.5 16.5L9.5 10.5" /><path d="M14.5 16.5L14.5 10.5" /></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6L6 18M18 18L6 6" /></symbol>
+      <symbol id="i-log-out" viewBox="0 0 24 24"><path d="M7 3C6.1 3 5.6 3 5.2 3.1C4.2 3.4 3.4 4.2 3.1 5.2C3 5.6 3 6.1 3 7L3 17C3 17.9 3 18.4 3.1 18.8C3.4 19.8 4.2 20.6 5.2 20.9C5.6 21 6.1 21 7 21" /><path d="M16.5 16.5C16.5 16.5 21 13.2 21 12C21 10.8 16.5 7.5 16.5 7.5M20 12L8 12" /></symbol>
+      <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 18.5V5" /><path d="M18 13C18 13 13.6 19 12 19C10.4 19 6 13 6 13" /></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 5L20 5" /><path d="M4 12L20 12" /><path d="M4 19L20 19" /></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="M12 16V12" /><path d="M12.1 8.3H12M12.3 8.3C12.3 8.1 12.1 8 12 8C11.9 8 11.8 8.1 11.8 8.3C11.8 8.4 11.9 8.5 12 8.5C12.1 8.5 12.3 8.4 12.3 8.3Z" /></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="M13.9 21H10.1C5.4 21 3.1 21 2.3 19.5C1.4 18 2.6 16 5 12L6.9 8.8C9.2 4.9 10.3 3 12 3C13.7 3 14.8 4.9 17.1 8.8L19 12C21.4 16 22.6 18 21.7 19.5C20.9 21 18.6 21 13.9 21Z" /><path d="M12 9V13" /><path d="M12.1 16.8H12M12.3 16.8C12.3 16.9 12.1 17 12 17C11.9 17 11.8 16.9 11.8 16.8C11.8 16.6 11.9 16.5 12 16.5C12.1 16.5 12.3 16.6 12.3 16.8Z" /></symbol>
+      <symbol id="i-x-circle" viewBox="0 0 24 24"><path d="M22 12C22 6.5 17.5 2 12 2C6.5 2 2 6.5 2 12C2 17.5 6.5 22 12 22C17.5 22 22 17.5 22 12Z" /><path d="M15 15L9 9M9 15L15 9" /></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M15.5 12C15.5 13.9 13.9 15.5 12 15.5C10.1 15.5 8.5 13.9 8.5 12C8.5 10.1 10.1 8.5 12 8.5C13.9 8.5 15.5 10.1 15.5 12Z" /><path d="M20.8 9.2C21.6 10.5 22 11.2 22 12C22 12.8 21.6 13.5 20.8 14.8L18.9 18.2C18.1 19.5 17.7 20.2 17 20.6C16.3 21 15.5 21 13.9 21L10.1 21C8.5 21 7.7 21 7 20.6C6.3 20.2 5.9 19.5 5.1 18.2L3.2 14.8C2.4 13.5 2 12.8 2 12C2 11.2 2.4 10.5 3.2 9.2L5.1 5.8C5.9 4.5 6.3 3.8 7 3.4C7.7 3 8.5 3 10.1 3L13.9 3C15.5 3 16.3 3 17 3.4C17.7 3.8 18.1 4.5 18.9 5.8L20.8 9.2Z" /></symbol>
     </svg>
     <% if (it.user) { %>
 
@@ -95,11 +118,24 @@
           aria-label="Main"
           @click="$event.target.closest('a') && (navOpen = false)"
         >
+          <%/* Home, Projects and Settings are the three places; the project
+               tree sits under Projects. it.section names the current one and
+               only that link says aria-current="page" — inside a project the
+               tree's own link carries aria-current instead (D69). */%>
           <a
-            class="nav-top <%= !it.activeProjectId && !it.activeSettings ? 'active' : '' %>"
+            class="nav-top <%= it.section === 'home' ? 'active' : '' %>"
             href="/"
-            <%~ !it.activeProjectId && !it.activeSettings ? 'aria-current="page"' : '' %>
+            <%~ it.section === 'home' ? 'aria-current="page"' : '' %>
           >
+            <svg class="icon" aria-hidden="true"><use href="#i-home" /></svg>
+            Home
+          </a>
+          <a
+            class="nav-top <%= it.section === 'projects' ? 'active' : '' %>"
+            href="/projects"
+            <%~ it.section === 'projects' && !it.activeProjectId ? 'aria-current="page"' : '' %>
+          >
+            <svg class="icon" aria-hidden="true"><use href="#i-folder" /></svg>
             Projects
           </a>
 
@@ -138,9 +174,9 @@
           <% } %>
 
           <a
-            class="nav-top nav-settings <%= it.activeSettings ? 'active' : '' %>"
+            class="nav-top nav-settings <%= it.section === 'settings' ? 'active' : '' %>"
             href="/settings"
-            <%~ it.activeSettings ? 'aria-current="page"' : '' %>
+            <%~ it.section === 'settings' ? 'aria-current="page"' : '' %>
           >
             <svg class="icon" aria-hidden="true"><use href="#i-settings" /></svg>
             Settings

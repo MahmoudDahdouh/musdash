@@ -7,6 +7,23 @@ and before commit, per `CLAUDE.md`. Slices are ordered by dependency: 1 → 2 �
 3 are the data layer, 4 → 5 are the shell. A slice's spec is still written
 fresh at build time; this file fixes the design so those specs do not drift.
 
+**Status (2026-09-29): all five slices are built**, one commit each, with the
+section 9 defaults. `docs/DECISIONS.md` D65–D69 record what was built. Where the
+build differs from this plan:
+
+- The display-name rule also allows `.`, `_` and `-`, so every existing name
+  (a slug) stays valid on rename. `slugify` lives in `src/names.ts`, not
+  `src/docker/client.ts`.
+- Decision numbers moved: the toast is D68 and the icons are D69.
+- Project delete asks only for the typed name, with no confirm dialog on top.
+- The installer writes the public IP commented out when it is a private or
+  carrier-grade NAT address. A one-time upgrade step stores the wildcard
+  hostnames old resources were routed on, which the plan did not foresee.
+- Settings and Log out use `Settings03` and `Logout05`, and rollback uses
+  `Undo02`; the sprite is 4.6 KB rather than under 4 KB.
+- No JS budget raise was needed: `app.js` ended at 15.8 of 16 KB.
+- The toast sits under the drawer's scrim, so an open drawer covers it.
+
 Contents
 
 1. [Summary of what changes](#1-summary-of-what-changes)

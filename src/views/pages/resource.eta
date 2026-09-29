@@ -1,7 +1,7 @@
 <div class="page-head" x-data="resourceStatus('<%= it.resource.id %>', '<%= it.state %>')">
   <nav class="crumbs" aria-label="Breadcrumb">
     <ol>
-      <li><a class="link-quiet" href="/">Projects</a></li>
+      <li><a class="link-quiet" href="/projects">Projects</a></li>
       <li><a class="link-quiet" href="/p/<%= it.project.id %>"><%= it.project.name %></a></li>
       <li><a class="link-quiet" href="/p/<%= it.project.id %>#env-<%= it.environment.id %>"><%= it.environment.name %></a></li>
       <li aria-current="page"><%= it.resource.name %></li>

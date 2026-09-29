@@ -512,26 +512,34 @@ knows everything. Do not construct a parallel client-side store to mirror it.
 
 ### Routes
 
-| Method | Path                         | Purpose                                                        |
-| ------ | ---------------------------- | -------------------------------------------------------------- |
-| GET    | `/login`                     | Login form                                                     |
-| POST   | `/login`                     | Create session, redirect to `/`                                |
-| POST   | `/logout`                    | Destroy session                                                |
-| GET    | `/setup`                     | First-run admin creation (only when users table is empty)      |
-| GET    | `/`                          | Project grid                                                   |
-| POST   | `/projects`                  | Create project (auto-creates a `production` environment)       |
-| GET    | `/p/:projectId`              | Environments and their resource cards                          |
-| POST   | `/p/:projectId/environments` | Create environment                                             |
-| GET    | `/r/:resourceId`             | Resource detail — tabs: Overview, Logs, Env, Domains, Settings |
-| POST   | `/r/:resourceId/deploy`      | Enqueue deploy, redirect immediately                           |
-| POST   | `/r/:resourceId/stop`        | Enqueue stop                                                   |
-| POST   | `/r/:resourceId/rollback`    | Enqueue deploy of `previous_image`                             |
-| POST   | `/r/:resourceId/env`         | Upsert env vars (bulk textarea, `KEY=value` per line)          |
-| POST   | `/r/:resourceId/domains`     | Add custom domain                                              |
-| DELETE | `/r/:resourceId`             | Enqueue remove, then delete row                                |
-| GET    | `/r/:resourceId/events`      | **SSE** — status changes                                       |
-| GET    | `/r/:resourceId/logs`        | **SSE** — live container logs                                  |
-| GET    | `/d/:deploymentId/logs`      | **SSE** — build/deploy logs                                    |
+| Method | Path                          | Purpose                                                         |
+| ------ | ----------------------------- | --------------------------------------------------------------- |
+| GET    | `/login`                      | Login form                                                      |
+| POST   | `/login`                      | Create session, redirect to `/`                                 |
+| POST   | `/logout`                     | Destroy session                                                 |
+| GET    | `/setup`                      | First-run admin creation (only when users table is empty)       |
+| GET    | `/`                           | Home: deploys in flight, recent deployments, state counts (D69) |
+| GET    | `/projects`                   | Project grid (D69)                                              |
+| POST   | `/projects`                   | Create project (auto-creates a `production` environment)        |
+| GET    | `/p/:projectId`               | Environments and resource cards; Variables and Settings tabs    |
+| POST   | `/p/:projectId/settings`      | Rename, edit description (D67)                                  |
+| POST   | `/p/:projectId/delete`        | Enqueue `remove_project`, typed name to confirm (D67)           |
+| POST   | `/p/:projectId/environments`  | Create environment                                              |
+| POST   | `/e/:environmentId/settings`  | Rename environment (D67)                                        |
+| POST   | `/e/:environmentId/delete`    | Enqueue `remove_environment` (D67)                              |
+| GET    | `/r/:resourceId`              | Resource detail — tabs: Overview, Logs, Env, Domains, Settings  |
+| POST   | `/r/:resourceId/deploy`       | Enqueue deploy, redirect immediately                            |
+| POST   | `/r/:resourceId/stop`         | Enqueue stop                                                    |
+| POST   | `/r/:resourceId/rollback`     | Enqueue deploy of `previous_image`                              |
+| POST   | `/r/:resourceId/env`          | Upsert env vars (bulk textarea, `KEY=value` per line)           |
+| POST   | `/r/:resourceId/domains`      | Add custom domain                                               |
+| POST   | `/r/:resourceId/domains/auto` | Generate the automatic domain it lacks (D66)                    |
+| POST   | `/r/:resourceId/rename`       | Rename; the slug never changes (D65, D67)                       |
+| POST   | `/r/:resourceId/delete`       | Enqueue remove, which deletes the row last                      |
+| GET    | `/events`                     | **SSE** — queued and running deployments, for the toast (D68)   |
+| GET    | `/r/:resourceId/events`       | **SSE** — status changes                                        |
+| GET    | `/r/:resourceId/logs`         | **SSE** — live container logs                                   |
+| GET    | `/d/:deploymentId/logs`       | **SSE** — build/deploy logs                                     |
 
 ### SSE event format
 

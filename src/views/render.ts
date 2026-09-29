@@ -11,6 +11,7 @@ import type { ActiveDeployment } from "../db/queries.ts"
 // src/views/ does not exist inside it. Same for public/. This is trap 6, and it
 // is invisible until someone runs the release artifact.
 import forbiddenSrc from "./forbidden.eta" with { type: "text" }
+import homeSrc from "./pages/home.eta" with { type: "text" }
 import layoutSrc from "./layout.eta" with { type: "text" }
 import deploymentSrc from "./pages/deployment.eta" with { type: "text" }
 import loginSrc from "./pages/login.eta" with { type: "text" }
@@ -38,6 +39,7 @@ eta.loadTemplate("@errors", errorsPartialSrc)
 eta.loadTemplate("@deploy-image", deployImagePartialSrc)
 
 const PAGES = {
+  home: homeSrc,
   setup: setupSrc,
   login: loginSrc,
   projects: projectsSrc,
@@ -78,6 +80,8 @@ export interface NavProjectView {
   environments: NavEnvironment[]
 }
 
+export type NavSection = "home" | "projects" | "settings"
+
 export interface LayoutData {
   title: string
   user?: { email: string } | null
@@ -89,8 +93,8 @@ export interface LayoutData {
   nav?: NavProjectView[]
   activeProjectId?: string
   activeEnvironmentId?: string
-  /** Highlights the sidebar's Settings link. */
-  activeSettings?: boolean
+  /** Which of the sidebar's three places this page belongs to (D69). */
+  section?: NavSection
   /** This process's resident memory in MiB. Set only for a signed-in render. */
   rssMb?: number
   /** Queued and running deployments, for the activity toast. */
@@ -121,7 +125,7 @@ export function renderPage(
     // then never accidentally match a missing value.
     activeProjectId: layout.activeProjectId ?? "",
     activeEnvironmentId: layout.activeEnvironmentId ?? "",
-    activeSettings: layout.activeSettings ?? false,
+    section: layout.section ?? "",
     version: musdashVersion,
     assetUrl,
     body,

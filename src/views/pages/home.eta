@@ -1,0 +1,87 @@
+<div class="page-head">
+  <div class="page-title"><h1>Home</h1></div>
+</div>
+
+<% if (it.projectCount === 0) { %>
+<div class="empty card">
+  <svg class="icon" aria-hidden="true"><use href="#i-mark" /></svg>
+  <h2>Nothing deployed yet</h2>
+  <p class="muted">
+    Start with a project. It comes with a <code>production</code> environment,
+    and each environment holds the apps you deploy.
+  </p>
+  <a class="btn btn-primary" href="/projects">
+    <svg class="icon" aria-hidden="true"><use href="#i-folder" /></svg>
+    Go to Projects
+  </a>
+</div>
+<% } else { %>
+<div class="stack">
+<%
+  /* Counts per state, in the order someone scanning for trouble wants them. */
+  var order = ['failed', 'unhealthy', 'deploying', 'queued', 'healthy', 'stopped']
+%>
+<div class="grid">
+  <a class="card project" href="/projects">
+    <h2 class="card-title">Projects</h2>
+    <div class="meta">
+      <span><%= it.projectCount %> project<%= it.projectCount === 1 ? '' : 's' %></span>
+      <span><%= it.resourceCount %> resource<%= it.resourceCount === 1 ? '' : 's' %></span>
+    </div>
+  </a>
+  <div class="card">
+    <h2 class="card-title">Resources</h2>
+    <% if (it.resourceCount === 0) { %>
+    <p class="muted">None yet. Add one from a project.</p>
+    <% } else { %>
+    <div class="meta">
+      <% order.forEach(function (state) { if (it.states[state]) { %>
+      <span><%= it.states[state] %> <%~ include("@status", { state: state, live: false }) %></span>
+      <% } }) %>
+    </div>
+    <% } %>
+  </div>
+</div>
+
+<div class="card stack">
+  <h2 class="card-title">In progress</h2>
+  <% if (it.active.length === 0) { %>
+  <p class="muted">Nothing is deploying right now.</p>
+  <% } else { %>
+  <ul class="plain stack">
+    <% it.active.forEach(function (d) { %>
+    <li class="row between gap">
+      <a href="/d/<%= d.id %>"><%= d.name %></a>
+      <%~ include("@status", { state: d.status, live: false }) %>
+    </li>
+    <% }) %>
+  </ul>
+  <% } %>
+</div>
+
+<div class="card stack">
+  <h2 class="card-title">Recent deployments</h2>
+  <% if (it.recent.length === 0) { %>
+  <p class="muted">No deployments yet. Open a resource and press Deploy.</p>
+  <% } else { %>
+  <div class="table-scroll">
+    <table class="table">
+      <thead>
+        <tr><th>Resource</th><th>Trigger</th><th>Duration</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <% it.recent.forEach(function (d) { %>
+        <tr>
+          <td><a href="/d/<%= d.id %>"><%= d.projectName %> / <%= d.resourceName %></a></td>
+          <td><%= d.trigger %></td>
+          <td><%= d.duration %></td>
+          <td><%~ include("@status", { state: d.status, live: false }) %></td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+  <% } %>
+</div>
+</div>
+<% } %>

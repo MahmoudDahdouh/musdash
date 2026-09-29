@@ -25,7 +25,9 @@ import {
   getResourceContext,
   getSetting,
   getSharedEnvText,
+  activeDeployments,
   latestDeploymentStatus,
+  listAllResources,
   listDeployments,
   listDomains,
   listEnvironments,
@@ -33,6 +35,7 @@ import {
   listProjects,
   listResources,
   listSharedEnvKeys,
+  recentDeployments,
   resolveEnvKeys,
   resourceImage,
   setAutoDeploy,
@@ -240,7 +243,40 @@ export const appRoutes = new Elysia()
 
   // ------------------------------------------------------------- projects
 
+  /**
+   * Home (D69): what is happening across every project — deploys in flight,
+   * the latest deployments, and how many resources are in each state. Reads
+   * only SQLite, like every page.
+   */
   .get("/", ({ session }) => {
+    const projects = listProjects()
+    const states: Record<string, number> = {}
+    let resourceCount = 0
+    for (const resource of listAllResources()) {
+      resourceCount++
+      const state = resourceState(resource, latestDeploymentStatus(resource.id))
+      states[state] = (states[state] ?? 0) + 1
+    }
+    const recent = recentDeployments(10).map((d) => ({
+      ...d,
+      duration: formatDuration(d.startedAt, d.finishedAt),
+    }))
+    return html(
+      renderPage(
+        "home",
+        {
+          projectCount: projects.length,
+          resourceCount,
+          states,
+          active: activeDeployments(),
+          recent,
+        },
+        layout(session, "Home", { section: "home" }),
+      ),
+    )
+  })
+
+  .get("/projects", ({ session }) => {
     const projects = listProjects().map((project) => {
       const envs = listEnvironments(project.id)
       return {
@@ -253,7 +289,7 @@ export const appRoutes = new Elysia()
       renderPage(
         "projects",
         { projects, csrf: session?.csrfToken },
-        layout(session, "Projects"),
+        layout(session, "Projects", { section: "projects" }),
       ),
     )
   })
@@ -407,7 +443,7 @@ export const appRoutes = new Elysia()
       if (!findPendingJob("remove_project", { projectId: project.id })) {
         enqueue("remove_project", { projectId: project.id })
       }
-      return redirect("/", 303)
+      return redirect("/projects", 303)
     },
     {
       body: t.Object({
@@ -1150,7 +1186,7 @@ export const appRoutes = new Elysia()
         // first route to hand it one; the page no longer renders its own.
         {
           ...layout(session, "Settings", {
-            activeSettings: true,
+            section: "settings",
             errorKey: errorKeyFromQuery(query.error),
           }),
           flash: view.flash,

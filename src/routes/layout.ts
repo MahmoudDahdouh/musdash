@@ -1,7 +1,7 @@
 import type { SessionUser } from "../auth.ts"
 import { activeDeployments, navTree } from "../db/queries.ts"
 import { statusPage } from "../http.ts"
-import type { LayoutData } from "../views/render.ts"
+import type { LayoutData, NavSection } from "../views/render.ts"
 import type { ErrorKey } from "./errors.ts"
 
 /**
@@ -15,7 +15,11 @@ import type { ErrorKey } from "./errors.ts"
 export interface LayoutOptions {
   activeProjectId?: string
   activeEnvironmentId?: string
-  activeSettings?: boolean
+  /**
+   * Which sidebar place to highlight. A page inside a project needs none:
+   * passing activeProjectId implies "projects".
+   */
+  section?: NavSection
   wide?: boolean
   /** A key from a refused form's redirect; the layout shows its sentence. */
   errorKey?: ErrorKey | null
@@ -38,7 +42,8 @@ export function layout(
     active: session ? activeDeployments() : [],
     activeProjectId: options.activeProjectId,
     activeEnvironmentId: options.activeEnvironmentId,
-    activeSettings: options.activeSettings,
+    section:
+      options.section ?? (options.activeProjectId ? "projects" : undefined),
     wide: options.wide,
     errorKey: options.errorKey ?? null,
     // Read fresh on every render and never stored: the sidebar instrument is a

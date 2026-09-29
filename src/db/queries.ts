@@ -1350,6 +1350,42 @@ export function activeDeployments(): ActiveDeployment[] {
     }))
 }
 
+/** One deployment row for the Home page's recent list. */
+export interface RecentDeployment {
+  id: string
+  status: DeploymentStatus
+  trigger: string
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  resourceId: string
+  resourceName: string
+  projectName: string
+}
+
+/** The newest deployments across every resource, cancelled ones included. */
+export function recentDeployments(limit = 10): RecentDeployment[] {
+  return orm
+    .select({
+      id: deployments.id,
+      status: deployments.status,
+      trigger: deployments.trigger,
+      createdAt: deployments.createdAt,
+      startedAt: deployments.startedAt,
+      finishedAt: deployments.finishedAt,
+      resourceId: deployments.resourceId,
+      resourceName: resources.name,
+      projectName: projects.name,
+    })
+    .from(deployments)
+    .innerJoin(resources, eq(resources.id, deployments.resourceId))
+    .innerJoin(environments, eq(environments.id, resources.environmentId))
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .orderBy(desc(deployments.createdAt))
+    .limit(limit)
+    .all()
+}
+
 /** The ids of a resource's deployments still waiting in the queue. */
 export function queuedDeploymentIds(resourceId: string): string[] {
   return orm

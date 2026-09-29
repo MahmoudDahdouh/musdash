@@ -226,11 +226,6 @@ select:focus-visible {
   padding-top: var(--s-3);
   border-top: 1px solid var(--border);
   border-radius: 0;
-  /* Overrides .nav-top's display:block so the gear sits on the text baseline.
-     .icon is already sized in em and carries flex:none, so it needs nothing. */
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
 }
 
 .sidebar-foot {
@@ -281,9 +276,14 @@ select:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Flex, over the block above, so each icon sits on its text's baseline. .icon
+   is sized in em and carries flex:none, so it needs nothing. */
 .nav-top {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
   font-weight: 550;
-  margin-bottom: var(--s-2);
+  margin-bottom: var(--s-1);
 }
 .nav-project {
   font-weight: 550;
@@ -751,7 +751,8 @@ button {
   flex: none;
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  /* Hugeicons are drawn for 1.5 on a 24 grid (D69). */
+  stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1326,12 +1327,12 @@ form:has(> .scope-boxes) {
 }
 
 /* The activity toast: pinned bottom-right while a deploy is queued or running.
-   Above the drawer (20), below the skip link (30); dialogs are top layer. */
+   Under the drawer's scrim (10), so an open drawer on a phone covers it. */
 .toast {
   position: fixed;
   right: var(--s-4);
   bottom: var(--s-4);
-  z-index: 25;
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: var(--s-2);
