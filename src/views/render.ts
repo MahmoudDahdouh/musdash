@@ -1,5 +1,4 @@
 import { Eta } from "eta"
-import type { ResourceState } from "../events.ts"
 import type { ActiveDeployment } from "../db/queries.ts"
 
 // Templates and assets are imported statically as text, NOT read from disk at
@@ -62,24 +61,6 @@ export const assets = {
   },
 } as const
 
-export interface NavEnvironment {
-  id: string
-  name: string
-  /** The worst state among its resources; null when it has none. */
-  state: ResourceState | null
-}
-
-/**
- * Structurally identical to the data layer's NavProject, but declared here so
- * the view layer keeps its independence from src/db — render.ts imports
- * nothing from there today, and the shapes stay assignable without a cast.
- */
-export interface NavProjectView {
-  id: string
-  name: string
-  environments: NavEnvironment[]
-}
-
 export type NavSection = "home" | "projects" | "settings"
 
 export interface LayoutData {
@@ -90,9 +71,7 @@ export interface LayoutData {
   /** Shown as an error notice, over `flash`. Words for it live in @errors. */
   errorKey?: string | null
   wide?: boolean
-  nav?: NavProjectView[]
   activeProjectId?: string
-  activeEnvironmentId?: string
   /** Which of the sidebar's three places this page belongs to (D69). */
   section?: NavSection
   /** This process's resident memory in MiB. Set only for a signed-in render. */
@@ -119,12 +98,10 @@ export function renderPage(
       ? { kind: "error", text: errorText }
       : (layout.flash ?? null),
     wide: layout.wide ?? false,
-    nav: layout.nav ?? [],
     active: layout.active ?? [],
     // Empty string rather than undefined: an id comparison in the template can
     // then never accidentally match a missing value.
     activeProjectId: layout.activeProjectId ?? "",
-    activeEnvironmentId: layout.activeEnvironmentId ?? "",
     section: layout.section ?? "",
     version: musdashVersion,
     assetUrl,

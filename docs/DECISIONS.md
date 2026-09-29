@@ -4295,14 +4295,10 @@ Hugeicons.
 resource (`recentDeployments()`), and how many resources are in each state. The
 project grid moved to **`/projects`**, which is also where `POST /projects`
 always lived; breadcrumbs, the status page's "Back to projects" and a deleted
-project's redirect point there. The project and environment tree stays nested
-under Projects, and Settings stays pinned at the bottom. `LayoutOptions.section`
+project's redirect point there. `LayoutOptions.section`
 (`home`, `projects`, `settings`) replaces the `activeSettings` flag and the
 "highlight Projects when nothing else is active" rule; passing
-`activeProjectId` implies `projects`. On Home, Projects and Settings exactly
-one link says `aria-current="page"`. Inside a project none does: the tree's
-project link says `aria-current="true"`, as it did before, and Projects is only
-highlighted. `src/views/nav.test.ts` pins both down.
+`activeProjectId` implies `projects`. D70 then removed the project tree.
 
 **The icons are copied, not installed.** `@hugeicons/core-free-icons` 4.3.5 is
 MIT and ships 80 MB of per-icon modules; using four kilobytes of it through the
@@ -4321,3 +4317,20 @@ out use `Settings03` and `Logout05`, a third the size of the first choices.
 2.7 KB of Lucide before; turning the sprite's HTML comment into an Eta comment
 took 0.7 KB of that back. Templates are not under the asset gate. `app.css` is
 31.6 of 32 KB after this slice; Home needed no new classes.
+
+### D70 — the sidebar is three links and no project tree
+
+Follow-up to D69: the sidebar shows only Home, Projects and Settings, together
+at the top, and no longer lists projects and their environments. Projects and
+environments are reached from the Projects page.
+
+**Removed with the tree:** `navTree()`, one joined query on every signed-in
+page render; its environment status dots and the `worstState` / `STATE_ORDER`
+helpers only they used; the status partial's screen-reader-only mode; the
+`activeEnvironmentId` layout option; and the tree's CSS. Settings is no longer
+pinned to the bottom of the sidebar.
+
+**Current link.** On Home, the project grid and Settings, that link says
+`aria-current="page"`. Inside a project, resource or deployment, Projects is
+highlighted and says `aria-current="true"`: it is the current place but not
+the page itself. `src/views/nav.test.ts` checks the three links and the marking.

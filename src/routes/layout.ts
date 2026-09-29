@@ -1,5 +1,5 @@
 import type { SessionUser } from "../auth.ts"
-import { activeDeployments, navTree } from "../db/queries.ts"
+import { activeDeployments } from "../db/queries.ts"
 import { statusPage } from "../http.ts"
 import type { LayoutData, NavSection } from "../views/render.ts"
 import type { ErrorKey } from "./errors.ts"
@@ -14,7 +14,6 @@ import type { ErrorKey } from "./errors.ts"
 
 export interface LayoutOptions {
   activeProjectId?: string
-  activeEnvironmentId?: string
   /**
    * Which sidebar place to highlight. A page inside a project needs none:
    * passing activeProjectId implies "projects".
@@ -34,14 +33,9 @@ export function layout(
     title,
     user: session ? { email: session.email } : null,
     csrf: session?.csrfToken ?? "",
-    // Built per request and never retained — see navTree()'s comment. Guarded
-    // on the session because the layout only draws the sidebar for a signed-in
-    // user, so an anonymous render would query for nothing.
-    nav: session ? navTree() : [],
     // The activity toast's first paint; /events keeps it current after that.
     active: session ? activeDeployments() : [],
     activeProjectId: options.activeProjectId,
-    activeEnvironmentId: options.activeEnvironmentId,
     section:
       options.section ?? (options.activeProjectId ? "projects" : undefined),
     wide: options.wide,

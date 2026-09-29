@@ -4,8 +4,8 @@ import type { ResourceState } from "./events.ts"
 /**
  * What a resource's status reads at first paint, derived from SQLite alone.
  *
- * One function for the sidebar dot, the project card and the resource head,
- * so the three can never disagree. It never touches Docker: a request handler
+ * One function for the project card, the resource head and the Home counts,
+ * so they can never disagree. It never touches Docker: a request handler
  * must not wait on it, which is why the live-only states — `unhealthy`, and
  * the reconciler's Deploying while a health check is `starting` — cannot come
  * out of here. SSE corrects the label while a page is open.
@@ -35,22 +35,4 @@ export function resourceState(
     return "failed"
   }
   return "stopped"
-}
-
-/** First wins: an environment's dot shows the first state any resource is in. */
-export const STATE_ORDER: readonly ResourceState[] = [
-  "failed",
-  "unhealthy",
-  "deploying",
-  "queued",
-  "healthy",
-  "stopped",
-]
-
-export function worstState(
-  a: ResourceState | null,
-  b: ResourceState,
-): ResourceState {
-  if (a === null) return b
-  return STATE_ORDER.indexOf(a) <= STATE_ORDER.indexOf(b) ? a : b
 }

@@ -207,25 +207,10 @@ select:focus-visible {
   border-bottom: 1px solid var(--border);
 }
 
-/* Head and foot stay pinned; only the tree scrolls. */
+/* Head and foot stay pinned; the three places sit together at the top. */
 .sidebar-nav {
   flex: 1;
-  overflow-y: auto;
   padding: var(--s-3) var(--s-2);
-  /* A column so Settings can be pushed to the bottom of the nav area when the
-     project tree is short, and scroll with it when the tree is long. */
-  display: flex;
-  flex-direction: column;
-}
-/* Without this the tree is squashed rather than scrolled once it overflows. */
-.sidebar-nav > * {
-  flex-shrink: 0;
-}
-.nav-settings {
-  margin-top: auto;
-  padding-top: var(--s-3);
-  border-top: 1px solid var(--border);
-  border-radius: 0;
 }
 
 .sidebar-foot {
@@ -264,86 +249,27 @@ select:focus-visible {
   font-family: var(--mono);
 }
 
-.nav-top,
-.nav-project,
-.nav-env {
-  display: block;
-  padding: var(--s-2) var(--s-3);
-  border-radius: var(--r-sm);
-  text-decoration: none;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Flex, over the block above, so each icon sits on its text's baseline. .icon
-   is sized in em and carries flex:none, so it needs nothing. */
+/* A flex row so each icon sits on its text's baseline. .icon is sized in em
+   and carries flex:none, so it needs nothing. */
 .nav-top {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  font-weight: 550;
+  padding: var(--s-2) var(--s-3);
   margin-bottom: var(--s-1);
-}
-.nav-project {
+  border-radius: var(--r-sm);
   font-weight: 550;
+  text-decoration: none;
+  color: var(--text);
 }
-.nav-env {
-  position: relative;
-  color: var(--text-2);
-  font-size: var(--t-sm);
-}
-/* Worst resource state, toned by .status-*; blank slot when empty. */
-.nav-env::before {
-  content: "";
-  display: inline-block;
-  box-sizing: border-box;
-  width: 6px;
-  height: 6px;
-  margin-inline-end: var(--s-2);
-  vertical-align: middle;
-  border-radius: var(--r-full);
-  background: var(--tone, transparent);
-}
-.nav-top:hover,
-.nav-project:hover,
-.nav-env:hover {
+.nav-top:hover {
   background: var(--surface-2);
 }
 /* Active: an ink bar, not a hue; square on that side so the bar is straight. */
-.nav-top.active,
-.nav-project.active,
-.nav-env.active {
+.nav-top.active {
   background: var(--surface-2);
-  color: var(--text);
   box-shadow: inset 2px 0 0 var(--ink);
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
-}
-.nav-settings.active {
-  border-radius: 0;
-}
-
-.nav-tree > li {
-  margin-bottom: var(--s-2);
-}
-.nav-envs {
-  /* Indent under the project, with a rail so the nesting reads at a glance. */
-  margin: 2px 0 0 var(--s-3);
-  padding-left: var(--s-2);
-  border-left: 1px solid var(--border);
-  gap: 1px;
-}
-.vh {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-.nav-empty {
-  padding: var(--s-2) var(--s-3);
-  font-size: var(--t-sm);
 }
 
 /* The mobile bar, scrim and close button exist only below the breakpoint.
@@ -1308,8 +1234,8 @@ form:has(> .scope-boxes) {
 }
 
 /* Touch targets: 44px where the pointer is a finger. Last in the file so it
-   outranks .btn-sm on source order. Nav links stay block for their ellipsis,
-   so they grow by line-height rather than min-height. */
+   outranks .btn-sm on source order. Nav links grow by line-height rather
+   than min-height. */
 @media (pointer: coarse) {
   .btn,
   .tabs a,
@@ -1319,9 +1245,7 @@ form:has(> .scope-boxes) {
   .btn-icon {
     min-width: 44px;
   }
-  .nav-top,
-  .nav-project,
-  .nav-env {
+  .nav-top {
     line-height: calc(44px - 2 * var(--s-2));
   }
 }

@@ -7,10 +7,8 @@ import {
 import { decrypt, encrypt } from "../crypto.ts"
 import { interpolate } from "../env/interpolate.ts"
 import { formatEnvText } from "../env/parse.ts"
-import type { ResourceState } from "../events.ts"
 import { nowIso, shortId, ulid } from "../ids.ts"
 import { availableSlug, slugify } from "../names.ts"
-import { resourceState, worstState } from "../resource-state.ts"
 import { orm } from "./drizzle.ts"
 import { db } from "./index.ts"
 import {
@@ -608,7 +606,7 @@ export function listDeployments(resourceId: string, limit = 20): Deployment[] {
  * Cancelled rows are skipped because a cancelled deploy did nothing: letting
  * it define the state would make a deploy cancelled while queued behind a
  * running one read Healthy while the running one is still deploying (D59).
- * navTree's subquery applies the same filter, so every surface agrees.
+ * Every surface that shows a state applies the same filter, so they agree.
  */
 export function latestDeploymentStatus(
   resourceId: string,
@@ -1322,8 +1320,9 @@ export interface ActiveDeployment {
 /**
  * Every deployment queued or running: the running one first, then the queue
  * oldest first. Sorted rather than trusting creation order, because a deploy
- * waiting to retry, or claimed after an older one, can run out of that order. One statement per call, like
- * navTree(): the layout reads it on every signed-in render, and the activity
+ * waiting to retry, or claimed after an older one, can run out of that order.
+ * One statement per call: the layout reads it on every signed-in render, and
+ * the activity
  * stream re-reads it on each deployment event rather than holding a copy.
  * Cancelled rows are not in it (D59).
  */
@@ -1416,83 +1415,6 @@ export function findResourceByNameInEnv(
       and(eq(resources.environmentId, environmentId), eq(resources.name, name)),
     )
     .get()
-}
-
-/** One project with its environments, for the sidebar tree. */
-export interface NavProject {
-  id: string
-  name: string
-  /** `state` is the worst of the environment's resources; null when it has none. */
-  environments: { id: string; name: string; state: ResourceState | null }[]
-}
-
-/**
- * The sidebar tree, built with one joined query regardless of project count.
- *
- * Per-page cost is deliberate: SQLite is in-process, so this is a function
- * call against a memory-mapped file, not a network round trip. Caching the
- * tree would mean holding it — and invalidating it on every create and delete
- * — which trades microseconds for resident memory and a staleness bug.
- */
-export function navTree(): NavProject[] {
-  const rows = orm
-    .select({
-      projectId: projects.id,
-      projectName: projects.name,
-      environmentId: environments.id,
-      environmentName: environments.name,
-      resourceId: resources.id,
-      desiredState: resources.desiredState,
-      containerId: resources.containerId,
-      currentDeploymentId: resources.currentDeploymentId,
-      // The same row latestDeploymentStatus picks — same ordering, cancelled
-      // skipped — so the dot and the resource page agree on the state.
-      latest: sql<DeploymentStatus | null>`(
-        SELECT ${deployments.status} FROM ${deployments}
-        WHERE ${deployments.resourceId} = ${resources.id}
-          AND ${deployments.status} <> 'cancelled'
-        ORDER BY ${deployments.createdAt} DESC LIMIT 1)`,
-    })
-    .from(projects)
-    .leftJoin(environments, eq(environments.projectId, projects.id))
-    .leftJoin(resources, eq(resources.environmentId, environments.id))
-    // The ids break created_at ties, so one project's rows stay contiguous.
-    .orderBy(
-      desc(projects.createdAt),
-      projects.id,
-      environments.createdAt,
-      environments.id,
-    )
-    .all()
-
-  const out: NavProject[] = []
-  let project: NavProject | undefined
-  let env: NavProject["environments"][number] | undefined
-  for (const row of rows) {
-    if (!project || project.id !== row.projectId) {
-      project = { id: row.projectId, name: row.projectName, environments: [] }
-      out.push(project)
-      env = undefined
-    }
-    // A leftJoin yields null columns for a project with no environments and
-    // for an environment with no resources.
-    if (row.environmentId === null || row.environmentName === null) continue
-    if (!env || env.id !== row.environmentId) {
-      env = { id: row.environmentId, name: row.environmentName, state: null }
-      project.environments.push(env)
-    }
-    if (row.resourceId === null || row.desiredState === null) continue
-    const state = resourceState(
-      {
-        desiredState: row.desiredState,
-        containerId: row.containerId,
-        currentDeploymentId: row.currentDeploymentId,
-      },
-      row.latest,
-    )
-    env.state = worstState(env.state, state)
-  }
-  return out
 }
 
 export type {

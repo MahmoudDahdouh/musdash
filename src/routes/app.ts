@@ -354,7 +354,7 @@ export const appRoutes = new Elysia()
         resource,
         image: resourceImage(resource),
         // One query per resource, like domainCount: a project page holds a
-        // handful, and navTree already does the whole tree in one statement.
+        // handful.
         // Cancelled rows are skipped there and here alike (D59).
         state: resourceState(resource, latestDeploymentStatus(resource.id)),
         domainCount: listDomains(resource.id).length,
@@ -704,7 +704,6 @@ export const appRoutes = new Elysia()
         },
         layout(session, resource.name, {
           activeProjectId: project.id,
-          activeEnvironmentId: environment.id,
           errorKey: errorKeyFromQuery(query.error),
         }),
       ),
@@ -1058,8 +1057,8 @@ export const appRoutes = new Elysia()
 
   .get("/d/:deploymentId", ({ params, query, session }) => {
     const deployment = getDeployment(params.deploymentId)
-    // The page has no context of its own: the breadcrumb and the sidebar
-    // highlight both come from the resource it belongs to.
+    // The page has no context of its own: the breadcrumb and the sidebar's
+    // Projects highlight both come from the resource it belongs to.
     const ctx = deployment && getResourceContext(deployment.resourceId)
     if (!deployment || !ctx) return statusFor(session, 404)
     // What "Deploy this again" would repeat, for the button's confirm text;
@@ -1089,7 +1088,6 @@ export const appRoutes = new Elysia()
         },
         layout(session, "Deployment", {
           activeProjectId: ctx.project.id,
-          activeEnvironmentId: ctx.environment.id,
           errorKey: errorKeyFromQuery(query.error),
         }),
       ),

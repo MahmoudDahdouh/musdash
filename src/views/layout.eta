@@ -111,17 +111,15 @@
           </button>
         </div>
 
-        <%/* A same-page #env- link would otherwise leave the drawer covering
-             the section it just scrolled to. */%>
+        <%/* The sidebar is three places and nothing else: projects and their
+             environments live on the Projects page, not in a tree here
+             (D70). it.section names the current place. A click closes the
+             drawer on a phone, so it never covers the page it opened. */%>
         <nav
           class="sidebar-nav"
           aria-label="Main"
           @click="$event.target.closest('a') && (navOpen = false)"
         >
-          <%/* Home, Projects and Settings are the three places; the project
-               tree sits under Projects. it.section names the current one and
-               only that link says aria-current="page" — inside a project the
-               tree's own link carries aria-current instead (D69). */%>
           <a
             class="nav-top <%= it.section === 'home' ? 'active' : '' %>"
             href="/"
@@ -130,51 +128,18 @@
             <svg class="icon" aria-hidden="true"><use href="#i-home" /></svg>
             Home
           </a>
+          <%/* Inside a project the page is not /projects itself, so the link
+               is "current" rather than "the page". */%>
           <a
             class="nav-top <%= it.section === 'projects' ? 'active' : '' %>"
             href="/projects"
-            <%~ it.section === 'projects' && !it.activeProjectId ? 'aria-current="page"' : '' %>
+            <%~ it.section === 'projects' ? (it.activeProjectId ? 'aria-current="true"' : 'aria-current="page"') : '' %>
           >
             <svg class="icon" aria-hidden="true"><use href="#i-folder" /></svg>
             Projects
           </a>
-
-          <% if (it.nav.length === 0) { %>
-          <p class="nav-empty muted">No projects yet.</p>
-          <% } else { %>
-          <ul class="nav-tree plain">
-            <% it.nav.forEach(function (p) { %>
-            <li>
-              <a
-                class="nav-project <%= it.activeProjectId === p.id ? 'active' : '' %>"
-                href="/p/<%= p.id %>"
-                <%~ it.activeProjectId === p.id ? 'aria-current="true"' : '' %>
-              >
-                <%= p.name %>
-              </a>
-              <% if (p.environments.length > 0) { %>
-              <ul class="nav-envs plain">
-                <% p.environments.forEach(function (e) { %>
-                <li>
-                  <a
-                    class="nav-env<%= e.state ? ' status-' + e.state : '' %> <%= it.activeEnvironmentId === e.id ? 'active' : '' %>"
-                    href="/p/<%= p.id %>#env-<%= e.id %>"
-                    <%~ it.activeEnvironmentId === e.id ? 'aria-current="true"' : '' %>
-                  >
-                    <%= e.name %>
-                    <% if (e.state) { %><%~ include("@status", { state: e.state, live: false, srOnly: true }) %><% } %>
-                  </a>
-                </li>
-                <% }) %>
-              </ul>
-              <% } %>
-            </li>
-            <% }) %>
-          </ul>
-          <% } %>
-
           <a
-            class="nav-top nav-settings <%= it.section === 'settings' ? 'active' : '' %>"
+            class="nav-top <%= it.section === 'settings' ? 'active' : '' %>"
             href="/settings"
             <%~ it.section === 'settings' ? 'aria-current="page"' : '' %>
           >
