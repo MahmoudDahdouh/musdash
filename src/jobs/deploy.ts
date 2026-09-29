@@ -407,7 +407,7 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     emit("Health check passed")
 
     // 8a. switch the route BEFORE touching the old container
-    const hosts = routeHosts(resourceId, resource.name, environment.name)
+    const hosts = routeHosts(resourceId, resource.slug, environment.name)
     // Hosts this deploy puts on the route for the first time. Stays empty when
     // no route is written, so the certificate wait below never runs then.
     let newHosts: string[] = []

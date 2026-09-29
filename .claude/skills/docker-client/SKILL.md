@@ -90,7 +90,8 @@ container spec is a privilege boundary.
 
 - Validate image references against a registry-reference regex before use. An
   unvalidated image string is a command injection vector if it reaches a shell.
-- Resource names must match `^[a-z0-9-]{1,32}$` — they become container names and
-  DNS labels.
+- Resource slugs must match `^[a-z0-9-]{1,32}$` — they become image repositories
+  and DNS labels. Container names are id-derived; a resource's display `name`
+  never reaches Docker (D65).
 - When shelling out, **pass argument arrays to `Bun.spawn`, never an interpolated
   string.** Structural immunity beats regex-dependence.

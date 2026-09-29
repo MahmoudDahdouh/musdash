@@ -65,7 +65,14 @@ export const resources = sqliteTable(
     environmentId: text("environment_id")
       .notNull()
       .references(() => environments.id, { onDelete: "cascade" }),
+    /** What the user calls it: free text, see src/names.ts. Display only. */
     name: text("name").notNull(),
+    /**
+     * The machine name, `^[a-z0-9-]{1,32}$`, derived from `name` at creation
+     * and never changed (migrations/0007_resource_slug.sql, D65). The built
+     * image's repository and the auto subdomain use this, never `name`.
+     */
+    slug: text("slug").notNull().default(""),
     kind: text("kind").notNull().$type<ResourceKind>(),
     /**
      * What this resource is built or pulled FROM, by kind:
@@ -110,6 +117,7 @@ export const resources = sqliteTable(
   },
   (t) => [
     unique().on(t.environmentId, t.name),
+    uniqueIndex("idx_resources_env_slug").on(t.environmentId, t.slug),
     index("idx_resources_git_repo").on(t.gitRepo, t.gitBranch),
   ],
 )

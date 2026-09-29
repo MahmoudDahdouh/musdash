@@ -283,7 +283,11 @@ export function assertValidImageRef(ref: string): void {
   }
 }
 
-/** Resource names become container names and DNS labels. */
+/**
+ * The slug rule: a resource's slug and an environment's name. Both reach DNS
+ * labels (the auto subdomain) and the slug reaches image repositories. A
+ * resource's display name is free text and lives in src/names.ts (D65).
+ */
 export const RESOURCE_NAME_RE = /^[a-z0-9-]{1,32}$/
 
 export function isValidResourceName(name: string): boolean {

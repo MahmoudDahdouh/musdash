@@ -478,11 +478,11 @@ export function routeIdFor(resourceId: string): string {
 
 /** `<resource>-<environment>.<wildcard>` (§10). */
 export function autoDomainFor(
-  resourceName: string,
+  resourceSlug: string,
   environmentName: string,
 ): string | null {
   if (!config.wildcardDomain) return null
-  return `${resourceName}-${environmentName}.${config.wildcardDomain}`.toLowerCase()
+  return `${resourceSlug}-${environmentName}.${config.wildcardDomain}`.toLowerCase()
 }
 
 /**

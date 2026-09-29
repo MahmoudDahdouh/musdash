@@ -52,7 +52,8 @@ version. These libraries change APIs across minors. **Do not write from recall.*
 
 - **Never log a decrypted env value.** Redact in every path, including errors
   and deploy logs.
-- Validate all input with zod. Resource names `^[a-z0-9-]{1,32}$`; image refs
+- Validate all input with zod. Resource slugs and environment names
+  `^[a-z0-9-]{1,32}$`, display names through `src/names.ts` (D65); image refs
   against a registry-reference regex.
 - **Pass argument arrays to `Bun.spawn`, never an interpolated shell string.**
   This makes injection structurally impossible rather than regex-dependent.

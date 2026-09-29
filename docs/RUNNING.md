@@ -449,9 +449,11 @@ its App under your GitHub settings: the key it was created with is gone.
 ### Deploy a public Docker image
 
 1. **New project** → it gets a `production` environment automatically.
-2. **Add resource** → choose the image source, enter a name matching
-   `^[a-z0-9-]{1,32}$` (it becomes a container name and a DNS label) and an
-   image reference like `nginx:alpine`.
+2. **Add resource** → choose the image source, enter a name (letters, digits,
+   spaces and `( ) [ ] . _ -`, such as `Web (prod)`) and an image reference like
+   `nginx:alpine`. musdash derives a lowercase slug from the name (`web-prod`)
+   for image tags and the automatic domain; renaming later changes only the
+   name.
 3. Set the container port and an optional health path.
 4. **Deploy.** The route handler enqueues a job and redirects immediately — the
    UI never waits on Docker. Watch the deploy log stream live.

@@ -8,7 +8,8 @@ import { decrypt, encrypt } from "../crypto.ts"
 import { interpolate } from "../env/interpolate.ts"
 import { formatEnvText } from "../env/parse.ts"
 import type { ResourceState } from "../events.ts"
-import { nowIso, ulid } from "../ids.ts"
+import { nowIso, shortId, ulid } from "../ids.ts"
+import { availableSlug, slugify } from "../names.ts"
 import { resourceState, worstState } from "../resource-state.ts"
 import { orm } from "./drizzle.ts"
 import { db } from "./index.ts"
@@ -106,11 +107,35 @@ export interface NewResource {
   memoryLimitMb: number
 }
 
+/**
+ * The slug a new resource gets: its name slugified, suffixed on a collision in
+ * its environment, or id-derived when the name has no letter or digit (D65).
+ */
+function newSlug(environmentId: string, name: string, id: string): string {
+  return availableSlug(
+    slugify(name),
+    `r-${shortId(id)}`,
+    (slug) =>
+      orm
+        .select({ id: resources.id })
+        .from(resources)
+        .where(
+          and(
+            eq(resources.environmentId, environmentId),
+            eq(resources.slug, slug),
+          ),
+        )
+        .get() !== undefined,
+  )
+}
+
 export function createResource(input: NewResource): Resource {
+  const id = ulid()
   const resource: Resource = {
-    id: ulid(),
+    id,
     environmentId: input.environmentId,
     name: input.name,
+    slug: newSlug(input.environmentId, input.name, id),
     kind: "image",
     sourceJson: JSON.stringify({ image: input.image }),
     desiredState: "stopped",
@@ -162,10 +187,12 @@ export interface NewGitResource {
  * resources with an indexed query rather than parsing JSON for every row.
  */
 export function createGitResource(input: NewGitResource): Resource {
+  const id = ulid()
   const resource: Resource = {
-    id: ulid(),
+    id,
     environmentId: input.environmentId,
     name: input.name,
+    slug: newSlug(input.environmentId, input.name, id),
     kind: "git",
     sourceJson: JSON.stringify({
       repo: input.repo,

@@ -45,7 +45,9 @@ requirement, not a preference.
 - **Any path where a decrypted env value could reach a log**, including error
   paths and deploy logs. This is the highest-severity class of finding.
 - `Bun.spawn` calls built from interpolated strings rather than argument arrays.
-- Missing zod validation; resource names not matched against `^[a-z0-9-]{1,32}$`;
+- Missing zod validation; resource slugs or environment names not matched against
+  `^[a-z0-9-]{1,32}$`, or a resource's display `name` reaching Docker, Caddy or
+  DNS in place of its slug (D65);
   image refs not validated against a registry-reference regex.
 - Missing CSRF token on a state-changing POST.
 - Raw internal errors returned to the browser.

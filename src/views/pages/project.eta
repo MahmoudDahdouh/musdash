@@ -145,9 +145,13 @@
 
 <% if (it.tab === 'resources') { %>
 <%
-  /* One error line for every resource or environment name field; the
-     server's own check says the same thing. */
+  /* One error line per kind of name field; the server's own checks say the
+     same thing. A resource name is display text (D65); an environment name
+     is still a DNS label. The pattern escapes ( ) [ ] and - because browsers
+     compile it with the v flag, which refuses them bare (M-1). */
   var nameError = 'Use lowercase letters, digits and dashes, up to 32 characters.'
+  var resNameError = 'Use letters, digits, spaces and ( ) [ ] . _ -, up to 60 characters.'
+  var resNamePattern = '[A-Za-z0-9 \\(\\)\\[\\]._\\-]{1,60}'
 %>
 <% it.environments.forEach(function (env) { %>
 <% var res = 'new-res-' + env.environment.id, git = 'new-git-' + env.environment.id %>
@@ -200,9 +204,9 @@
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
     <div class="field">
       <label class="label" for="<%= res %>-name">Name</label>
-      <input id="<%= res %>-name" name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="web" aria-describedby="<%= res %>-name-hint" />
-      <p class="hint" id="<%= res %>-name-hint">Lowercase letters, digits and dashes. Becomes a DNS label.</p>
-      <p class="error"><%= nameError %></p>
+      <input id="<%= res %>-name" name="name" required maxlength="60" pattern="<%= resNamePattern %>" placeholder="Web (prod)" aria-describedby="<%= res %>-name-hint" />
+      <p class="hint" id="<%= res %>-name-hint">Any name you like. Image tags and the automatic domain use a lowercase form of it.</p>
+      <p class="error"><%= resNameError %></p>
     </div>
     <div class="field">
       <label class="label" for="<%= res %>-image">Docker image</label>
@@ -248,9 +252,9 @@
 
     <div class="field">
       <label class="label" for="<%= git %>-name">Name</label>
-      <input id="<%= git %>-name" name="name" required pattern="[a-z0-9\-]{1,32}" placeholder="api" aria-describedby="<%= git %>-name-hint" />
-      <p class="hint" id="<%= git %>-name-hint">Lowercase letters, digits and dashes. Becomes a DNS label.</p>
-      <p class="error"><%= nameError %></p>
+      <input id="<%= git %>-name" name="name" required maxlength="60" pattern="<%= resNamePattern %>" placeholder="API [v2]" aria-describedby="<%= git %>-name-hint" />
+      <p class="hint" id="<%= git %>-name-hint">Any name you like. Image tags and the automatic domain use a lowercase form of it.</p>
+      <p class="error"><%= resNameError %></p>
     </div>
 
     <!--

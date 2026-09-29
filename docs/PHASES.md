@@ -313,7 +313,7 @@ CREATE TABLE environments (
 CREATE TABLE resources (
   id             TEXT PRIMARY KEY,
   environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
-  name           TEXT NOT NULL,       -- slug: [a-z0-9-]+
+  name           TEXT NOT NULL,       -- display text since D65; slug column holds [a-z0-9-]+
   kind           TEXT NOT NULL,       -- Phase 1: only 'image'
   source_json    TEXT NOT NULL,       -- {"image":"nginx:alpine"}
   desired_state  TEXT NOT NULL,       -- 'running' | 'stopped'
@@ -591,8 +591,9 @@ Docker socket access is equivalent to root on the host. Treat this seriously.
 - **Passwords** via `Bun.password.hash` (argon2id) and `Bun.password.verify`.
 - **CSRF**: all state-changing routes are POST with a per-session token in a
   hidden field. Verify it.
-- **Validate all input with zod.** Resource names must match `^[a-z0-9-]{1,32}$`
-  — they become container names and DNS labels.
+- **Validate all input with zod.** Resource slugs and environment names must
+  match `^[a-z0-9-]{1,32}$` — they become image repositories and DNS labels. A
+  resource's display name is free text (D65).
 - **Image references** must be validated against a registry-reference regex. An
   unvalidated image string is a command injection vector if it ever reaches a
   shell.

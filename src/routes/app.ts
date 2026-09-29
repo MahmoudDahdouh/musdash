@@ -83,6 +83,7 @@ import { parseContainerPort } from "./container-port.ts"
 import { errorKeyFromQuery, withError } from "./errors.ts"
 import { checkGitSource } from "./git-source.ts"
 import { layout, statusFor } from "./layout.ts"
+import { isValidDisplayName, normalizeDisplayName } from "../names.ts"
 
 const html = (body: string, headers?: Record<string, string>) =>
   new Response(body, {
@@ -252,8 +253,11 @@ export const appRoutes = new Elysia()
 
   .post(
     "/projects",
-    ({ body, redirect }) => {
-      const project = createProject(body.name.trim(), body.description?.trim())
+    ({ body, redirect, session }) => {
+      // The form's pattern mirrors this, so a refusal is a hand-made request.
+      const name = normalizeDisplayName(body.name)
+      if (!isValidDisplayName(name)) return statusFor(session, 400)
+      const project = createProject(name, body.description?.trim())
       return redirect(`/p/${project.id}`, 303)
     },
     {
@@ -352,10 +356,12 @@ export const appRoutes = new Elysia()
       const environment = getEnvironment(params.environmentId)
       if (!environment) return statusFor(session, 404)
 
-      // Names become container names and DNS labels; images can reach a shell.
-      // The name field's pattern already refuses a bad name, so reaching this
-      // is a hand-made request: a status page, not a notice.
-      if (!isValidResourceName(body.name)) return statusFor(session, 400)
+      // The name is display text; the slug derived from it is what reaches
+      // image tags and DNS labels (D65). Images can reach a shell. The name
+      // field's pattern already refuses a bad name, so reaching this is a
+      // hand-made request: a status page, not a notice.
+      const name = normalizeDisplayName(body.name)
+      if (!isValidDisplayName(name)) return statusFor(session, 400)
       // Blank means "no port". The input's min/max refuses an out-of-range
       // value, so a refusal here is almost always a hand-made request; the
       // rare browser-valid spelling it also refuses (80.0, 1e3) gets the same
@@ -366,13 +372,13 @@ export const appRoutes = new Elysia()
       if (!isValidImageRef(body.image)) {
         return redirect(withError(back, "image-invalid"), 303)
       }
-      if (findResourceByNameInEnv(environment.id, body.name)) {
+      if (findResourceByNameInEnv(environment.id, name)) {
         return redirect(withError(back, "resource-name-taken"), 303)
       }
 
       const resource = createResource({
         environmentId: environment.id,
-        name: body.name,
+        name,
         image: body.image,
         containerPort: containerPort.port,
         healthPath: body.healthPath?.trim() || null,
@@ -380,7 +386,7 @@ export const appRoutes = new Elysia()
       })
 
       // Give it its automatic subdomain up front, so deploying is one click.
-      const auto = autoDomainFor(resource.name, environment.name)
+      const auto = autoDomainFor(resource.slug, environment.name)
       if (auto && !domainExists(auto)) addDomain(resource.id, auto, true)
 
       return redirect(`/r/${resource.id}`, 303)
@@ -412,11 +418,12 @@ export const appRoutes = new Elysia()
       const environment = getEnvironment(params.environmentId)
       if (!environment) return statusFor(session, 404)
 
-      if (!isValidResourceName(body.name)) return statusFor(session, 400)
+      const name = normalizeDisplayName(body.name)
+      if (!isValidDisplayName(name)) return statusFor(session, 400)
       const containerPort = parseContainerPort(body.containerPort)
       if (!containerPort.ok) return statusFor(session, 400)
       const back = `/p/${environment.projectId}`
-      if (findResourceByNameInEnv(environment.id, body.name)) {
+      if (findResourceByNameInEnv(environment.id, name)) {
         return redirect(withError(back, "resource-name-taken"), 303)
       }
       const source = checkGitSource(body)
@@ -439,7 +446,7 @@ export const appRoutes = new Elysia()
 
       const resource = createGitResource({
         environmentId: environment.id,
-        name: body.name,
+        name,
         repo,
         branch,
         // Empty means "detect at build time" — the value is only read when the
@@ -453,7 +460,7 @@ export const appRoutes = new Elysia()
         memoryLimitMb: body.memoryLimitMb ?? config.defaultMemoryMb,
       })
 
-      const auto = autoDomainFor(resource.name, environment.name)
+      const auto = autoDomainFor(resource.slug, environment.name)
       if (auto && !domainExists(auto)) addDomain(resource.id, auto, true)
 
       return redirect(`/r/${resource.id}`, 303)
@@ -515,7 +522,7 @@ export const appRoutes = new Elysia()
           state: resourceState(resource, latestDeploymentStatus(resource.id)),
           deployments,
           domains: listDomains(resource.id),
-          autoDomain: autoDomainFor(resource.name, environment.name),
+          autoDomain: autoDomainFor(resource.slug, environment.name),
           // Keys, origins and scopes — never values. resolveEnvKeys does not
           // decrypt, so the Resolved table carries no plaintext; the edit
           // boxes below are the one place values render.

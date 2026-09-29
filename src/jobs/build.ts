@@ -231,7 +231,7 @@ export async function buildFromSource(
     if (reused !== null) return { image: reused, reused: true }
   }
 
-  const tag = builtImageTag(resource.name, deploymentId)
+  const tag = builtImageTag(resource.slug, deploymentId)
   const dir = createBuildDir(deploymentId)
 
   try {

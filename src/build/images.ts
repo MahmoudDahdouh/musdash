@@ -26,10 +26,10 @@ export const BUILD_PLACEHOLDER = "(building)"
 export const RETAINED_BUILDS = 3
 
 /**
- * Exactly the tags builtImageTag produces: a resource name (the name rule,
+ * Exactly the tags builtImageTag produces: a resource slug (the slug rule,
  * `^[a-z0-9-]{1,32}$`, RESOURCE_NAME_RE in src/docker/client.ts — kept in step
- * by hand, since this module imports only ids.ts; a name rule that widened
- * without this would only drop longer names back to the 168h rule) and shortId
+ * by hand, since this module imports only ids.ts; a rule that widened without
+ * this would only drop longer slugs back to the 168h rule) and shortId
  * of a ULID — its last 8 characters,
  * lowercased, all from the random part and so all from Crockford's alphabet,
  * which has no i, l, o or u.
@@ -50,10 +50,10 @@ export const BUILT_IMAGE_TAG =
  * meaningless: both deployments would name the same image.
  */
 export function builtImageTag(
-  resourceName: string,
+  resourceSlug: string,
   deploymentId: string,
 ): string {
-  return `musdash/${resourceName}:${shortId(deploymentId)}`
+  return `musdash/${resourceSlug}:${shortId(deploymentId)}`
 }
 
 export function isBuiltImageTag(image: string): boolean {

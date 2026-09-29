@@ -21,7 +21,9 @@ test("0006 applies to a database that already has 0001–0005, leaving old rows 
     "INSERT INTO deployments (id, resource_id, status, image, trigger, created_at) VALUES ('d1', 'r1', 'succeeded', 'nginx:1', 'manual', '2026-01-01T00:00:00.000Z')",
   )
 
-  expect(runMigrations(db)).toEqual(["0006_auto_webpack"])
+  expect(runMigrations(db, MIGRATIONS.slice(0, 6))).toEqual([
+    "0006_auto_webpack",
+  ])
 
   const row = db
     .query<{ auto_webpack_cap_mib: unknown }, []>(
@@ -40,6 +42,6 @@ test("0006 applies to a database that already has 0001–0005, leaving old rows 
       .get(),
   ).toEqual({ auto_webpack_cap_mib: 960 })
 
-  // A second boot applies nothing.
-  expect(runMigrations(db)).toEqual([])
+  // A second boot applies nothing it has not already applied.
+  expect(runMigrations(db, MIGRATIONS.slice(0, 6))).toEqual([])
 })

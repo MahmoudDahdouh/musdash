@@ -25,12 +25,12 @@ import { getDashboardHost } from "../settings.ts"
  */
 export function routeHosts(
   resourceId: string,
-  resourceName: string,
+  resourceSlug: string,
   environmentName: string,
 ): string[] {
   const dashboard = getDashboardHost()
   const hosts = listDomains(resourceId).map((d) => d.host)
-  const auto = autoDomainFor(resourceName, environmentName)
+  const auto = autoDomainFor(resourceSlug, environmentName)
   if (auto && !hosts.includes(auto)) hosts.push(auto)
   return hosts.filter((h) => h !== dashboard)
 }
@@ -40,7 +40,7 @@ function wantedHosts(resource: Resource): string[] {
   if (resource.desiredState !== "running" || !resource.containerPort) return []
   const environment = getEnvironment(resource.environmentId)
   if (!environment) return []
-  return routeHosts(resource.id, resource.name, environment.name)
+  return routeHosts(resource.id, resource.slug, environment.name)
 }
 
 /**

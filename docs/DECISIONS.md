@@ -4107,3 +4107,42 @@ early on the Turbopack banner, pnpm, Yarn and bun lockfiles, overrides set in
 the job, an npm Next.js 16 app switching and serving, the direct `next build`
 under pnpm and bun (bun's image may lack `node` for Next's shebang), the
 one-time rebuild after upgrade, and the note on a failed switched build.
+
+## Names, domains, CRUD and the shell (2026-09-29)
+
+Five slices from one request: free-text resource names, random auto-domains on
+sslip.io, rename and delete for every level, a toast while a deploy runs, and a
+Home / Projects / Settings sidebar with new icons.
+
+### D65 — a resource has a display name and a frozen slug
+
+CLAUDE.md said resource names match `^[a-z0-9-]{1,32}$` "because they become
+container names and DNS labels". They stopped becoming container names long ago
+(`musdash-<shortId(id)>-<shortId(deployment)>`); what still read the name was
+the built image's repository (`musdash/<name>:<id>`) and the auto subdomain's
+label. Users wanted names like `Web (prod)` or `API [v2]`.
+
+**`name` is display text; `slug` is the machine name.** Migration 0007 adds
+`resources.slug`, backfills it from `name` (every existing name already obeys
+the slug rule), and makes `(environment_id, slug)` unique with an index.
+`src/names.ts` holds the display rule — letters, digits, space and
+`( ) [ ] . _ -`, 1–60 characters after trimming and collapsing whitespace — and
+`slugify`: lowercase, runs of anything else to one dash, no edge dashes, at most
+28 characters so `-<env>` still fits a 63-byte DNS label and a `-99` collision
+suffix still fits 32. A name with no letter or digit gets `r-<shortId(id)>`. A
+collision in the environment takes `-2`, `-3`, … `builtImageTag` and
+`autoDomainFor` now take the slug.
+
+`-`, `_` and `.` are in the display rule although the request named only
+`( ) [ ]`: every name written before this is a slug, and renaming a resource to
+its own current name must not be refused.
+
+**The slug never changes.** A rename touches `name` only, so image tags, the
+rollback target and the auto hostname stay where they are. The resource's
+Settings tab shows it.
+
+**Kept:** `UNIQUE(environment_id, name)`. Dropping it needs a table rebuild, and
+two resources with one display name in one environment would only confuse.
+**Unchanged:** environment names still follow the slug rule — they are part of
+the wildcard auto-domain and have no slug of their own. Project names take the
+display rule on the server too, where before only their length was checked.

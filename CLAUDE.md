@@ -240,8 +240,10 @@ bun add <pkg>          # bun is the package manager — bun.lock is committed
   mode 0600). **Never log a decrypted value** — redact env values in log output.
 - Sessions in SQLite, not JWT, so logout actually revokes. CSRF token on every
   state-changing POST.
-- Validate all input with zod. Resource names must match `^[a-z0-9-]{1,32}$`
-  (they become container names and DNS labels), and image references must be
+- Validate all input with zod. A resource's **slug** and an environment's name
+  must match `^[a-z0-9-]{1,32}$` (they become image repositories and DNS
+  labels); a resource's `name` is display text, checked by `src/names.ts` and
+  never used as a machine identifier (D65). Image references must be
   validated against a registry-reference regex — an unvalidated image string is a
   command injection vector if it ever reaches a shell.
 - The Caddy admin API is a **unix socket** in `$MUSDASH_DATA_DIR/caddy/` (0700),
