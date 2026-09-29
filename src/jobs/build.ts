@@ -1,7 +1,10 @@
 import { cpSync, existsSync } from "node:fs"
+import { buildFingerprint, fingerprintKey } from "../build/fingerprint.ts"
+import { builtImageTag } from "../build/images.ts"
 import { buildImage, detectBuildPack } from "../build/index.ts"
 import { createBuildDir, removeBuildDir } from "../build/workdir.ts"
 import { config } from "../config.ts"
+import { loadKey } from "../crypto.ts"
 import { gitSource } from "../db/queries.ts"
 import type { Resource } from "../db/schema.ts"
 import { shortId } from "../ids.ts"
@@ -50,49 +53,80 @@ export interface FetchedSource {
  *
  * Checkpoint 3 fetched from a local path so the build pipeline and the deploy
  * branch could be proven without GitHub existing. Checkpoint 4 replaced the
- * implementation with the authenticated tarball fetch and widened this
- * signature by one input and one output — the local path stays reachable
- * through the new fetcher, which is what keeps checkpoint 3's verification
- * runnable.
+ * implementation with the authenticated tarball fetch — the local path stays
+ * reachable through the new fetcher, which is what keeps checkpoint 3's
+ * verification runnable.
+ *
+ * Two steps rather than one (D59): whether a build can be skipped depends on
+ * the commit, so the commit has to be known before anything is downloaded. One
+ * combined call would download a tree only to throw it away.
  */
-export type SourceFetcher = (
-  source: SourceRequest,
-  destDir: string,
-  /** The deploy log, for a line the fetch itself has to say (a retry). */
-  emit?: (line: string) => void,
-) => Promise<FetchedSource | null>
+export interface SourceFetcher {
+  /** Resolves source.ref to a commit. Null for the local-directory seam. Writes nothing to disk. */
+  resolve(source: SourceRequest): Promise<FetchedSource | null>
+  /** Writes the tree at `commit` (or copies the local dir when null) into destDir, which exists and is empty. */
+  fetch(
+    source: SourceRequest,
+    commit: FetchedSource | null,
+    destDir: string,
+    /** The deploy log, for a line the fetch itself has to say (a retry). */
+    emit?: (line: string) => void,
+  ): Promise<void>
+}
+
+function assertLocalSource(repo: string): void {
+  if (!existsSync(repo)) {
+    throw new Error(`local source ${repo} does not exist`)
+  }
+}
 
 /**
  * Copies from a local directory. `repo` is a filesystem path here.
  *
  * Not reachable from the UI — there is no way to create a git resource pointing
  * at a local path — so this is a verification seam, not a user-facing feature.
- * Returns no commit: a directory is not a repository.
+ * Resolves to no commit: a directory is not a repository.
  */
-export const localSourceFetcher: SourceFetcher = (source, dest) => {
-  if (!existsSync(source.repo)) {
-    throw new Error(`local source ${source.repo} does not exist`)
-  }
-  cpSync(source.repo, dest, { recursive: true })
-  return Promise.resolve(null)
+export const localSourceFetcher: SourceFetcher = {
+  resolve(source) {
+    assertLocalSource(source.repo)
+    return Promise.resolve(null)
+  },
+  fetch(source, _commit, dest) {
+    assertLocalSource(source.repo)
+    cpSync(source.repo, dest, { recursive: true })
+    return Promise.resolve()
+  },
 }
 
-let fetchSource: SourceFetcher = localSourceFetcher
+let sourceFetcher: SourceFetcher = localSourceFetcher
 
 /** Swaps the fetcher. Checkpoint 4 calls this with the GitHub tarball fetch. */
 export function setSourceFetcher(fetcher: SourceFetcher): void {
-  fetchSource = fetcher
+  sourceFetcher = fetcher
+}
+
+/** What onCommit is told about the build besides the commit itself. */
+export interface CommitRecord {
+  repo: string
+  /** Keyed HMAC of the build inputs. Stored, never logged or emitted. */
+  fingerprint: string
+}
+
+export interface BuildOptions {
+  /** After the commit is resolved and recorded, before any download. A returned tag skips download and build. */
+  reuse?: (commit: FetchedSource, fingerprint: string) => Promise<string | null>
 }
 
 /**
- * Builds and returns the image tag for this deployment.
+ * The image this deployment should run.
  *
- * The tag embeds the deployment id, so every build is a distinct reference and
- * a rollback has something to point AT. A single moving tag would make rollback
- * meaningless: both deployments would name the same image.
+ * `reused` is true when no build ran and `image` is an earlier build of the
+ * same inputs; its tag then names that earlier deployment, not this one.
  */
 export interface BuiltSource {
   image: string
+  reused: boolean
 }
 
 export async function buildFromSource(
@@ -104,13 +138,15 @@ export async function buildFromSource(
   /** Every secret at every scope, for redaction. See BuildRequest. */
   redactSecrets: readonly string[],
   /**
-   * Called with the commit as soon as it is fetched, before anything is built.
+   * Called with the commit as soon as it is resolved, before anything is
+   * downloaded or built.
    *
    * A callback rather than part of the return value: only a build that
    * succeeds returns, and a failed build is the deploy whose commit the user
    * most needs to see (P-2).
    */
-  onCommit: (commit: FetchedSource) => void,
+  onCommit: (commit: FetchedSource, record: CommitRecord) => void,
+  opts: BuildOptions = {},
 ): Promise<BuiltSource> {
   const source = gitSource(resource)
   if (!source) {
@@ -119,24 +155,46 @@ export async function buildFromSource(
     )
   }
 
-  const tag = `musdash/${resource.name}:${shortId(deploymentId)}`
+  const request: SourceRequest = {
+    repo: source.repo,
+    ref: source.branch,
+    installationId: resource.gitInstallationId,
+  }
+
+  emit(`Fetching ${source.repo} (${source.branch})`)
+  // Resolve the ref to a commit FIRST, then fetch that exact commit. Fetching
+  // the branch name instead would leave a window in which a push lands between
+  // the two calls, and the deployment row would record a commit that is not
+  // the one that was built.
+  const commit = await sourceFetcher.resolve(request)
+  if (commit) {
+    emit(`At commit ${commit.sha.slice(0, 7)}`)
+    // Over every input that decides what the build produces, taken from the
+    // same `source` and `buildArgs` the build below uses, so the fingerprint
+    // cannot describe a different build from the one it is stored against.
+    // The stored pack, not the detected one: detection needs the downloaded
+    // tree, and the stored value together with the commit determines it.
+    const fingerprint = buildFingerprint(fingerprintKey(loadKey()), {
+      commitSha: commit.sha,
+      repo: source.repo,
+      pack: source.pack,
+      dockerfilePath: source.dockerfilePath ?? null,
+      buildContext: source.buildContext ?? null,
+      buildVars: buildArgs,
+    })
+    onCommit(commit, { repo: source.repo, fingerprint })
+
+    // Before the build directory exists: a reused image downloads nothing and
+    // never touches BuildKit, so there is nothing to create or clean up.
+    const reused = opts.reuse ? await opts.reuse(commit, fingerprint) : null
+    if (reused !== null) return { image: reused, reused: true }
+  }
+
+  const tag = builtImageTag(resource.name, deploymentId)
   const dir = createBuildDir(deploymentId)
 
   try {
-    emit(`Fetching ${source.repo} (${source.branch})`)
-    const commit = await fetchSource(
-      {
-        repo: source.repo,
-        ref: source.branch,
-        installationId: resource.gitInstallationId,
-      },
-      dir,
-      emit,
-    )
-    if (commit) {
-      emit(`At commit ${commit.sha.slice(0, 7)}`)
-      onCommit(commit)
-    }
+    await sourceFetcher.fetch(request, commit, dir, emit)
 
     const contextDir = source.buildContext
       ? `${dir}/${source.buildContext}`
@@ -165,7 +223,7 @@ export async function buildFromSource(
       noCache: config.buildNoCache,
       onLog: emit,
     })
-    return { image: tag }
+    return { image: tag, reused: false }
   } finally {
     // Both paths. Build directories are the second-largest disk leak after
     // images, and a failed build leaves the largest ones.

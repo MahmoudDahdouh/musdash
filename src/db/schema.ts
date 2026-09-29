@@ -142,6 +142,12 @@ export const deployments = sqliteTable(
     commitSha: text("commit_sha"),
     commitMessage: text("commit_message"),
     commitAuthor: text("commit_author"),
+    // What the build was made from (0005, D59). The repository as fetched, and
+    // a keyed HMAC of every build input — the key that lets a push reuse an
+    // image instead of building it again. Null for image deploys and for rows
+    // written before 0005, which therefore never match.
+    gitRepo: text("git_repo"),
+    buildFingerprint: text("build_fingerprint"),
 
     createdAt: text("created_at").notNull(),
   },

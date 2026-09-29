@@ -54,8 +54,8 @@ import {
 import { listInstallationRepos } from "../github/repos.ts"
 import { flashFromQuery, settingsViewModel } from "../github/settings.ts"
 import { clearTokenCache } from "../github/tokens.ts"
+import { BUILD_PLACEHOLDER } from "../build/images.ts"
 import {
-  BUILD_PLACEHOLDER,
   cancelQueuedDeploy,
   enqueueDeploy,
   pendingDeploymentFor,

@@ -285,19 +285,21 @@ export class DockerHttpClient implements DockerClient {
    *
    * `POST /images/prune` only accepts `dangling`, `until`, `label` and
    * `label!`; a `reference` filter is rejected outright with
-   * `invalid filter 'reference'`, and `label!` is useless here because musdash
-   * does not build (and therefore cannot label) the images it deploys. A blanket
+   * `invalid filter 'reference'`, and `label!` is useless here because the images
+   * musdash deploys carry no musdash labels — pulled ones are the user's, and
+   * built ones are recognized by their tag instead (`ageExempt`, D59). A blanket
    * `dangling:false` prune would happily delete a rollback target, which is
    * referenced only by a row in the database and is invisible to Docker.
    *
    * So: pass one prunes DANGLING images only — an untagged image can never be a
    * rollback target, since a target is named by a tag. Pass two enumerates
    * tagged images and removes them one at a time, skipping anything protected,
-   * young, or in use.
+   * young (unless `ageExempt` covers it), or in use.
    */
   async pruneImages(
     olderThanHours: number,
     keep: string[],
+    ageExempt?: RegExp,
   ): Promise<{ reclaimedBytes: number; protectedCount: number }> {
     // Filter values are string arrays in the Engine API; the {value: bool} map
     // form is rejected as "invalid filter".
@@ -341,7 +343,14 @@ export class DockerHttpClient implements DockerClient {
         protectedCount++
         continue
       }
-      if (img.Created > cutoffSec) continue
+      // EVERY tag must match, not any: an image that also carries a tag the
+      // pattern does not describe is partly someone else's, and that tag keeps
+      // it on the ordinary age rule. The keep-set above and the in-use check
+      // below still apply to an exempt image, so this can never remove what a
+      // container runs or a resource can roll back to.
+      const exempt =
+        ageExempt !== undefined && tags.every((t) => ageExempt.test(t))
+      if (!exempt && img.Created > cutoffSec) continue
       if (inUse.has(img.Id) || tags.some((t) => inUse.has(t))) continue
 
       // Sequential on purpose: job concurrency is exactly 1, and parallel

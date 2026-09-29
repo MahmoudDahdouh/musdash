@@ -1,5 +1,9 @@
 import { existsSync } from "node:fs"
-import type { FetchedSource, SourceFetcher } from "../jobs/build.ts"
+import type {
+  FetchedSource,
+  SourceFetcher,
+  SourceRequest,
+} from "../jobs/build.ts"
 import { localSourceFetcher, setSourceFetcher } from "../jobs/build.ts"
 import { logger } from "../log.ts"
 import { ghFetch } from "./api.ts"
@@ -63,23 +67,21 @@ async function download(
   })
 }
 
+/** Where a SourceRequest points, once validated. */
+type ValidatedSource =
+  | { kind: "local" }
+  | { kind: "github"; repo: string; ref: string; installation: number | null }
+
 /**
- * The source fetcher Checkpoint 4 installs, replacing the local-directory seam.
- *
- * Three ways in, and the last one matters: a filesystem path still delegates to
- * localSourceFetcher, which is what keeps checkpoint 3's end-to-end build
- * verification runnable without GitHub.
+ * Validates a request, for both steps: resolve and fetch must agree on what a
+ * request means, and two copies of these checks would drift apart.
  */
-export const githubSourceFetcher: SourceFetcher = async (
-  source,
-  destDir,
-  emit,
-) => {
+function validate(source: SourceRequest): ValidatedSource {
   const { repo, ref, installationId } = source
 
   // A local path: not reachable from the UI, but it is the verification seam.
   if (!isValidRepoRef(repo)) {
-    if (existsSync(repo)) return localSourceFetcher(source, destDir)
+    if (existsSync(repo)) return { kind: "local" }
     throw new Error(
       `"${repo}" is not a repository reference (owner/name) or an existing directory`,
     )
@@ -92,14 +94,37 @@ export const githubSourceFetcher: SourceFetcher = async (
   if (installation !== null && !Number.isFinite(installation)) {
     throw new Error(`installation id "${installationId}" is not a number`)
   }
+  return { kind: "github", repo, ref, installation }
+}
 
-  // Resolve the ref to a commit FIRST, then fetch that exact commit. Fetching
-  // the branch name instead would leave a window in which a push lands between
-  // the two calls, and the deployment row would record a commit that is not the
-  // one that was built.
-  const commit = await getCommit(installation, repo, ref)
-  await download(repo, commit.sha, installation, destDir, emit)
-  return commit satisfies FetchedSource
+/**
+ * The source fetcher Checkpoint 4 installs, replacing the local-directory seam.
+ *
+ * Three ways in, and the last one matters: a filesystem path still delegates to
+ * localSourceFetcher, which is what keeps checkpoint 3's end-to-end build
+ * verification runnable without GitHub.
+ */
+export const githubSourceFetcher: SourceFetcher = {
+  async resolve(source) {
+    const target = validate(source)
+    if (target.kind === "local") return localSourceFetcher.resolve(source)
+    const commit = await getCommit(target.installation, target.repo, target.ref)
+    return commit satisfies FetchedSource
+  },
+
+  async fetch(source, commit, destDir, emit) {
+    const target = validate(source)
+    if (target.kind === "local") {
+      return localSourceFetcher.fetch(source, null, destDir, emit)
+    }
+    // Only ever the commit resolve() returned, never the branch name: fetching
+    // the branch would reopen the window resolve-then-fetch exists to close — a
+    // push landing in between would be built under the previous commit's record.
+    if (!commit) {
+      throw new Error(`no commit was resolved for ${target.repo}`)
+    }
+    await download(target.repo, commit.sha, target.installation, destDir, emit)
+  },
 }
 
 /**

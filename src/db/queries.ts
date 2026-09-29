@@ -1,4 +1,9 @@
 import { and, desc, eq, ne, sql } from "drizzle-orm"
+import {
+  BUILD_PLACEHOLDER,
+  computeKeepSet,
+  isBuiltImageTag,
+} from "../build/images.ts"
 import { decrypt, encrypt } from "../crypto.ts"
 import { interpolate } from "../env/interpolate.ts"
 import { formatEnvText } from "../env/parse.ts"
@@ -382,7 +387,9 @@ export function resourceImage(resource: Resource): string {
 
 /**
  * Every image reference the prune job must not delete: what each resource is
- * running now, plus its rollback target.
+ * running now, its rollback target, and its newest RETAINED_BUILDS distinct
+ * succeeded images — the ones a push can still reuse (D59). The rule itself is
+ * computeKeepSet's; this only gathers its inputs.
  *
  * A rollback target is referenced only by this row — no container holds it, so
  * Docker sees it as unused and would happily reclaim it, silently turning the
@@ -395,13 +402,28 @@ export function resourceImage(resource: Resource): string {
  * the current build is covered by the same line that covers a pulled image.
  */
 export function listProtectedImages(): string[] {
-  const keep = new Set<string>()
-  for (const resource of listAllResources()) {
-    const current = resourceImage(resource)
-    if (current) keep.add(current)
-    if (resource.previousImage) keep.add(resource.previousImage)
-  }
-  return [...keep]
+  const succeeded = orm
+    .select({
+      resourceId: deployments.resourceId,
+      image: deployments.image,
+      createdAt: deployments.createdAt,
+    })
+    .from(deployments)
+    .where(
+      and(
+        eq(deployments.status, "succeeded"),
+        ne(deployments.image, BUILD_PLACEHOLDER),
+      ),
+    )
+    .all()
+  return computeKeepSet({
+    resources: listAllResources().map((resource) => ({
+      id: resource.id,
+      current: resourceImage(resource),
+      previous: resource.previousImage,
+    })),
+    succeeded,
+  })
 }
 
 /**
@@ -494,6 +516,8 @@ export function createDeployment(args: {
   commitSha?: string | null
   commitMessage?: string | null
   commitAuthor?: string | null
+  gitRepo?: string | null
+  buildFingerprint?: string | null
 }): Deployment {
   const deployment: Deployment = {
     id: ulid(),
@@ -507,6 +531,8 @@ export function createDeployment(args: {
     commitSha: args.commitSha ?? null,
     commitMessage: args.commitMessage ?? null,
     commitAuthor: args.commitAuthor ?? null,
+    gitRepo: args.gitRepo ?? null,
+    buildFingerprint: args.buildFingerprint ?? null,
     createdAt: nowIso(),
   }
   orm.insert(deployments).values(deployment).run()
@@ -564,17 +590,30 @@ export function latestDeploymentStatus(
  * redeploy — which carry no commit of their own and read as "—" otherwise
  * (R-4). The image tag embeds the building deployment's id, so a match is that
  * one build.
+ *
+ * The repository and fingerprint travel with it (D51, D59): the row deploys
+ * that build's artifact, so it describes the same inputs as the row that built
+ * it. reusableBuilds dedups by image, so the extra row never counts twice.
  */
 export function commitForImage(
   resourceId: string,
   image: string,
-): Pick<Deployment, "commitSha" | "commitMessage" | "commitAuthor"> | null {
+): Pick<
+  Deployment,
+  | "commitSha"
+  | "commitMessage"
+  | "commitAuthor"
+  | "gitRepo"
+  | "buildFingerprint"
+> | null {
   return (
     orm
       .select({
         commitSha: deployments.commitSha,
         commitMessage: deployments.commitMessage,
         commitAuthor: deployments.commitAuthor,
+        gitRepo: deployments.gitRepo,
+        buildFingerprint: deployments.buildFingerprint,
       })
       .from(deployments)
       .where(
@@ -588,6 +627,51 @@ export function commitForImage(
       .limit(1)
       .get() ?? null
   )
+}
+
+/**
+ * Earlier builds of exactly these inputs, as candidates for a push to reuse
+ * (D59). status='succeeded', same resource and fingerprint, newest first, one
+ * row per distinct image, image passes isBuiltImageTag.
+ *
+ * Succeeded only: a failed deploy's image may have built and then failed its
+ * health gate, and reusing it would repeat that failure without ever trying
+ * the build again. Built tags only, because nothing else is guaranteed to have
+ * come from this server's own build — an image that is not one would be taken
+ * from wherever the daemon got it. Whether the image is still on the server is
+ * the caller's question, asked of Docker.
+ */
+export function reusableBuilds(
+  resourceId: string,
+  fingerprint: string,
+  limit = 5,
+): Pick<Deployment, "id" | "image" | "commitSha">[] {
+  const rows = orm
+    .select({
+      id: deployments.id,
+      image: deployments.image,
+      commitSha: deployments.commitSha,
+    })
+    .from(deployments)
+    .where(
+      and(
+        eq(deployments.resourceId, resourceId),
+        eq(deployments.status, "succeeded"),
+        eq(deployments.buildFingerprint, fingerprint),
+      ),
+    )
+    .orderBy(desc(deployments.createdAt))
+    .all()
+
+  const seen = new Set<string>()
+  const out: Pick<Deployment, "id" | "image" | "commitSha">[] = []
+  for (const row of rows) {
+    if (out.length >= limit) break
+    if (seen.has(row.image) || !isBuiltImageTag(row.image)) continue
+    seen.add(row.image)
+    out.push(row)
+  }
+  return out
 }
 
 export function updateDeployment(

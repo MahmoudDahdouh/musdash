@@ -1,5 +1,6 @@
 import { ensureBuildkit } from "../build/bootstrap.ts"
 import { removeResourceCache, sweepBuildCache } from "../build/cache.ts"
+import { BUILT_IMAGE_TAG } from "../build/images.ts"
 import { ensureCaddy } from "../caddy/bootstrap.ts"
 import { runApplyDashboardHost } from "./dashboard.ts"
 import { caddy, routeIdFor } from "../caddy/client.ts"
@@ -119,9 +120,14 @@ async function runRemove(payload: RemovePayload): Promise<void> {
 async function runPrune(payload: PrunePayload): Promise<void> {
   const hours = payload.olderThanHours ?? 168
   const keep = listProtectedImages()
+  // musdash's own builds leave on the keep-set's terms, not the age cutoff:
+  // retention per resource is already bounded there, and anything outside it —
+  // superseded, failed, or belonging to a deleted resource — exists nowhere a
+  // user could want it back from (D59).
   const { reclaimedBytes, protectedCount } = await docker.pruneImages(
     hours,
     keep,
+    BUILT_IMAGE_TAG,
   )
   logger.info({ reclaimedBytes, protectedCount, hours }, "pruned images")
 }

@@ -3711,3 +3711,66 @@ branch head would need a GitHub call in the request handler.
 D37's inventory grows by one of each: 18 keys (`deploy-already-started`), 18
 not-found sites (cancel on an unknown deployment), thirteen 400s (cancel on a
 reconcile deployment), all exercised by `scripts/check-error-pages.ts`.
+
+### D59 — built images are never pulled; a push whose build inputs already built reuses that image; three builds are kept per resource
+
+**Never pull a built image.** A git resource's image is
+`musdash/<name>:<short id>`, an unqualified name that Docker resolves to
+`docker.io/musdash/<name>`. Rollback and reconcile went through `resolveImage`,
+which pulls first and falls back to the local store — so whoever controls that
+Docker Hub namespace could have replaced a rollback target. A git resource's
+rollback and reconcile now check `imageExists` and never pull; a missing image
+fails fast ("is no longer on this server … press Deploy to build the branch
+again"). A Docker daemon error during that check reads as a missing image
+too — the same failure, before any new container exists, with the old one
+still serving. Image resources are unchanged: their reference is the user's,
+and re-pulling it is the point.
+
+**Skip a build whose inputs already built (plan D2).** Coolify tags images by
+commit and skips the build when the tag exists. Commit alone is not "same
+image": build-scoped variables, the pack, the Dockerfile path and the build
+context all change the output, and a skip keyed on the commit would make
+"changed `NEXT_PUBLIC_API_URL` and pushed again" a silent no-op — the failure
+D10 warns about. So each git deployment records a **build fingerprint**:
+HMAC-SHA256 over the commit, repository, stored pack, Dockerfile path, build
+context and the resolved build variables, keyed by a key derived from
+`secret.key` (`HMAC(secret, "musdash build fingerprint v1")`). HMAC rather than
+a plain hash, so a leaked database does not let anyone brute-force a
+low-entropy variable offline without the key. The fingerprint is stored on the
+row (migration 0005, with `git_repo`) and never logged; the decrypted values
+never leave the job.
+
+- The stored pack is used, not the detected one: detection needs the
+  downloaded tree, which a skip must not fetch. Detection is a function of the
+  commit, context and Dockerfile path, which are all in the fingerprint.
+- Only pushes reuse. After the commit is resolved and before any download, a
+  webhook deploy looks for the newest succeeded deployment of the same
+  resource with the same fingerprint whose image is still on the server, and
+  deploys that image — no download, no build directory, no BuildKit. Manual
+  Deploy always builds, because pressing it is asking for a build; so does
+  `MUSDASH_BUILD_NO_CACHE`. A Deploy press folded into a queued push (D58)
+  keeps the push's trigger and may reuse; pressing Deploy again once it has
+  finished forces a build.
+- It errs toward building: rows from before 0005 have no fingerprint and never
+  match, and a check of the image that throws builds. What it does not cover:
+  a base image that moved under an unchanged tag, and the builder itself —
+  Railpack, BuildKit and musdash's own build flags. After an upgrade that
+  changes build output, an identical push reuses the image built before it; a
+  manual Deploy always rebuilds.
+- Tags stay per deployment. Commit-keyed tags would collide across
+  environments (a resource name is unique only per environment), and would
+  make the docker.io resolution above predictable.
+
+**Retention: three builds per resource.** D6 protected only each resource's
+current and previous image and let everything else age out after 168h, so a
+busy repository kept a week of builds. The keep-set now also holds the images
+of each resource's newest **three** distinct succeeded deployments — the pool
+D2 reuses from, and the builds a later "deploy this again" can return to
+without rebuilding — and every other
+musdash-built image (recognized by the exact tag shape the build produces; the
+build sets no image labels) is removed by the daily prune whatever its age.
+Never forced, never an image a container uses. Every other image on the host
+keeps the 168h rule — except that an image resource's three newest distinct
+pulled images are now protected too, bounded the same way. A deleted
+resource's builds go at the next prune.
+This supersedes D6's "historical rows are deliberately not protected".

@@ -3,7 +3,12 @@ import { caddy, routeIdFor } from "../caddy/client.ts"
 import { CADDY_CONTAINER } from "../caddy/bootstrap.ts"
 import { MIGRATE_LABEL } from "../caddy/kernel.ts"
 import { CERT_WAIT_MS, waitForCertificate } from "../caddy/tls-probe.ts"
-import { buildFromSource } from "./build.ts"
+import { BUILD_PLACEHOLDER } from "../build/images.ts"
+import {
+  type BuildOptions,
+  buildFromSource,
+  type FetchedSource,
+} from "./build.ts"
 import { config } from "../config.ts"
 import {
   type ContainerState,
@@ -21,6 +26,7 @@ import {
   latestDeploymentStatus,
   markDeploymentFailed,
   resolveEnvVars,
+  reusableBuilds,
   updateDeployment,
   updateResource,
 } from "../db/queries.ts"
@@ -57,8 +63,11 @@ export interface DeployPayload {
    * source every time Docker hiccuped.
    *
    * The inverse matters just as much: a trigger that has no image yet must NOT
-   * set this, or the deploy tries to pull the placeholder tag the row was
-   * created with. See REUSES_IMAGE.
+   * set this, or the deploy looks for the placeholder tag the row was created
+   * with instead of building. See REUSES_IMAGE.
+   *
+   * For a git resource the image is taken from this server only, never pulled
+   * (D59): see step 3 of runDeploy.
    */
   useExistingImage?: boolean
 }
@@ -190,37 +199,75 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     // still exists, so without this they accumulate one per failed attempt.
     await reclaimStrays(resourceId, oldContainerId, emit)
 
-    // 3. obtain the image: build it from source, or pull it.
+    // 3. obtain the image: build it from source (or reuse an identical earlier
+    // build), take a built image from this server, or pull it.
     //
     // The ONLY structural change for git resources. Everything from step 4 on
     // is identical for both kinds, which is deliberate: the zero-downtime
     // ordering below is the product's core guarantee, and a second copy of it
-    // for git resources would be a second place for it to rot.
+    // for git resources would be a second place for it to rot. Every failure
+    // here is thrown before a new container exists, so the old one keeps
+    // serving untouched.
     if (resource.kind === "git" && !payload.useExistingImage) {
-      // Commit metadata is written the moment the source is fetched rather
+      const row = getDeployment(deploymentId)
+      // Only a push may reuse (D59). A push says "deploy what the branch now
+      // holds", and an identical earlier build is exactly that. Deploy is the
+      // button a user presses when they want a build — to pick up a changed
+      // base image, or because they doubt the last one — so it always builds.
+      // MUSDASH_BUILD_NO_CACHE means "build from nothing", which reuse is not.
+      const opts: BuildOptions =
+        row?.trigger === "webhook" && !config.buildNoCache
+          ? {
+              reuse: (commit, fingerprint) =>
+                findReusableImage(
+                  resourceId,
+                  deploymentId,
+                  commit,
+                  fingerprint,
+                  emit,
+                ),
+            }
+          : {}
+      // Commit metadata is written the moment the source is resolved rather
       // than at enqueue time: resolving it in the HTTP handler would put a
       // GitHub call in a request path, and would record the commit that was
       // current when the button was pressed rather than the one this build
       // used. And before the build rather than after it, so a build that fails
-      // still names its commit (P-2).
+      // still names its commit (P-2). One write, so the row never names a
+      // commit without the repository and fingerprint that go with it.
       const built = await buildFromSource(
         resource,
         deploymentId,
         emit,
         env.build,
         env.secrets,
-        (commit) => {
+        (commit, record) => {
           updateDeployment(deploymentId, {
             commitSha: commit.sha,
             commitMessage: commit.message,
             commitAuthor: commit.author,
+            gitRepo: record.repo,
+            buildFingerprint: record.fingerprint,
           })
         },
+        opts,
       )
       image = built.image
       // The deployment row is created before the tag exists, so it holds
       // BUILD_PLACEHOLDER until now.
       updateDeployment(deploymentId, { image })
+    } else if (resource.kind === "git") {
+      // A rollback or reconcile of a git resource: an image this server built.
+      // Never pulled. `musdash/<name>:<id>` is an unqualified name, which
+      // Docker resolves against docker.io — so a pull would fetch whatever
+      // anyone published under that name and run it in place of the user's
+      // own build. Present locally, or the deploy fails here and now.
+      if (!(await docker.imageExists(image))) {
+        throw new Error(
+          `${image} is no longer on this server. musdash never pulls a built image from a registry; press Deploy to build the branch again.`,
+        )
+      }
+      emit(`Using ${image} from this server`)
     } else {
       await resolveImage(image, emit, safe)
     }
@@ -513,6 +560,48 @@ async function resolveImage(
 }
 
 /**
+ * The image of an earlier succeeded build with this fingerprint that is still
+ * on this server, or null to build.
+ *
+ * Asked of Docker rather than trusted from the row: the prune, or a user's
+ * `docker rmi`, may have removed it, and a reuse that then failed at create
+ * would turn a routine push into a failed deploy. Newest first, so a push
+ * reuses the most recent identical build.
+ *
+ * Any failure to ask means "build": reuse is an optimisation, and a daemon that
+ * cannot answer an inspect is no reason to fail a deploy that a build might
+ * still complete. The error itself is not logged — the fingerprint must never
+ * reach a log line, and neither must anything that could echo it.
+ */
+async function findReusableImage(
+  resourceId: string,
+  deploymentId: string,
+  commit: FetchedSource,
+  fingerprint: string,
+  emit: (s: string) => void,
+): Promise<string | null> {
+  for (const match of reusableBuilds(resourceId, fingerprint)) {
+    let present: boolean
+    try {
+      present = await docker.imageExists(match.image)
+    } catch {
+      logger.warn(
+        { resourceId, deploymentId },
+        "could not check for a reusable image; building",
+      )
+      return null
+    }
+    if (present) {
+      emit(
+        `Reusing ${match.image}, already built for commit ${commit.sha.slice(0, 7)} with the same settings; nothing to build`,
+      )
+      return match.image
+    }
+  }
+  return null
+}
+
+/**
  * Removes containers belonging to this resource that are neither the one
  * currently serving nor a sidecar.
  *
@@ -704,24 +793,14 @@ function assertNotRestarted(state: ContainerState): void {
 export type DeployTrigger = "manual" | "rollback" | "reconcile" | "webhook"
 
 /**
- * What a deployment row names as its image until a build has produced one.
- *
- * Every deploy that builds is enqueued with this, never with the image already
- * running: a build that failed left that image on its row, so the one deploy
- * that produced nothing named an image that works (P-2). The pages render it
- * as "Building…" or, once the deploy has ended, "Not built" (P-11).
- */
-export const BUILD_PLACEHOLDER = "(building)"
-
-/**
  * Triggers that deploy an image which already exists locally.
  *
  * Enumerated rather than derived from `trigger !== "manual"`. That inference
  * was correct while there were three triggers and became silently wrong the
  * moment a fourth was added: a webhook deploy would be handed
- * useExistingImage:true and then try to `docker pull` an image literally named
- * BUILD_PLACEHOLDER — which the deployment row carries until a build resolves
- * the real tag.
+ * useExistingImage:true and then look on the server for an image literally
+ * named BUILD_PLACEHOLDER — which the deployment row carries until a build
+ * resolves the real tag — instead of building.
  *
  * Adding a trigger now means choosing a side, instead of inheriting an answer
  * from a comparison that never mentioned the concept.
