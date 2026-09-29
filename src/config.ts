@@ -41,10 +41,11 @@ const schema = z.object({
   // settings row, which the Settings page writes and which wins when present
   // (src/settings.ts). It stays here so a fresh box can be provisioned
   // non-interactively by install.sh. Unset is the normal state: the dashboard
-  // route is then a catch-all answering on the bare server IP, which is the
-  // only address a box without DNS has. Setting it ADDS a host-matched route
-  // and lets Caddy obtain a certificate — Let's Encrypt will not issue for an
-  // IP, so the catch-all stays alongside it as the fallback.
+  // then answers only on IP literals — the bare server IP is the only address a
+  // box without DNS has — and every other name gets a 404 (D55). Setting it
+  // ADDS a host-matched route and lets Caddy obtain a certificate — Let's
+  // Encrypt will not issue for an IP, so the IP-literal route stays alongside
+  // it as the fallback.
   // A BARE hostname: no scheme, no path, no port. It is written straight into a
   // Caddy host matcher, which matches the literal string — so "https://x.com"
   // produces a route that can never match, no certificate, and a clean startup

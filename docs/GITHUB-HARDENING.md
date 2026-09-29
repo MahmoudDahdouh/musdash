@@ -10,9 +10,9 @@ build → verify → validate). The notes here are input for each slice's spec, 
 an approved spec. Anything that departs from an existing decision needs its own
 `docs/DECISIONS.md` entry, marked as such below.
 
-**Status (2026-09-29).** A — built (D55). B — built (D56). C — built (D57). D —
-built: D3 and D4 in D58, D2 in D59, D1 in D60. E — step 1 built (D61); step 2,
-the `git clone` fallback, not started. Small items — built (D62), except
+**Status (2026-09-29).** A — built (D56). B — built (D57). C — built (D58). D —
+built: D3 and D4 in D59, D2 in D60, D1 in D61. E — step 1 built (D62); step 2,
+the `git clone` fallback, not started. Small items — built (D63), except
 branches with a slash, which wait on matrix row 8. The real-VPS matrix below has
 not been run; each entry says what it leaves unverified. Line numbers below are
 as of the plan's writing and have drifted.
@@ -228,7 +228,7 @@ the same point faster with a repeatable real-host run. Record the results as a
 | 3   | Uninstall the App while a resource is linked                  | Resource shows as unlinked; clear message on deploy (A1)      |
 | 4   | Suspend, then unsuspend the installation                      | Clear "suspended" error, then recovers (A1/B3)                |
 | 5   | Regenerate the App's private key in GitHub                    | Clear message; reconnect fixes it                             |
-| 6   | Server clock 2 minutes ahead of real time                     | "Clock is N seconds ahead of GitHub" (B1, D56)                |
+| 6   | Server clock 2 minutes ahead of real time                     | "Clock is N seconds ahead of GitHub" (B1, D57)                |
 | 7   | Repo over 500MB on a slow link                                | Deploys; a stall is reported as a stall (C)                   |
 | 8   | Branch named `feature/x`                                      | Resolves and deploys                                          |
 | 9   | Force-push to the watched branch                              | Deploys the new head                                          |
@@ -239,7 +239,7 @@ the same point faster with a repeatable real-host run. Record the results as a
 
 Row 8, if GitHub does not resolve `feature%2Fx`: encode `getCommit`'s ref per
 path segment, widen the `/repos/*/*/commits/*` shape match in `api.ts` (B2's
-restatement) to the deeper paths that produces, and add tests for both (D62).
+restatement) to the deeper paths that produces, and add tests for both (D63).
 
 ---
 

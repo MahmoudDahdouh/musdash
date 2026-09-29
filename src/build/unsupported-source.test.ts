@@ -161,7 +161,7 @@ describe("LFS pointers", () => {
   })
 
   test("8. without LFS in the ROOT .gitattributes, pointers are not looked for", async () => {
-    // Fail-open by design (D61): nested .gitattributes are not consulted, so a
+    // Fail-open by design (D62): nested .gitattributes are not consulted, so a
     // repository enabling LFS only below the root deploys as before.
     const noAttrs = repo({ "a.bin": POINTER })
     const noFilter = repo({

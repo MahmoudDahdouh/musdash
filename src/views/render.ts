@@ -25,6 +25,9 @@ import statusPartialSrc from "./partials/status.eta" with { type: "text" }
 import appCss from "../../public/app.css" with { type: "text" }
 import appJs from "../../public/app.js" with { type: "text" }
 import alpineJs from "../../public/alpine.js" with { type: "text" }
+// Inlined by `bun build --compile` like the imports above, so the binary
+// reports the version it was built from, not whatever package.json says later.
+import { version as musdashVersion } from "../../package.json"
 
 const eta = new Eta({ autoEscape: true, cache: true })
 // Registered by name so pages can `include("@status", …)`. An "@" name never
@@ -115,6 +118,7 @@ export function renderPage(
     activeProjectId: layout.activeProjectId ?? "",
     activeEnvironmentId: layout.activeEnvironmentId ?? "",
     activeSettings: layout.activeSettings ?? false,
+    version: musdashVersion,
     assetUrl,
     body,
   })

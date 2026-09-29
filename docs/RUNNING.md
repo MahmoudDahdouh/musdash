@@ -4,7 +4,7 @@ How to run the code on your local machine (Windows + WSL2) and on a VPS, step by
 step, and what you can actually do with it once it is up.
 
 This describes the code as it stands after the GitHub hardening slices
-(`docs/GITHUB-HARDENING.md`, D55–D62). Anything not listed under **What works
+(`docs/GITHUB-HARDENING.md`, D56–D63). Anything not listed under **What works
 today** is not built yet.
 
 ---
@@ -46,7 +46,7 @@ today** is not built yet.
   passes its health gate _and_ the Caddy route has switched.
 - One-click rollback to the previous image (rollback never rebuilds), and
   **Deploy this again** on a finished deployment that names a commit or an image
-  (D60).
+  (D61).
 - Live deploy and container logs over SSE.
 - Automatic HTTPS at `<resource>-<environment>.<wildcard-domain>`, plus custom
   domains.
@@ -61,7 +61,7 @@ today** is not built yet.
 accounts whose repositories you deploy. **From repository** then lists every
 repository those installations grant, and a push to a resource's branch deploys
 it. A push is not deployed when every commit's subject line carries `[skip ci]`,
-`[ci skip]`, `[no ci]`, `[skip cd]` or `[cd skip]` (D62). Connecting needs a
+`[ci skip]`, `[no ci]`, `[skip cd]` or `[cd skip]` (D63). Connecting needs a
 dashboard address of its own (B4), not a bare IP.
 
 ---
@@ -285,8 +285,11 @@ and Caddy volumes; and starts the systemd unit.
 http://<server-ip>
 ```
 
-Caddy serves the dashboard on port 80 as a catch-all route, so the bare IP works
-with no DNS at all. Create your admin account and start adding projects.
+Caddy serves the dashboard on port 80 to any request addressed to an IP, so the
+bare IP works with no DNS at all. Create your admin account and start adding
+projects. A request for any hostname musdash does not know — a deleted app's
+domain, a typo, `<server-ip>.sslip.io` — gets an empty 404, not the dashboard
+(D55).
 
 **This is plain HTTP.** No certificate authority issues certificates for an IP
 address, so until you attach a domain the admin session cookie travels in
@@ -307,7 +310,8 @@ Point your domain's A record at the server:
 Then in the dashboard: create a project, add a resource, deploy it, and open its
 **Domains** tab. Add `example.com`. Caddy obtains a certificate automatically and
 routes the domain to that container. Resource routes carry a host matcher and are
-evaluated before the dashboard's catch-all, so your app wins its own domain.
+evaluated before the dashboard's routes, so your app wins its own domain. When
+you remove the domain or delete the resource, the name answers 404.
 
 ### B4. Move the dashboard onto a domain (recommended)
 
@@ -319,6 +323,13 @@ stored in SQLite, a job pushes the route to Caddy within a second, and Caddy
 obtains a certificate for the name automatically. The server's bare address
 keeps working over plain HTTP as a fallback, so a DNS or certificate problem
 cannot lock you out.
+
+The dashboard answers only on this hostname and on IP addresses. If you reach
+it any other way — a bookmarked `<server-ip>.sslip.io`, a tunnel or load
+balancer that forwards to Caddy's port 80 under its own name, or GitHub
+webhooks sent to such a name — those requests get a 404. Set that name here, or
+point the tunnel at port 8000 instead of 80. An SSH tunnel works the same way:
+forward to `localhost:8000`, not `:80`.
 
 The page tells you if the name does not resolve to this server, and if the proxy
 cannot reach the dashboard — see the firewall note below, which is the usual
@@ -476,7 +487,7 @@ request and no `.git` directory on disk. BuildKit builds it, the image is loaded
 into the daemon, and the normal deploy pipeline takes over from there.
 
 A push to the tracked branch deploys it while **Deploy automatically** is on,
-unless every commit in the push has a skip marker in its subject line (D62). A
+unless every commit in the push has a skip marker in its subject line (D63). A
 marker in a commit's body does not count. **Deploy**, **Rollback** and **Deploy
 this again** ignore markers.
 
@@ -511,9 +522,9 @@ this again** ignore markers.
   arrived (D39).
 - **Rollback** — one click, back to the previous image. It reuses the existing
   image and never rebuilds. To go further back, open any finished deployment and
-  press **Deploy this again** (D60). For a git deployment it reuses that build's
+  press **Deploy this again** (D61). For a git deployment it reuses that build's
   image while it is still on the server (the newest three builds per resource
-  are kept, D59), and otherwise rebuilds the recorded commit — only while the
+  are kept, D60), and otherwise rebuilds the recorded commit — only while the
   resource still points at the repository it came from. For an image
   deployment it pulls that tag again.
 - **Stop / restart / delete** — delete removes the container, the route, and the
@@ -535,7 +546,7 @@ this again** ignore markers.
     realistic causes are the first push of a long-lived branch (GitHub includes
     up to 2048 commits) or one commit touching thousands of files. Press
     **Deploy** to deploy it by hand.
-- **Submodules and Git LFS** (D61) — musdash fetches a GitHub repository as a
+- **Submodules and Git LFS** (D62) — musdash fetches a GitHub repository as a
   tarball, which does not carry submodules and stores LFS files as pointers. A
   deploy whose build context contains a submodule, or an LFS pointer when the
   repository's root `.gitattributes` enables LFS, fails before the build with a
@@ -656,8 +667,11 @@ Actions, for example — and deployed as an image.
 for a one-page app on the 2GB test host and stalls below that — more than the
 ~1 GiB BuildKit gets there. The same app built with webpack in 408 MiB. On a
 2GB host, add the build variable `RAILPACK_BUILD_CMD=npm run build --
---webpack` (or put `next build --webpack` in your Dockerfile); on 1GB, build
-elsewhere (D52).
+--webpack` on that resource (or put `next build --webpack` in your
+Dockerfile); on 1GB, build elsewhere (D52). Do not set it on the project or
+environment: every app there inherits it, and Next.js 15 and older fail with
+`Unknown or unexpected option: --webpack`, since they build with webpack
+already.
 
 Caddy's cap is sized the same way: a quarter of the host's memory, at least
 128 MiB and at most 512 MiB (D46) — 128 MiB on a 512MB host, 224 MiB on 1GB.

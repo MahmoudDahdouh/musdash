@@ -17,7 +17,7 @@ export const BUILD_PLACEHOLDER = "(building)"
 
 /**
  * How many distinct succeeded builds of one resource the prune keeps, on top of
- * the image it runs and its rollback target (D59).
+ * the image it runs and its rollback target (D60).
  *
  * Three, because each one is a full image on a disk that is usually small, and
  * a push that matches an older build (a revert, a redelivered webhook) is the

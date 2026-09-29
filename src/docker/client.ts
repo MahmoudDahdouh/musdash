@@ -238,7 +238,7 @@ export interface DockerClient {
    * `ageExempt` names images that are removed whatever their age: one with at
    * least one tag, every one of which matches. musdash's own builds exist
    * nowhere else and their retention is decided by `keep`, so the age cutoff
-   * would only let superseded builds fill the disk for a week (D59). A pattern
+   * would only let superseded builds fill the disk for a week (D60). A pattern
    * rather than a list, because the images to remove are exactly the ones no
    * row names any more.
    */

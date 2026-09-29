@@ -71,7 +71,7 @@ export interface DeployPayload {
    * with instead of building. See REUSES_IMAGE.
    *
    * For a git resource the image is taken from this server only, never pulled
-   * (D59): see step 3 of runDeploy.
+   * (D60): see step 3 of runDeploy.
    */
   useExistingImage?: boolean
   /**
@@ -224,7 +224,7 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     // here is thrown before a new container exists, so the old one keeps
     // serving untouched.
     if (resource.kind === "git" && payload.redeployOf !== undefined) {
-      // "Deploy this again" of a git deployment (D60). Its image if this
+      // "Deploy this again" of a git deployment (D61). Its image if this
       // server still holds it — never pulled, for the reason the rollback
       // branch below gives — otherwise the recorded commit built again.
       // Decided here, not at enqueue: the prune may remove the image while
@@ -304,7 +304,7 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
       }
     } else if (resource.kind === "git" && !payload.useExistingImage) {
       const row = getDeployment(deploymentId)
-      // Only a push may reuse (D59). A push says "deploy what the branch now
+      // Only a push may reuse (D60). A push says "deploy what the branch now
       // holds", and an identical earlier build is exactly that. Deploy is the
       // button a user presses when they want a build — to pick up a changed
       // base image, or because they doubt the last one — so it always builds.
@@ -1104,7 +1104,7 @@ const FINISHED: ReadonlySet<Deployment["status"]> = new Set([
 ])
 
 /**
- * Whether a deployment can be deployed again ("Deploy this again", D60).
+ * Whether a deployment can be deployed again ("Deploy this again", D61).
  *
  * Pure, so the page and the handler agree on the answer without either asking
  * Docker or GitHub. A queued or running one is still in progress. A git row

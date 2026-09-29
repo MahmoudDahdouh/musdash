@@ -286,7 +286,7 @@ export const appRoutes = new Elysia()
         image: resourceImage(resource),
         // One query per resource, like domainCount: a project page holds a
         // handful, and navTree already does the whole tree in one statement.
-        // Cancelled rows are skipped there and here alike (D58).
+        // Cancelled rows are skipped there and here alike (D59).
         state: resourceState(resource, latestDeploymentStatus(resource.id)),
         domainCount: listDomains(resource.id).length,
       })),
@@ -500,7 +500,7 @@ export const appRoutes = new Elysia()
           tab,
           image: resourceImage(resource),
           // Not deployments[0]: that may be a cancelled row, which did nothing
-          // and must not define the state (D58).
+          // and must not define the state (D59).
           state: resourceState(resource, latestDeploymentStatus(resource.id)),
           deployments,
           domains: listDomains(resource.id),
@@ -868,7 +868,7 @@ export const appRoutes = new Elysia()
   })
 
   /**
-   * Removes a queued deploy from the queue (D58).
+   * Removes a queued deploy from the queue (D59).
    *
    * No await anywhere, and no Docker: the cancel is one guarded UPDATE racing
    * the worker's claim, and whichever runs first wins outright. Losing that
@@ -899,7 +899,7 @@ export const appRoutes = new Elysia()
   )
 
   /**
-   * "Deploy this again" (D60): a new deployment repeating a finished one.
+   * "Deploy this again" (D61): a new deployment repeating a finished one.
    *
    * No await, no Docker, no GitHub: whether the image is still on the server,
    * and whether the commit can be built again, is decided by the job, which

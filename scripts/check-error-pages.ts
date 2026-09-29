@@ -656,7 +656,7 @@ try {
     )
   }
 
-  // ---- criterion 6: the 16 not-found sites (the re-link 404, D55, is
+  // ---- criterion 6: the 16 not-found sites (the re-link 404, D56, is
   // checked with the other re-link cases after seeding)
   const env = { runtime: "A=1" }
   const notFound: [string, "GET" | "POST", string, Record<string, string>?][] =
@@ -865,7 +865,7 @@ try {
          VALUES (?, ?, 'noimage', 'image', '{}', 'stopped', 512, ?)`,
       ).run(noImage, eid, now)
       // A reconcile deployment: the cancel route refuses it with a 400
-      // (D58), and no form can create one.
+      // (D59), and no form can create one.
       db.query(
         `INSERT INTO deployments (id, resource_id, status, image, trigger,
            created_at) VALUES (?, ?, 'queued', 'nginx:alpine', 'reconcile', ?)`,

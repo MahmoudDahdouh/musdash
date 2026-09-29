@@ -73,7 +73,7 @@ export function claim(database: Database = defaultDb): JobRow | null {
   const now = new Date()
   const leaseUntil = new Date(now.getTime() + LEASE_MS).toISOString()
 
-  // Only 'pending' is claimable, so a 'cancelled' deploy is never run (D58).
+  // Only 'pending' is claimable, so a 'cancelled' deploy is never run (D59).
   const rows = database
     .query<JobRow, [string, string]>(
       `UPDATE jobs
@@ -155,7 +155,7 @@ export function fail(
  * re-run the first one's job; that is not a supported setup.
  */
 export function recoverOrphanedLeases(database: Database = defaultDb): number {
-  // Only 'leased': a 'cancelled' job never ran, so it is never revived (D58).
+  // Only 'leased': a 'cancelled' job never ran, so it is never revived (D59).
   const res = database.run(
     `UPDATE jobs SET status = 'pending', leased_until = NULL
       WHERE status = 'leased'`,

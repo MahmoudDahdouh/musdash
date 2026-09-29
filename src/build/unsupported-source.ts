@@ -4,7 +4,7 @@ import { isAbsolute, join, posix, relative, resolve, sep } from "node:path"
 
 /**
  * Refuses a GitHub tarball deploy that depends on Git submodules or Git LFS
- * (D61). GitHub's archive does not carry either: a submodule arrives as an
+ * (D62). GitHub's archive does not carry either: a submodule arrives as an
  * empty directory (or nothing) and an LFS-tracked file arrives as its pointer
  * text. Building from that tree "succeeds" and ships a broken app, so the
  * deploy stops before the build with a message naming the feature and a path.
@@ -224,7 +224,7 @@ function configValue(raw: string): string {
  * to find `path` in the files real repositories contain. It does not handle
  * escaped quotes, line continuations or a comment character with no space
  * before it, and a path it misreads is then "missing" and refuses — a rare
- * false refusal, like a stale entry (D61), not a skipped check.
+ * false refusal, like a stale entry (D62), not a skipped check.
  */
 function parseGitmodules(text: string): string[] {
   const paths = new Map<string, string>()
@@ -320,7 +320,7 @@ async function findSubmodules(
 /**
  * Whether the root .gitattributes routes anything through LFS. Only the root
  * file is consulted: nested .gitattributes and .git/info/attributes are out of
- * scope (D61), so a repository that enables LFS only below the root is not
+ * scope (D62), so a repository that enables LFS only below the root is not
  * detected — fail-open by design.
  */
 async function lfsEnabled(
@@ -557,7 +557,7 @@ export function unsupportedSourceMessage(f: SourceFindings): string {
   return parts.join(" ")
 }
 
-/** Thrown before the build when the source needs submodules or LFS (D61). */
+/** Thrown before the build when the source needs submodules or LFS (D62). */
 export class UnsupportedSourceError extends Error {
   override readonly name = "UnsupportedSourceError"
   readonly findings: SourceFindings

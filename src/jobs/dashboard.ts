@@ -96,15 +96,17 @@ function localAddresses(): string[] {
  * Can Caddy actually reach this process?
  *
  * The single most useful check in the slice. It traverses host → the proxy's
- * published :80 → the catch-all route → the ExtraHosts alias → back into this
- * process, so a 200 proves the bind address, the bridge path, the firewall and
- * the catch-all's continued existence in one call. Without it, a host firewall
- * that DROPs traffic from the docker bridge presents as an unexplained timeout
- * with nothing in any log.
+ * published :80 → the IP-literal dashboard route → the ExtraHosts alias → back
+ * into this process, so a 200 proves the bind address, the bridge path, the
+ * firewall and that route's continued existence in one call. Without it, a
+ * host firewall that DROPs traffic from the docker bridge presents as an
+ * unexplained timeout with nothing in any log.
  *
- * The Host header is a bare address on purpose: it must not match the
- * host-matched route, or the automatic HTTP-to-HTTPS redirect that route
- * installs would answer instead of the dashboard.
+ * The Host header is a bare address on purpose, twice over: it must not match
+ * the host-matched route, or the automatic HTTP-to-HTTPS redirect that route
+ * installs would answer instead of the dashboard; and it MUST match the
+ * IP-literal route (D55), because any other name now falls through to the
+ * final 404.
  */
 async function checkReachable(): Promise<
   Pick<DashboardCheck, "reachable" | "reachError">

@@ -82,7 +82,7 @@ export async function convertManifestCode(code: string): Promise<ConvertedApp> {
  * forever: it shows in Settings and the account picker, and minting a token for
  * it 404s at deploy time. Push deliveries have been handled on a real host
  * (D52), but installation lifecycle deliveries are still unverified against
- * real GitHub (D55), so a missed `deleted` is a realistic state rather than an
+ * real GitHub (D56), so a missed `deleted` is a realistic state rather than an
  * edge case — and "Sync installations" is precisely the button the UI points
  * the user at to fix it. An upsert-only sync cannot fix it, which made the
  * button a placebo.

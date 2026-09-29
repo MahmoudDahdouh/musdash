@@ -42,7 +42,7 @@ async function download(
   // failure there is not a stale token, and re-minting would not fix it. The
   // whole download (this request, codeload, tar) is retried at most once, and
   // only after the first tar has exited and `dest` has been emptied: a retry
-  // never extracts over a half-written tree (D57).
+  // never extracts over a half-written tree (D58).
   const locate = () =>
     installationId === null
       ? ghFetch(path, { kind: "none" }, init)

@@ -256,7 +256,9 @@ bun add <pkg>          # bun is the package manager — bun.lock is committed
   `install.sh` writes are a second layer, and are often inactive on provider
   images.
 - New Caddy routes are inserted at index 0 (`PUT .../routes/0`), never appended:
-  the dashboard's catch-all must stay last or it swallows every resource.
+  the matcher-less `musdash-not-found` route must stay last or it swallows every
+  resource. The dashboard's fallback matches IP literals only, never by `host`
+  matcher (D55).
 - Docker socket access is root-equivalent on the host. Treat any path that can
   influence a container spec as a privilege boundary.
 
@@ -293,7 +295,7 @@ bugs have been: Docker log frame demultiplexing (frames are 8-byte-header
 multiplexed and split across chunk boundaries), env var encryption round-trip
 and tamper detection, job claiming under concurrency, `KEY=value` env text
 parsing, and — since a real VPS caught both — Caddy route order against the
-dashboard catch-all and the dashboard port's peer check. **Do not scaffold broad
+dashboard's route tail and the dashboard port's peer check. **Do not scaffold broad
 unit coverage** — everything else is verified manually against a real VPS. A
 check you describe as done must exist in the repo; a throwaway script is not
 verification anyone else can repeat.

@@ -142,7 +142,7 @@ export const deployments = sqliteTable(
     commitSha: text("commit_sha"),
     commitMessage: text("commit_message"),
     commitAuthor: text("commit_author"),
-    // What the build was made from (0005, D59). The repository as fetched, and
+    // What the build was made from (0005, D60). The repository as fetched, and
     // a keyed HMAC of every build input — the key that lets a push reuse an
     // image instead of building it again. Null for image deploys and for rows
     // written before 0005, which therefore never match.
@@ -229,7 +229,7 @@ export const domains = sqliteTable("domains", {
 })
 
 // jobs.status is TEXT with no CHECK constraint either, so "cancelled" (a deploy
-// removed from the queue before the worker claimed it, D58) needs no migration.
+// removed from the queue before the worker claimed it, D59) needs no migration.
 export type JobStatus = "pending" | "leased" | "done" | "failed" | "cancelled"
 // jobs.type is a plain TEXT column with no CHECK constraint, so widening this
 // union needs no migration.

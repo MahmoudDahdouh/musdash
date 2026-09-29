@@ -62,7 +62,7 @@ export interface FetchedSource {
  * reachable through the new fetcher, which is what keeps checkpoint 3's
  * verification runnable.
  *
- * Two steps rather than one (D59): whether a build can be skipped depends on
+ * Two steps rather than one (D60): whether a build can be skipped depends on
  * the commit, so the commit has to be known before anything is downloaded. One
  * combined call would download a tree only to throw it away.
  */
@@ -125,7 +125,7 @@ export interface BuildOptions {
   reuse?: (commit: FetchedSource, fingerprint: string) => Promise<string | null>
   /**
    * Build this commit instead of the branch head: 40 lowercase hex. Set only
-   * by "Deploy this again", which repeats a recorded build (D60) — the branch
+   * by "Deploy this again", which repeats a recorded build (D61) — the branch
    * may have moved on since, and building its head would deploy something the
    * user did not pick.
    */
@@ -220,7 +220,7 @@ export async function buildFromSource(
 
     // A tarball leaves a submodule's directory empty and an LFS file as its
     // pointer; the build would fail somewhere unrelated, or worse, ship the
-    // pointer text (D61). Only a downloaded tree is scanned: the local-directory
+    // pointer text (D62). Only a downloaded tree is scanned: the local-directory
     // seam resolves no commit and copies a real checkout. After onCommit, so a
     // refused deploy still names its commit (P-2).
     if (commit) {

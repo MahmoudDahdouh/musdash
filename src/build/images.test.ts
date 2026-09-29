@@ -6,7 +6,7 @@ import {
 } from "./images.ts"
 
 /**
- * What the daily prune keeps of musdash's own builds (D59). Those images are
+ * What the daily prune keeps of musdash's own builds (D60). Those images are
  * removed whatever their age unless this set names them, and a built image
  * exists nowhere but this server — so a keep-set that drops the wrong one
  * destroys a rollback target or a reusable build permanently, and one that

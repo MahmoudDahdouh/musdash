@@ -287,7 +287,7 @@ export class DockerHttpClient implements DockerClient {
    * `label!`; a `reference` filter is rejected outright with
    * `invalid filter 'reference'`, and `label!` is useless here because the images
    * musdash deploys carry no musdash labels — pulled ones are the user's, and
-   * built ones are recognized by their tag instead (`ageExempt`, D59). A blanket
+   * built ones are recognized by their tag instead (`ageExempt`, D60). A blanket
    * `dangling:false` prune would happily delete a rollback target, which is
    * referenced only by a row in the database and is invisible to Docker.
    *

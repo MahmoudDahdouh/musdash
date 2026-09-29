@@ -7,7 +7,7 @@ import { GitHubError } from "./api.ts"
  *
  * Pure on purpose — no database, config or logger — so every stop and every
  * retry can be exercised against a local server. `tarball.ts` binds it to
- * ghFetch, the installation-token wrapper and pino (D57).
+ * ghFetch, the installation-token wrapper and pino (D58).
  *
  * The signed URL codeload is reached through is a credential: it grants read
  * access to the archive. It is only ever a `fetch()` argument here, never part
@@ -268,7 +268,7 @@ export async function fetchArchive(a: ArchiveAttempt): Promise<void> {
     // highWaterMark 0, so it holds nothing itself: each pull is one read,
     // made only when Bun wants more for tar's stdin. Measured on Bun 1.4.2
     // (the pinned runtime) with a 400MB body into a paused consumer: +9 MB
-    // RSS through this wrapper against +5 MB for the native body (D57).
+    // RSS through this wrapper against +5 MB for the native body (D58).
     //
     // A read that fails closes the wrapper rather than erroring it: tar then
     // sees a truncated gzip and exits, and `readFailed` names the real cause.

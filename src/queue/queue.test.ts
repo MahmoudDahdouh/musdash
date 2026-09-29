@@ -310,7 +310,7 @@ describe("findPendingJob", () => {
 })
 
 /**
- * Cancelling a queued deploy (D58) is one guarded UPDATE racing claim(): the
+ * Cancelling a queued deploy (D59) is one guarded UPDATE racing claim(): the
  * statement that runs first moves the row out of 'pending', and the other
  * matches nothing. So a cancelled deploy can never run, and a claimed one can
  * never be cancelled.
@@ -400,7 +400,7 @@ describe("cancelPendingDeploy", () => {
 
 /**
  * A push whose commit a running build of the same resource already fetched
- * queues nothing (D58). The running build is found by its leased job; every
+ * queues nothing (D59). The running build is found by its leased job; every
  * other state, resource, or a rollback must not match.
  */
 describe("findLeasedJobs", () => {

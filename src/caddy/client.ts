@@ -62,7 +62,12 @@ export class CaddyError extends Error {
 export interface RouteSpec {
   /** Stable id: `musdash-<resourceId>`. */
   id: string
-  /** Empty means catch-all: no host matcher, so it answers on any address. */
+  /**
+   * The names the route answers on. Empty would mean no host matcher — a route
+   * answering on every address — which nothing musdash writes uses any more:
+   * the dashboard's tail routes are built separately (D55), and a resource
+   * with no hosts gets no route at all.
+   */
   hosts: string[]
   /** Container IP or name, plus port. */
   upstream: string
@@ -136,11 +141,22 @@ function routeHostsOf(route: unknown): string[] {
   return host.filter((h): h is string => typeof h === "string")
 }
 
-function routeBody(spec: RouteSpec): unknown {
+/** A route as sent to the admin API. The `@id` is what every write addresses. */
+export type RouteJson = { "@id": string } & Record<string, unknown>
+
+/**
+ * The JSON for a resource route (and the dashboard's host route).
+ *
+ * Its output must stay byte-for-byte stable: ensureRoute compares it against
+ * what Caddy stored, so any change here rewrites every resource route on the
+ * next boot — a proxy reload per resource.
+ */
+function routeBody(spec: RouteSpec): RouteJson {
   return {
     "@id": spec.id,
     // An empty matcher array is not the same as a matcher with no hosts: the
-    // latter matches nothing. Omit `match` outright to get a catch-all.
+    // latter matches nothing. Omitting `match` outright answers on every
+    // address; no caller passes empty hosts any more (see RouteSpec.hosts).
     ...(spec.hosts.length > 0 ? { match: [{ host: spec.hosts }] } : {}),
     handle: [
       {
@@ -304,13 +320,14 @@ export class CaddyClient {
    * config reload inside Caddy; the listener side of that is handled by the
    * proxy's tcp_migrate_req sysctl, see D30.)
    *
-   * A NEW route is inserted at index 0, never appended. Resource routes carry
-   * host matchers and the dashboard's catch-all has none, so the catch-all must
-   * stay last or it swallows every resource behind it — which is what appending
-   * did: every resource was unreachable after its first deploy, on every
-   * install (D20, VPS test C-1). PUT on an array index inserts; POST appends.
-   * Relative order among resource routes does not matter, because no two of
-   * them match the same host.
+   * A NEW route is inserted at index 0, never appended. The list ends in the
+   * dashboard's tail (see ensureDashboardRoutes), whose last route —
+   * musdash-not-found — has no matcher and is terminal, so anything appended
+   * behind it is never reached. Appending is what shipped once: every resource
+   * was unreachable after its first deploy, on every install (D20, VPS test
+   * C-1). PUT on an array index inserts; POST appends. Relative order among
+   * resource routes does not matter, because no two of them match the same
+   * host.
    *
    * Returns the hosts the route matched BEFORE this write — [] when it is new.
    * They come from the GET this already makes to choose PATCH or PUT, so the
@@ -360,15 +377,18 @@ export class CaddyClient {
 
   /**
    * Appends a route to the END of the list, without replacing an existing one.
+   * The body is sent as-is.
    *
-   * Only the dashboard's routes are appended. They must always land last, so
-   * they are deleted and re-appended rather than upserted — upsertRoute would
-   * insert them at the front.
+   * Only the dashboard's tail routes are appended. They must always land last,
+   * so they are deleted and re-appended rather than upserted — upsertRoute
+   * would insert them at the front. It takes a prebuilt body rather than a
+   * RouteSpec because two of the three tail routes are not host-matched
+   * resource-shaped routes at all.
    */
-  async appendRoute(spec: RouteSpec): Promise<void> {
+  async appendRoute(route: RouteJson): Promise<void> {
     await this.expectOk(`/config/apps/http/servers/${SERVER}/routes/`, {
       method: "POST",
-      ...this.json(routeBody(spec)),
+      ...this.json(route),
     })
   }
 
@@ -465,11 +485,91 @@ export function autoDomainFor(
   return `${resourceName}-${environmentName}.${config.wildcardDomain}`.toLowerCase()
 }
 
-/** Stable id for the dashboard's catch-all route. */
+/**
+ * Stable id for the dashboard's IP-literal route. The id predates D55, when this
+ * was a matcher-less catch-all; it is kept so an upgraded proxy's old route is
+ * the one ensureDashboardRoutes deletes.
+ */
 export const DASHBOARD_ROUTE_ID = "musdash-dashboard"
 
 /** Stable id for the dashboard's host-matched route, when a hostname is set. */
 export const DASHBOARD_HOST_ROUTE_ID = "musdash-dashboard-host"
+
+/**
+ * Stable id for the final 404. Resource route ids are `musdash-<ULID>`, and a
+ * ULID is upper-case Crockford base32, so no resource can collide with it.
+ */
+export const NOT_FOUND_ROUTE_ID = "musdash-not-found"
+
+/**
+ * Every id ensureDashboardRoutes owns. syncResourceRoutes deletes any other
+ * `musdash-` route the database does not want, so a tail id missing from this
+ * set is silently removed on the next domain change.
+ */
+export const DASHBOARD_TAIL_ROUTE_IDS: ReadonlySet<string> = new Set([
+  DASHBOARD_HOST_ROUTE_ID,
+  DASHBOARD_ROUTE_ID,
+  NOT_FOUND_ROUTE_ID,
+])
+
+/**
+ * An IP literal as `{http.request.host}` presents it: dotted-quad IPv4, or
+ * anything with a colon in it made of hex digits, dots and colons, optionally
+ * in brackets. Caddy strips the port, and strips IPv6 brackets only when a port
+ * was present, so both bracketed and bare IPv6 must match.
+ *
+ * Deliberately loose. It only has to separate IP literals from DNS names, and
+ * no DNS name has a colon or is four all-digit labels — `999.1.1.1` matching is
+ * harmless. It matches ANY IP, not only this server's, so it needs no address
+ * discovery and still works behind NAT and for the loopback reachability probe.
+ *
+ * Written once for both regex engines: Caddy evaluates it with Go's RE2 through
+ * CEL, and the tests with JavaScript's RegExp. It must contain no `'`, because
+ * it is embedded in a single-quoted CEL string.
+ */
+export const IP_LITERAL_HOST_PATTERN =
+  "^([0-9]{1,3}(\\.[0-9]{1,3}){3}|\\[?[0-9a-fA-F:.]*:[0-9a-fA-F:.]*\\]?)$"
+
+/**
+ * The CEL matcher expression. A compile-time constant on purpose: nothing from
+ * the database or the environment ever reaches it, so no configured value can
+ * inject into the expression. Every `\` is doubled because a CEL single-quoted
+ * string treats backslash as an escape, and the regex needs its backslashes to
+ * survive that unescaping.
+ */
+const IP_LITERAL_EXPRESSION = `{http.request.host}.matches('${IP_LITERAL_HOST_PATTERN.replaceAll("\\", "\\\\")}')`
+
+/**
+ * The dashboard's route for requests addressed to an IP literal.
+ *
+ * An `expression` matcher, never `host`. Automatic HTTPS treats every name in
+ * a host matcher as one it manages, and redirects :80 to :443 for managed
+ * names — and Let's Encrypt will not issue for an IP, so a host-matched IP is
+ * a 308 toward an https:// URL that can never work: the D24 lockout. The
+ * expression matcher gives automatic HTTPS no name to manage.
+ */
+export function dashboardIpRouteBody(upstream: string): RouteJson {
+  return {
+    "@id": DASHBOARD_ROUTE_ID,
+    match: [{ expression: IP_LITERAL_EXPRESSION }],
+    handle: [{ handler: "reverse_proxy", upstreams: [{ dial: upstream }] }],
+    terminal: true,
+  }
+}
+
+/**
+ * The final route: an empty 404 for every request nothing earlier matched — a
+ * deleted resource's name, a random sslip.io label, a foreign domain pointed at
+ * the box. No `match`, so it must be the very last route; no body, because
+ * user-facing strings live in templates and this is not a musdash page.
+ */
+export function notFoundRouteBody(): RouteJson {
+  return {
+    "@id": NOT_FOUND_ROUTE_ID,
+    handle: [{ handler: "static_response", status_code: 404 }],
+    terminal: true,
+  }
+}
 
 /** A dotted hostname: label(.label)+, no leading or trailing dash. */
 export const HOSTNAME_RE =
@@ -480,38 +580,49 @@ export function isValidHostname(host: string): boolean {
 }
 
 /**
- * Routes the dashboard through Caddy, on its hostname AND on anything else.
+ * Writes the dashboard's tail of the route list: its hostname, any IP literal,
+ * and a 404 for everything else.
  *
- * Two routes, always, and the order matters twice over.
+ * Up to three routes, in this order, after every resource route:
  *
- * The host-matched route is what turns automatic HTTPS on: Caddy issues a
- * certificate for any name it sees in a host matcher, and will not issue for a
- * bare IP. The catch-all is what keeps the operator from being locked out — it
- * is the only way back in when DNS breaks, the registrar lapses, or issuance
- * fails, which is exactly the state this codebase shipped into. An earlier
- * version REPLACED the catch-all with the host route, and the result was that
- * every request to the bare IP became a 308 toward an https:// URL that could
- * never have a certificate. Caddy redirects :80 to :443 only for names it
- * manages, so with the catch-all present a bare-IP request is served, not
- * redirected.
+ * 1. musdash-dashboard-host — a host matcher on the configured hostname, only
+ *    when one is set. The host matcher is what turns automatic HTTPS on: Caddy
+ *    issues a certificate for, and redirects :80 to :443 for, any name it sees
+ *    in one.
+ * 2. musdash-dashboard — an `expression` matcher accepting IP literals only.
+ *    This is the lockout protection D24 exists for: when DNS breaks, the
+ *    registrar lapses, or issuance fails, the bare server IP still serves the
+ *    dashboard over plain HTTP. It must NEVER be a `host` matcher — that would
+ *    make the IP a managed name, and a managed name gets the :80→:443 redirect
+ *    toward an https:// URL Let's Encrypt will never issue for, which is
+ *    exactly the lockout D24 observed on a real VPS.
+ * 3. musdash-not-found — no matcher, an empty 404. It must be LAST: Caddy
+ *    evaluates routes in array order and every route musdash writes is
+ *    `terminal`, so a matcher-less route swallows everything behind it.
+ *    upsertRoute inserts new resource routes at the front for exactly this
+ *    reason.
  *
- * Ordering: Caddy evaluates routes in array order and every route musdash
- * writes is `terminal`. Resource routes carry host matchers, so a request for a
- * deployed app's domain matches its own route and stops. The catch-all matches
- * everything, so it must be LAST or it swallows every resource. upsertRoute
- * inserts new resource routes at the front for exactly this reason. Both
- * dashboard routes are still deleted and re-appended as a unit on every
- * ensureCaddy(): that is what repairs a config written before the insert fix,
- * where resource routes had been appended behind the catch-all.
+ * D55 reverses the cost D20 and D24 accepted, that the dashboard answered on
+ * any Host header. It no longer does: a deleted resource's name, a random
+ * sslip.io label, or a foreign domain pointed at the box now gets a 404 rather
+ * than the musdash sign-in page. The hostname and IP literals still reach it.
+ *
+ * All three are deleted and re-appended as a unit on every ensureCaddy() and
+ * every dashboard-host change. That also repairs a config written before the
+ * insert fix, where resource routes had been appended behind the old
+ * catch-all, and upgrades a pre-D55 matcher-less musdash-dashboard in place.
+ *
+ * `client` is injectable for the tests; production callers use the default.
  */
 export async function ensureDashboardRoutes(
   host: string | undefined,
+  client: CaddyClient = caddy,
 ): Promise<void> {
   // Delete-then-append rather than PATCH in place: the ids may sit anywhere in
   // the array from a previous boot, and only a fresh append puts them last.
-  // deleteRoute treats 404 as success, so removing both unconditionally is safe.
-  await caddy.deleteRoute(DASHBOARD_HOST_ROUTE_ID)
-  await caddy.deleteRoute(DASHBOARD_ROUTE_ID)
+  // deleteRoute treats 404 as success, so removing all of them
+  // unconditionally is safe.
+  for (const id of DASHBOARD_TAIL_ROUTE_IDS) await client.deleteRoute(id)
 
   // Caddy dials the host through the ExtraHosts alias rather than a container
   // name: the dashboard runs on the host, not on this network (D2). The alias
@@ -519,13 +630,14 @@ export async function ensureDashboardRoutes(
   // every interface rather than loopback (D23).
   const upstream = `${HOST_ALIAS}:${config.port}`
 
+  // The hostname only ever goes into a host matcher, never into the CEL
+  // expression, which stays a constant.
   if (host) {
-    await caddy.appendRoute({
-      id: DASHBOARD_HOST_ROUTE_ID,
-      hosts: [host],
-      upstream,
-    })
+    await client.appendRoute(
+      routeBody({ id: DASHBOARD_HOST_ROUTE_ID, hosts: [host], upstream }),
+    )
   }
 
-  await caddy.appendRoute({ id: DASHBOARD_ROUTE_ID, hosts: [], upstream })
+  await client.appendRoute(dashboardIpRouteBody(upstream))
+  await client.appendRoute(notFoundRouteBody())
 }

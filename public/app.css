@@ -261,6 +261,13 @@ select:focus-visible {
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
+.version {
+  margin-left: auto;
+  padding: 0 var(--s-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+}
 
 .nav-top,
 .nav-project,

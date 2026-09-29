@@ -388,7 +388,7 @@ export function resourceImage(resource: Resource): string {
 /**
  * Every image reference the prune job must not delete: what each resource is
  * running now, its rollback target, and its newest RETAINED_BUILDS distinct
- * succeeded images — the ones a push can still reuse (D59). The rule itself is
+ * succeeded images — the ones a push can still reuse (D60). The rule itself is
  * computeKeepSet's; this only gathers its inputs.
  *
  * A rollback target is referenced only by this row — no container holds it, so
@@ -559,7 +559,7 @@ export function listDeployments(resourceId: string, limit = 20): Deployment[] {
  *
  * Cancelled rows are skipped because a cancelled deploy did nothing: letting
  * it define the state would make a deploy cancelled while queued behind a
- * running one read Healthy while the running one is still deploying (D58).
+ * running one read Healthy while the running one is still deploying (D59).
  * navTree's subquery applies the same filter, so every surface agrees.
  */
 export function latestDeploymentStatus(
@@ -591,7 +591,7 @@ export function latestDeploymentStatus(
  * (R-4). The image tag embeds the building deployment's id, so a match is that
  * one build.
  *
- * The repository and fingerprint travel with it (D51, D59): the row deploys
+ * The repository and fingerprint travel with it (D51, D60): the row deploys
  * that build's artifact, so it describes the same inputs as the row that built
  * it. reusableBuilds dedups by image, so the extra row never counts twice.
  */
@@ -631,7 +631,7 @@ export function commitForImage(
 
 /**
  * Earlier builds of exactly these inputs, as candidates for a push to reuse
- * (D59). status='succeeded', same resource and fingerprint, newest first, one
+ * (D60). status='succeeded', same resource and fingerprint, newest first, one
  * row per distinct image, image passes isBuiltImageTag.
  *
  * Succeeded only: a failed deploy's image may have built and then failed its

@@ -35,7 +35,20 @@ const TURBOPACK = /Next\.js [\d.]+\S* \(Turbopack\b/
  * 408 MiB and built inside BuildKit's 960 MiB cap (T-3, D52).
  */
 const TURBOPACK_ADVICE =
-  "This Next.js build used Turbopack, which needs about 1.25 GiB of memory; webpack needs about half. On Next.js 16, build with `next build --webpack` — for a Railpack build with npm, add the build variable `RAILPACK_BUILD_CMD=npm run build -- --webpack`. On Next.js 15, remove `--turbopack` from the build script."
+  "This Next.js build used Turbopack, which needs about 1.25 GiB of memory; webpack needs about half. On Next.js 16, build with `next build --webpack` — for a Railpack build with npm, add the build variable `RAILPACK_BUILD_CMD=npm run build -- --webpack` on this resource, not its project or environment: every app there inherits it, and Next.js 15 and older reject the flag. On Next.js 15, remove `--turbopack` from the build script."
+
+/**
+ * What `next build` before Next.js 16 prints when given `--webpack`, a flag it
+ * does not have. The usual source is the advice above set as a project or
+ * environment variable, which reaches every Next.js app there whatever its
+ * version: a Next.js 13 app on the 2GB host failed this way, and the exit code
+ * alone said nothing about why (D52).
+ */
+const WEBPACK_FLAG_REJECTED = /Unknown or unexpected option: --webpack\b/
+
+/** Added to a failed build's message when `next build` rejected `--webpack`. */
+const WEBPACK_FLAG_ADVICE =
+  "This Next.js version has no `--webpack` flag: before Next.js 16 it builds with webpack already. Remove `--webpack` from the build command. If `RAILPACK_BUILD_CMD` adds it and is inherited from the project or environment, set it only on the resource that needs it."
 
 /** The longest a silent build waits between starvation checks. */
 const STALL_POLL_MAX_MS = 15_000
@@ -116,10 +129,12 @@ export async function runBuilder(
   let lastOutputAt = Date.now()
   let sawMemoryKill = false
   let sawTurbopack = false
+  let sawWebpackFlagRejected = false
   const onLog = (line: string) => {
     lastOutputAt = Date.now()
     if (MEMORY_KILL.test(line)) sawMemoryKill = true
     if (TURBOPACK.test(line)) sawTurbopack = true
+    if (WEBPACK_FLAG_REJECTED.test(line)) sawWebpackFlagRejected = true
     ctx.onLog(line)
   }
 
@@ -208,6 +223,11 @@ export async function runBuilder(
     }
     if (sawMemoryKill) {
       throw new BuildError(`a build step ran out of memory.${advice()}`)
+    }
+    if (sawWebpackFlagRejected) {
+      throw new BuildError(
+        `${bin} exited with code ${code}. ${WEBPACK_FLAG_ADVICE}`,
+      )
     }
     throw new BuildError(`${bin} exited with code ${code}`)
   } finally {

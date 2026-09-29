@@ -1,4 +1,4 @@
--- What a build was built FROM, recorded on the deployment row (D59).
+-- What a build was built FROM, recorded on the deployment row (D60).
 --
 -- git_repo is the repository the build fetched, as it was at that moment: the
 -- resource's own repo can be re-pointed later, and a row that only named its

@@ -61,9 +61,13 @@ Route objects use `@id` so each can be replaced or deleted independently:
 - Delete — `DELETE /id/musdash-<resourceId>`
 
 **Never add a resource route with `POST .../routes/`.** POST appends, and the
-dashboard's catch-all (no host matcher, terminal) must stay last — a route
-appended behind it is never reached. That shipped, and every resource was
-unreachable after its first deploy on a real VPS (VPS test C-1).
+route tail `ensureDashboardRoutes` owns must stay last — dashboard host, then
+the IP-literal dashboard fallback, then the matcher-less `musdash-not-found`
+404 (D55). A route appended behind the 404 is never reached. That shipped with
+the old catch-all, and every resource was unreachable after its first deploy on
+a real VPS (VPS test C-1). The tail ids live in `DASHBOARD_TAIL_ROUTE_IDS`;
+`sync_routes` deletes any other `musdash-` route, so a new tail route must be
+added to that set.
 
 **Every admin-API write reloads the whole proxy**, and Caddy rebinds :80/:443
 with SO_REUSEPORT on each reload. Without `net.ipv4.tcp_migrate_req=1` in the

@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto"
 
 /**
  * The identity of a build's inputs, for deciding that a push can reuse an image
- * already built from the same inputs (D59).
+ * already built from the same inputs (D60).
  *
  * An HMAC rather than a plain hash, keyed from the env-var secret key. The
  * inputs include build variables, which are secrets; a plain SHA-256 stored in

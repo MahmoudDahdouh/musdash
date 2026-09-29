@@ -1563,6 +1563,9 @@ The accepted cost is unchanged from D20 — the dashboard answers on any `Host`
 header — and a foreign host gets a login page whose session cookie is scoped to
 the host that set it.
 
+_Narrowed by D55: the fallback now answers IP literals only, and any other
+unmatched name gets a 404._
+
 ### D25 — the hostname lives in the database, with the env as a fallback
 
 `settings.dashboard_host` wins when the row exists; `MUSDASH_DASHBOARD_HOST` is
@@ -3347,6 +3350,15 @@ with 900 MiB, and built inside BuildKit's 960 MiB through musdash. The
 10-minute stall window is unchanged — D50 calls it a guess to revisit, and a
 shorter one only for Turbopack would be another guess.
 
+Addendum: the advice now says to set the variable on the resource. Set on
+the environment, as it was on the 2GB host, it reached a Next.js 13 app too,
+whose `next build` rejects `--webpack` (`Unknown or unexpected option`), and
+the deploy reported only "railpack exited with code 1". A build that prints
+that rejection now says the flag does not exist before Next.js 16 and where
+an inherited `RAILPACK_BUILD_CMD` should live instead. Rejected: warning when
+`RAILPACK_BUILD_CMD` is saved on a project or environment, since a
+monorepo of Next.js 16 apps is a fair reason to put it there.
+
 **A git resource's empty deployments card says Deploy builds the latest
 commit on the branch**, using the same wording as the Deploy confirmation.
 
@@ -3389,12 +3401,61 @@ and fetching over it — or reaching the clone branch's `rm -rf` when it is not
 a git repository — would destroy their changes. RUNNING.md now leads with the
 one-liner, which never had the bug.
 
+### D55 — the dashboard's fallback answers IP literals only; any other name gets a 404
+
+D20 and D24 accepted that "the dashboard answers on any `Host` header". On the
+2GB host that turned out to mean more than a foreign login page: after
+`new-saas` was deleted, `http://new-saas.<ip>.sslip.io/login` served the musdash
+sign-in page, as did `random-x.<ip>.sslip.io` and every other name pointed at the
+box. A deleted app's URL, a typo or stale DNS showed the operator's dashboard —
+over plain HTTP — and told every visitor where to log in. A reused HTTP/2
+connection reached it over HTTPS too, since Caddy routes by `Host`, not SNI.
+
+D20's reason for a catch-all was that "a host matcher cannot express 'whatever
+address the operator typed'". True of `host`, but the need was only ever the
+bare IP, and another matcher expresses that. **The tail `ensureDashboardRoutes`
+writes is now three routes, in this order:** `musdash-dashboard-host` (the
+dashboard hostname, when set), `musdash-dashboard` (an `expression` matcher on
+`{http.request.host}` accepting any IPv4 or IPv6 literal), and
+`musdash-not-found` (no matcher, `static_response` 404, empty body, last).
+
+**Never a `host` matcher for the IP route.** Every name in a `host` matcher is a
+managed name to automatic HTTPS, which would redirect the bare IP to an
+`https://<ip>/` that can never have a certificate — the D24 lockout. An
+`expression` is invisible to automatic HTTPS. `{http.request.host}` drops the
+port, and drops IPv6 brackets only when a port is present, so the pattern
+accepts both forms. Checked against caddy v2.11.4 in a throwaway container:
+`127.0.0.1`, `<ip>:80`, `[::1]`, `[::1]:80` and `[2001:db8::1]` matched;
+`<ip>.sslip.io`, `random-x.<ip>.sslip.io`, `example.com`, `1.2.3` and an
+HTTP/1.0 request with no `Host` fell through to the 404.
+
+**Any IP literal, not this server's addresses.** Learning our own public IP is
+unreliable behind NAT, and the D27 probe sends `Host: 127.0.0.1`, which must keep
+reaching the dashboard. A request naming someone else's IP only reaches this box
+if it was sent here.
+
+**The pattern is a compile-time constant.** Nothing from config or the database
+is interpolated into CEL; the dashboard hostname only ever goes into a `host`
+matcher. The 404 carries no body, so no user-facing string lives in TypeScript.
+Resource route JSON is unchanged, so an upgrade rewrites no resource route; the
+tail ids are one set, `DASHBOARD_TAIL_ROUTE_IDS`, which `sync_routes` keeps —
+a tail route outside it would be deleted on the next domain edit.
+
+**What stops working.** Reaching the dashboard through a name that is neither
+the configured dashboard hostname nor an IP: a bookmarked `<ip>.sslip.io`, a
+tunnel or load balancer forwarding to Caddy :80 under its own name (with
+`MUSDASH_PUBLIC_URL` set and no dashboard hostname, GitHub webhooks on that
+path too), and `http://localhost:<port>` over an SSH tunnel to :80. RUNNING.md
+names the fixes: set the dashboard hostname, or point the tunnel at :8000. The
+cost of the extra route is one more delete and append per bootstrap or Settings
+save, each a full reload (D30).
+
 ## GitHub hardening (docs/GITHUB-HARDENING.md, 2026-09-29)
 
 Slices from reading Coolify's GitHub path side by side with ours. The plan is
 the input; each entry below records what was decided when its slice was built.
 
-### D55 — uninstall unlinks, suspend keeps the link, a rejected token is retried once, a git resource can be re-linked
+### D56 — uninstall unlinks, suspend keeps the link, a rejected token is retried once, a git resource can be re-linked
 
 **Uninstall and suspend.** The `installation` webhook's `deleted` action now
 does what the Sync removal path already did: `clearGitLinkage`, then
@@ -3484,7 +3545,7 @@ re-link against a compiled binary; its two env sentences, stale since D45, were
 corrected in the same change. **Not yet verified:** the webhook paths against
 real GitHub deliveries, and rows 3 and 4 of the plan's real-host test matrix.
 
-### D56 — GitHub failures name their cause; a 403 body may be classified, never included
+### D57 — GitHub failures name their cause; a 403 body may be classified, never included
 
 Every api.github.com failure already went through one function, so each cause the plan's
 Slice B lists gets its own sentence there (`describeFailure`, renamed from
@@ -3516,7 +3577,7 @@ The rate-limit checks come first because a secondary-limit 403 also has a body.
   other field. The mapping sits on the commits request itself, inside the
   token wrapper, so a mint failure is never restated as a missing branch.
 - **Suspended installation (B3).** A 403 whose body matches `/suspended/i`.
-  This replaces D55's "a deploy during a suspension shows GitHub's generic
+  This replaces D56's "a deploy during a suspension shows GitHub's generic
   403".
 - **Secondary rate limit (B4).** A 403 with `retry-after`, or any 429. The
   header is read as seconds or an HTTP date and shown as an absolute time,
@@ -3527,7 +3588,7 @@ The rate-limit checks come first because a secondary-limit 403 also has a body.
   JSON body — both reject with a `DOMException` named `TimeoutError`, checked
   on this runtime — becomes a `GitHubError` with status 0, "GitHub did not
   respond within 15s (shape)". Status 0 means no HTTP response arrived, and is
-  never 401, so the D55 token retry cannot fire on a timeout. The message never
+  never 401, so the D56 token retry cannot fire on a timeout. The message never
   copies the runtime's text or sets a `cause`, either of which can carry the
   URL. Every other rejection is rethrown untouched.
 - **The access-token 404 (B6)** is unchanged, and now pinned by a test.
@@ -3552,7 +3613,7 @@ B1–B6 and pins the runtime's timeout error name twice against a local server: 
 for a `fetch` that never gets headers, once for a `res.json()` whose body
 stalls.
 
-### D57 — the archive download stops on a stall, not a clock, and is retried once
+### D58 — the archive download stops on a stall, not a clock, and is retried once
 
 `FETCH_TIMEOUT_MS` killed the codeload download and `tar` after a fixed 120s.
 A large repository over a slow VPS link failed every time, and a hung transfer
@@ -3574,7 +3635,7 @@ cap is how long every other queued job can wait behind a slow fetch; one
 deadline keeps that at 15 minutes, not 30. The cap is checked before the
 api.github.com hop, so the worst case is the cap, plus one hop that started
 just before it — up to four 15s requests with an empty token cache and a 401
-(mint, call, re-mint, call; D55) — plus a watchdog tick, the kill grace and the
+(mint, call, re-mint, call; D56) — plus a watchdog tick, the kill grace and the
 stderr drain. The
 job lease does not bound it: nothing reads `leased_until` (D49), and a build
 already runs up to 30 minutes inside the same job.
@@ -3587,15 +3648,15 @@ exits 143, so every message comes from musdash's own stop reason, never from
 the exit code: "stalled: no data for 60s after N MB", "did not finish within 15
 minutes", "lost its connection after N MB".
 
-**Retried once.** This is an in-step retry, like D55's, and does not change
-D44: the deploy job still gets one attempt. Unlike D55 it repeats a download
+**Retried once.** This is an in-step retry, like D56's, and does not change
+D44: the deploy job still gets one attempt. Unlike D56 it repeats a download
 and an extraction, not one HTTP call. The unit is the whole download — the
 api.github.com request (through the token wrapper, so a 401 re-mint still
 composes inside it), then codeload, then `tar` — so a retry follows a fresh
 redirect rather than reusing a signed URL that may have expired. Nothing here
 claims how long that URL lives.
 
-- Retried: a 5xx from either hop, a ghFetch timeout (D56's status 0), a
+- Retried: a 5xx from either hop, a ghFetch timeout (D57's status 0), a
   codeload request that failed without musdash aborting it, a connection lost
   mid-body, and a stall.
 - Never retried: any 4xx, the cap, `tar` failing with no network error or stall
@@ -3639,7 +3700,7 @@ the classification — turning a `tar` that exited 0 into a failure, with the
 runtime's own text in the deploy log — and the module has no logger by design.
 The only cost is a failure message that says "no output".
 
-This supersedes D56's "the codeload hop … keeps its own 120s timeout until
+This supersedes D57's "the codeload hop … keeps its own 120s timeout until
 Slice C".
 
 **Verified.** `src/github/archive-fetch.test.ts` runs eight scenarios against a
@@ -3655,7 +3716,7 @@ stall, retried once, no `tar` or `gzip` left behind. In this container the
 GNU `tar -z` helper shows up as a zombie after a kill, because its PID 1 does
 not reap; on a host, systemd does.
 
-### D58 — a queued deploy can be cancelled; a push already building is skipped; Deploy folds into a queued deploy
+### D59 — a queued deploy can be cancelled; a push already building is skipped; Deploy folds into a queued deploy
 
 **Cancel is for a deploy that has not started.** `POST /d/:id/cancel` marks the
 job `cancelled` with one guarded statement —
@@ -3723,7 +3784,7 @@ D37's inventory grows by one of each: 18 keys (`deploy-already-started`), 18
 not-found sites (cancel on an unknown deployment), thirteen 400s (cancel on a
 reconcile deployment), all exercised by `scripts/check-error-pages.ts`.
 
-### D59 — built images are never pulled; a push whose build inputs already built reuses that image; three builds are kept per resource
+### D60 — built images are never pulled; a push whose build inputs already built reuses that image; three builds are kept per resource
 
 **Never pull a built image.** A git resource's image is
 `musdash/<name>:<short id>`, an unqualified name that Docker resolves to
@@ -3759,7 +3820,7 @@ never leave the job.
   resource with the same fingerprint whose image is still on the server, and
   deploys that image — no download, no build directory, no BuildKit. Manual
   Deploy always builds, because pressing it is asking for a build; so does
-  `MUSDASH_BUILD_NO_CACHE`. A Deploy press folded into a queued push (D58)
+  `MUSDASH_BUILD_NO_CACHE`. A Deploy press folded into a queued push (D59)
   keeps the push's trigger and may reuse; pressing Deploy again once it has
   finished forces a build.
 - It errs toward building: rows from before 0005 have no fingerprint and never
@@ -3786,7 +3847,7 @@ pulled images are now protected too, bounded the same way. A deleted
 resource's builds go at the next prune.
 This supersedes D6's "historical rows are deliberately not protected".
 
-### D60 — any finished deployment can be deployed again
+### D61 — any finished deployment can be deployed again
 
 Rollback returned only to `previous_image`, one step back; PHASES §26 asked for
 "Deploy this commit" on older deployments. `/d/:id` now offers **Deploy this
@@ -3799,14 +3860,14 @@ redirects — no Docker or GitHub call in the handler.
 - **The job decides, at step 3 only.** `redeploy` is deliberately not in
   `REUSES_IMAGE` (D11): for a git resource the job reuses the row's built image
   if it is still on the server (checked with `imageExists`, never pulled —
-  D59), and otherwise builds the recorded commit again, pinned to that SHA
+  D60), and otherwise builds the recorded commit again, pinned to that SHA
   rather than the branch head. Image resources go through `resolveImage` like a
   rollback: the tag is pulled again, so a moving tag gets its newest version,
   and it becomes the resource's image. Steps 4–9 are the same code as every
   other deploy, so the zero-downtime order holds.
 - **Rebuilding needs the same repository.** A deployment row records the
-  repository it was built from (`git_repo`, D59's migration). After a re-link
-  (D55) an old SHA would be fetched from a repository the user no longer points
+  repository it was built from (`git_repo`, D60's migration). After a re-link
+  (D56) an old SHA would be fetched from a repository the user no longer points
   at — a misleading 422 when it is not there, or a build from a source the
   resource no longer names when it is (a fork carries its parent's
   commits) — so a rebuild runs only when
@@ -3819,18 +3880,18 @@ redirects — no Docker or GitHub call in the handler.
   the row's image goes back to the placeholder first (P-2), so it never names
   an image it did not deploy.
 - **Pushes never fold into, or get skipped by, a redeploy.** Every redeploy job
-  carries `redeployOf`; the push fold, the running-commit skip (D58) and the
+  carries `redeployOf`; the push fold, the running-commit skip (D59) and the
   Deploy fold all match only jobs without it. Otherwise a push arriving while
   an old commit was queued to redeploy would have been absorbed by it and
   never deployed — the T-1 failure again.
-- **A queued redeploy's image can be pruned first.** The keep-set (D59) does not
+- **A queued redeploy's image can be pruned first.** The keep-set (D60) does not
   protect a candidate that is only queued; the job then rebuilds, or refuses
   with the reason above. The button is shown even when a rebuild is certain to
   fail — only the job can see whether the image is still there.
 
 One ordering gap is older than this entry and now also reachable through it: a
 push still folds into a pending build deploy regardless of what was queued
-behind it (D52, D58). With a build pending and a redeploy of an old commit
+behind it (D52, D59). With a build pending and a redeploy of an old commit
 queued after it, a push folds into the build, the build runs, then the
 redeploy — and the resource ends on the old commit although the push came
 last. Rollback and Stop have the same shape. Fixing it means changing D52's
@@ -3842,7 +3903,7 @@ one 400 (a deployment that does not qualify): 18 keys, 19 not-found sites and
 fourteen 400s, all exercised by `scripts/check-error-pages.ts`, which also
 redeploys a failed image deployment and checks the button renders.
 
-### D61 — a repository that uses submodules or Git LFS is refused with a message, until musdash can fetch them
+### D62 — a repository that uses submodules or Git LFS is refused with a message, until musdash can fetch them
 
 GitHub's tarball leaves a submodule's directory empty and stores an LFS-tracked
 file as its three-line pointer. The build then failed somewhere unrelated — a
@@ -3896,7 +3957,7 @@ fixture, still refuses.
   log line, like every build failure's text.
 - It runs only on the tarball path, after the commit is recorded on the row, so
   a refused deploy still names its commit (P-2); the old container keeps
-  serving and the build directory is removed. A push that reuses an image (D59)
+  serving and the build directory is removed. A push that reuses an image (D60)
   never scans, because no tree is downloaded.
 
 It gets a `bun test` (`src/build/unsupported-source.test.ts`, passing on 1.3.11
@@ -3906,7 +3967,7 @@ host:** matrix row 12 — a repository with a real submodule and one with LFS
 files, what codeload puts at a gitlink path, and whether the archive carried
 pointers or real LFS content.
 
-### D62 — a push whose every commit asks to skip is not deployed; the repository list is cached; a slash in a branch waits for a host
+### D63 — a push whose every commit asks to skip is not deployed; the repository list is cached; a slash in a branch waits for a host
 
 **Skip markers.** A push is skipped when its `commits` array is non-empty and
 every commit's **subject line** — the text before the first newline — contains
@@ -3945,7 +4006,7 @@ action and on `installation_repositories`; `clearGitHubCaches` (every token and
 list) on registration, Disconnect, and every `syncInstallations`, successful or
 not — which makes the UI's "press Sync installations" advice true.
 `clearGitHubCaches` replaces `clearTokenCache` at the call sites D11 names. Not
-on the D55 401 retry: a rejected token says nothing about the grant. A missed
+on the D56 401 retry: a rejected token says nothing about the grant. A missed
 `installation_repositories` delivery leaves a newly granted repository out of
 the picker for up to 5 minutes, or until Sync.
 
@@ -3958,7 +4019,7 @@ reads 58.1 MB, unchanged.
 
 **Branches with a slash.** No change. `getCommit` still sends
 `encodeURIComponent(ref)`, so `feature/x` goes out as `feature%2Fx`, and nobody
-has seen whether GitHub resolves it (matrix row 8, D56). If it does not: encode
+has seen whether GitHub resolves it (matrix row 8, D57). If it does not: encode
 the ref per path segment, widen `api.ts`'s `/repos/*/*/commits/*` match to the
 deeper shape that produces, and add tests for both.
 

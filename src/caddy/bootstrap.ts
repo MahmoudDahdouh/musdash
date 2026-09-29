@@ -266,8 +266,9 @@ export async function ensureCaddy(): Promise<void> {
   // container a new IP: either way the database is the source of truth. New
   // routes go in at the front, so this can run before or after the dashboard's.
   await syncResourceRoutes()
-  // Re-appended every boot on purpose: the catch-all has to stay LAST, and any
-  // resource route added since would otherwise sit behind it. See D20.
+  // Re-appended every boot on purpose: the matcher-less 404 at the end of the
+  // dashboard's tail has to stay LAST, and any resource route added since
+  // would otherwise sit behind it. See D20, D55.
   await ensureDashboardRoutes(getDashboardHost())
   await caddy.ensureTlsAutomation()
 

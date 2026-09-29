@@ -123,7 +123,7 @@ async function runPrune(payload: PrunePayload): Promise<void> {
   // musdash's own builds leave on the keep-set's terms, not the age cutoff:
   // retention per resource is already bounded there, and anything outside it —
   // superseded, failed, or belonging to a deleted resource — exists nowhere a
-  // user could want it back from (D59).
+  // user could want it back from (D60).
   const { reclaimedBytes, protectedCount } = await docker.pruneImages(
     hours,
     keep,

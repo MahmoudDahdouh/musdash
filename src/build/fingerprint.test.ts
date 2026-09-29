@@ -6,7 +6,7 @@ import {
 } from "./fingerprint.ts"
 
 /**
- * The fingerprint decides whether a push skips its build (D59). The two ways
+ * The fingerprint decides whether a push skips its build (D60). The two ways
  * it goes wrong are both silent: an input it misses makes a changed build reuse
  * a stale image, and an unstable serialisation makes identical builds never
  * match. Every input is flipped on its own below for the first; insertion
