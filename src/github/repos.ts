@@ -1,5 +1,12 @@
 import { getAppPrivateKey, getGithubApp } from "../db/queries.ts"
-import { type Auth, branchNotFound, ghJson, ghPaginate } from "./api.ts"
+import {
+  type Auth,
+  branchNotFound,
+  commitNotFound,
+  ghJson,
+  ghPaginate,
+  isFullCommitSha,
+} from "./api.ts"
 import { appJwt } from "./jwt.ts"
 import { withInstallationToken } from "./tokens.ts"
 
@@ -130,10 +137,17 @@ export async function getCommit(
   // The 422 is restated on the commits call itself, inside the token closure,
   // not around withInstallationToken: a failure to mint the token is a
   // different problem and must never be reported as a missing branch. Any other
-  // error is rethrown as the same object.
+  // error is rethrown as the same object. A full SHA is a pinned commit (a
+  // "Deploy this again"), so its 422 names a commit, not a branch.
   const lookup = (auth: Auth): Promise<RawCommit> =>
     ghJson<RawCommit>(path, auth).catch((err: unknown) => {
-      throw branchNotFound(err, repo, ref) ?? err
+      throw (
+        (isFullCommitSha(ref) ? commitNotFound : branchNotFound)(
+          err,
+          repo,
+          ref,
+        ) ?? err
+      )
     })
   const raw =
     installationId === null

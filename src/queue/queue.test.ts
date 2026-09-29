@@ -284,8 +284,28 @@ describe("findPendingJob", () => {
     expect(findPendingJob("deploy", match, db)).toBeNull()
   })
 
+  // A queued "Deploy this again" builds a pinned commit, not the branch head,
+  // so a push or a Deploy press must not fold into it (D-b2).
+  test("a null field matches a job that lacks it, not one that has it", () => {
+    const branch = { ...match, redeployOf: null }
+    const redeploy = enqueue(
+      "deploy",
+      { ...push("r1"), redeployOf: "src" },
+      {},
+      db,
+    )
+    expect(findPendingJob("deploy", branch, db)).toBeNull()
+    expect(findPendingJob("deploy", match, db)).toBe(redeploy)
+
+    const plain = enqueue("deploy", push("r1"), {}, db)
+    expect(findPendingJob("deploy", branch, db)).toBe(plain)
+  })
+
   test("refuses a field name that is not a plain identifier", () => {
     expect(() => findPendingJob("deploy", { "a') OR 1=1 --": 1 }, db)).toThrow()
+    expect(() =>
+      findPendingJob("deploy", { "a') OR 1=1 --": null }, db),
+    ).toThrow()
   })
 })
 
@@ -424,8 +444,28 @@ describe("findLeasedJobs", () => {
     expect(findLeasedJobs("deploy", match, db)).toEqual([])
   })
 
+  test("a null field matches a job that lacks it, not one that has it", () => {
+    const branch = { ...match, redeployOf: null }
+    const redeploy = enqueue(
+      "deploy",
+      { ...push("r1"), redeployOf: "src" },
+      {},
+      db,
+    )
+    expect(claim(db)?.id).toBe(redeploy)
+    expect(findLeasedJobs("deploy", branch, db)).toEqual([])
+    expect(findLeasedJobs("deploy", match, db)).toEqual([redeploy])
+
+    const plain = enqueue("deploy", push("r1"), {}, db)
+    expect(claim(db)?.id).toBe(plain)
+    expect(findLeasedJobs("deploy", branch, db)).toEqual([plain])
+  })
+
   test("refuses a field name that is not a plain identifier", () => {
     expect(() => findLeasedJobs("deploy", { "a') OR 1=1 --": 1 }, db)).toThrow()
+    expect(() =>
+      findLeasedJobs("deploy", { "a') OR 1=1 --": null }, db),
+    ).toThrow()
   })
 })
 

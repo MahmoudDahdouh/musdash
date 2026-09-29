@@ -116,6 +116,13 @@ export interface CommitRecord {
 export interface BuildOptions {
   /** After the commit is resolved and recorded, before any download. A returned tag skips download and build. */
   reuse?: (commit: FetchedSource, fingerprint: string) => Promise<string | null>
+  /**
+   * Build this commit instead of the branch head: 40 lowercase hex. Set only
+   * by "Deploy this again", which repeats a recorded build (D60) — the branch
+   * may have moved on since, and building its head would deploy something the
+   * user did not pick.
+   */
+  commitSha?: string
 }
 
 /**
@@ -157,11 +164,15 @@ export async function buildFromSource(
 
   const request: SourceRequest = {
     repo: source.repo,
-    ref: source.branch,
+    ref: opts.commitSha ?? source.branch,
     installationId: resource.gitInstallationId,
   }
 
-  emit(`Fetching ${source.repo} (${source.branch})`)
+  emit(
+    opts.commitSha === undefined
+      ? `Fetching ${source.repo} (${source.branch})`
+      : `Fetching ${source.repo} at commit ${opts.commitSha.slice(0, 7)}`,
+  )
   // Resolve the ref to a commit FIRST, then fetch that exact commit. Fetching
   // the branch name instead would leave a window in which a push lands between
   // the two calls, and the deployment row would record a commit that is not

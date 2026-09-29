@@ -3774,3 +3774,59 @@ keeps the 168h rule — except that an image resource's three newest distinct
 pulled images are now protected too, bounded the same way. A deleted
 resource's builds go at the next prune.
 This supersedes D6's "historical rows are deliberately not protected".
+
+### D60 — any finished deployment can be deployed again
+
+Rollback returned only to `previous_image`, one step back; PHASES §26 asked for
+"Deploy this commit" on older deployments. `/d/:id` now offers **Deploy this
+again** on any finished deployment (succeeded, failed or cancelled) that names
+something to deploy: a git deployment with a full commit or a built image, or an
+image deployment with a real image reference. The route reads the source row on
+the server, creates a new `redeploy` row with the commit copied, enqueues and
+redirects — no Docker or GitHub call in the handler.
+
+- **The job decides, at step 3 only.** `redeploy` is deliberately not in
+  `REUSES_IMAGE` (D11): for a git resource the job reuses the row's built image
+  if it is still on the server (checked with `imageExists`, never pulled —
+  D59), and otherwise builds the recorded commit again, pinned to that SHA
+  rather than the branch head. Image resources go through `resolveImage` like a
+  rollback: the tag is pulled again, so a moving tag gets its newest version,
+  and it becomes the resource's image. Steps 4–9 are the same code as every
+  other deploy, so the zero-downtime order holds.
+- **Rebuilding needs the same repository.** A deployment row records the
+  repository it was built from (`git_repo`, D59's migration). After a re-link
+  (D55) an old SHA would be fetched from a repository the user no longer points
+  at — a misleading 422 when it is not there, or a build from a source the
+  resource no longer names when it is (a fork carries its parent's
+  commits) — so a rebuild runs only when
+  the row's repository matches the resource's current one (case-insensitive).
+  A row from before 0005 has no repository and is never rebuilt, only reused.
+  Each refusal says why and leaves the running container alone. A SHA GitHub
+  does not know is reported as "Commit `abc1234` not found in `owner/repo`",
+  not as a missing branch.
+- **A failed rebuild reads "Not built".** When the job falls back to building,
+  the row's image goes back to the placeholder first (P-2), so it never names
+  an image it did not deploy.
+- **Pushes never fold into, or get skipped by, a redeploy.** Every redeploy job
+  carries `redeployOf`; the push fold, the running-commit skip (D58) and the
+  Deploy fold all match only jobs without it. Otherwise a push arriving while
+  an old commit was queued to redeploy would have been absorbed by it and
+  never deployed — the T-1 failure again.
+- **A queued redeploy's image can be pruned first.** The keep-set (D59) does not
+  protect a candidate that is only queued; the job then rebuilds, or refuses
+  with the reason above. The button is shown even when a rebuild is certain to
+  fail — only the job can see whether the image is still there.
+
+One ordering gap is older than this entry and now also reachable through it: a
+push still folds into a pending build deploy regardless of what was queued
+behind it (D52, D58). With a build pending and a redeploy of an old commit
+queued after it, a push folds into the build, the build runs, then the
+redeploy — and the resource ends on the old commit although the push came
+last. Rollback and Stop have the same shape. Fixing it means changing D52's
+fold, which is its own decision.
+
+The button is on the deployment page only, not on each row of the resource's
+deployments table. D37's inventory grows by one 404 (an unknown deployment) and
+one 400 (a deployment that does not qualify): 18 keys, 19 not-found sites and
+fourteen 400s, all exercised by `scripts/check-error-pages.ts`, which also
+redeploys a failed image deployment and checks the button renders.

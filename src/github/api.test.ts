@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import {
   branchNotFound,
+  commitNotFound,
   describeFailure,
   ghPaginate,
   GitHubError,
+  isFullCommitSha,
   mapTimeout,
   sanitizePath,
 } from "./api.ts"
@@ -308,6 +310,31 @@ describe("describeFailure", () => {
     ).toBeNull()
     expect(branchNotFound(new Error("boom"), "octocat/demo", "main")).toBeNull()
     expect(branchNotFound("422", "octocat/demo", "main")).toBeNull()
+  })
+
+  test("a pinned commit's 422 names the commit, not a branch", () => {
+    const sha = "abc1234def5678901234567890abcdef12345678"
+    expect(isFullCommitSha(sha)).toBe(true)
+    expect(isFullCommitSha(sha.toUpperCase())).toBe(false)
+    expect(isFullCommitSha(sha.slice(0, 39))).toBe(false)
+    expect(isFullCommitSha(`${sha}0`)).toBe(false)
+    expect(isFullCommitSha("main")).toBe(false)
+
+    const restated = commitNotFound(
+      new GitHubError("GitHub returned 422", 422),
+      "owner/repo",
+      sha,
+    )
+    expect(restated).toBeInstanceOf(GitHubError)
+    expect(restated?.status).toBe(422)
+    expect(restated?.message).toBe(
+      "Commit `abc1234` not found in `owner/repo`.",
+    )
+
+    expect(
+      commitNotFound(new GitHubError("nope", 404), "owner/repo", sha),
+    ).toBeNull()
+    expect(commitNotFound(new Error("boom"), "owner/repo", sha)).toBeNull()
   })
 
   test("B3: a 403 whose body says suspended names the suspension, not the body", async () => {

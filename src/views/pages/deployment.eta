@@ -26,13 +26,47 @@
       data-confirm
       data-confirm-danger
       data-confirm-title="Remove this deploy from the queue?"
-      data-confirm-body="Nothing is built or deployed, and what is running now keeps running.<%= it.deployment.trigger === 'rollback' ? '' : it.resource && it.resource.kind === 'git' ? ' Pushes and Deploy clicks that arrived while it waited were folded into it, so they are dropped too. Push again or press Deploy to build the branch.' : ' Deploy clicks that arrived while it waited were folded into it, so they are dropped too. Press Deploy to queue it again.' %>"
+      data-confirm-body="Nothing is built or deployed, and what is running now keeps running.<%= it.deployment.trigger === 'rollback' || it.deployment.trigger === 'redeploy' ? '' : it.resource && it.resource.kind === 'git' ? ' Pushes and Deploy clicks that arrived while it waited were folded into it, so they are dropped too. Push again or press Deploy to build the branch.' : ' Deploy clicks that arrived while it waited were folded into it, so they are dropped too. Press Deploy to queue it again.' %>"
       data-confirm-label="Remove from queue"
     >
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />
       <button class="btn" type="submit">
         <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
         Cancel deploy
+      </button>
+    </form>
+    <% } %>
+    <%/* The route passes `redeploy` only for a finished deployment it can repeat.
+         The confirm names what will actually happen: a git row with a commit may
+         be built again, one without can only reuse its image, and an image
+         resource pulls the reference again. */%>
+    <% if (it.redeploy) {
+      var rd = it.redeploy
+      var rdTitle, rdBody
+      if (rd.kind === 'git' && rd.sha7) {
+        rdTitle = 'Deploy commit ' + rd.sha7 + ' again?'
+        rdBody = 'If the image built for this commit is still on this server it is reused; otherwise commit ' + rd.sha7 + ' is built again. Either way it runs with the resource\'s current variables and settings, and traffic only switches once it passes the health check.'
+      } else if (rd.kind === 'git') {
+        rdTitle = 'Deploy this image again?'
+        rdBody = 'Reuses ' + rd.image + ' from this server; it is never pulled from a registry. It runs with the resource\'s current variables and settings, and traffic only switches once it passes the health check.'
+      } else {
+        rdTitle = 'Deploy ' + rd.image + ' again?'
+        rdBody = 'Pulls ' + rd.image + ' again, so a tag that has moved gets its newest version, and makes it this resource\'s image. Traffic only switches once it passes the health check.'
+      }
+    %>
+    <form
+      method="post"
+      action="/d/<%= it.deployment.id %>/redeploy"
+      class="inline"
+      data-confirm
+      data-confirm-title="<%= rdTitle %>"
+      data-confirm-body="<%= rdBody %>"
+      data-confirm-label="Deploy again"
+    >
+      <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+      <button class="btn" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-rotate-ccw" /></svg>
+        Deploy this again
       </button>
     </form>
     <% } %>

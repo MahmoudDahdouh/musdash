@@ -133,7 +133,7 @@ export const deployments = sqliteTable(
     // migration — same as jobs.type below.
     trigger: text("trigger")
       .notNull()
-      .$type<"manual" | "rollback" | "reconcile" | "webhook">(),
+      .$type<"manual" | "rollback" | "reconcile" | "webhook" | "redeploy">(),
     error: text("error"),
     startedAt: text("started_at"),
     finishedAt: text("finished_at"),

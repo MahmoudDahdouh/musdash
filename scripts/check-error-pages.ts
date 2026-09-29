@@ -1112,6 +1112,53 @@ try {
     {},
   )
 
+  // ---- Slice D-b2: "Deploy this again" (POST /d/:id/redeploy)
+  await statusCase(
+    "[6] 404 redeploy an unknown deployment",
+    404,
+    "POST",
+    `/d/${BOGUS}/redeploy`,
+    {},
+  )
+  await statusCase(
+    "[7] 400 redeploy a deployment that has not finished (seeded)",
+    400,
+    "POST",
+    `/d/${reconcileRow}/redeploy`,
+    {},
+  )
+  {
+    // The failed image deploy from the cancel case above is finished and names
+    // a real image, so it qualifies: a new row, and a 303 to its page.
+    const failed = readOne(
+      `SELECT id FROM deployments WHERE resource_id = ? AND status = 'failed'
+       ORDER BY created_at DESC LIMIT 1`,
+      rid,
+    )
+    const again = await send("POST", `/d/${failed}/redeploy`, withCsrf({}))
+    const next = /^\/d\/([^/?#]+)$/.exec(again.location)?.[1] ?? ""
+    const trigger = readOne(
+      "SELECT trigger AS id FROM deployments WHERE id = ?",
+      next,
+    )
+    verdict(
+      "[D-b2] redeploy a failed image deployment",
+      [
+        ...(failed ? [] : ["no failed deployment to redeploy"]),
+        ...(again.status === 303 && next && next !== failed
+          ? []
+          : [`${again.status} ${again.location}`]),
+        ...(trigger === "redeploy" ? [] : [`trigger ${trigger}`]),
+        ...((await send("GET", `/d/${failed}`)).body.includes(
+          `action="/d/${failed}/redeploy"`,
+        )
+          ? []
+          : ["the failed deployment's page has no Deploy this again form"]),
+      ],
+      "303 to a new redeploy row",
+    )
+  }
+
   // ---- whole-run checks
   const missing = ERROR_KEYS.filter((k) => !exercised.has(k))
   report(

@@ -291,6 +291,37 @@ export function branchNotFound(
   return null
 }
 
+/**
+ * Whether a ref is a full commit SHA, exactly as GitHub returns one: 40
+ * lowercase hex. The shape a "Deploy this again" pins its build to, and the
+ * shape getCommit uses to word a 422 as a missing commit rather than a missing
+ * branch. A branch could in principle carry this name too; musdash never pins
+ * to one, and a branch named like a SHA would only get the commit wording.
+ */
+export function isFullCommitSha(ref: string): boolean {
+  return /^[0-9a-f]{40}$/.test(ref)
+}
+
+/**
+ * The 422 from a commits lookup of a pinned commit, restated with the repo and
+ * the short SHA; else null. The counterpart of branchNotFound, for the same
+ * reasons: the repository is validated input already in the deploy log, and
+ * the SHA was recorded by musdash from GitHub's own answer.
+ */
+export function commitNotFound(
+  err: unknown,
+  repo: string,
+  sha: string,
+): GitHubError | null {
+  if (err instanceof GitHubError && err.status === 422) {
+    return new GitHubError(
+      `Commit \`${sha.slice(0, 7)}\` not found in \`${repo}\`.`,
+      422,
+    )
+  }
+  return null
+}
+
 export async function ghFetch(
   path: string,
   auth: Auth,

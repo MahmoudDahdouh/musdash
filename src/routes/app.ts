@@ -45,6 +45,7 @@ import {
 } from "../db/queries.ts"
 import { parseEnvText } from "../env/parse.ts"
 import { deployLogTail } from "../events.ts"
+import { isFullCommitSha } from "../github/api.ts"
 import { buildManifest, ManifestError } from "../github/manifest.ts"
 import {
   convertManifestCode,
@@ -58,7 +59,9 @@ import { BUILD_PLACEHOLDER } from "../build/images.ts"
 import {
   cancelQueuedDeploy,
   enqueueDeploy,
+  enqueueRedeploy,
   pendingDeploymentFor,
+  redeployable,
 } from "../jobs/deploy.ts"
 import { logger } from "../log.ts"
 import { tail } from "../logs/buffer.ts"
@@ -830,6 +833,17 @@ export const appRoutes = new Elysia()
     // highlight both come from the resource it belongs to.
     const ctx = deployment && getResourceContext(deployment.resourceId)
     if (!deployment || !ctx) return statusFor(session, 404)
+    // What "Deploy this again" would repeat, for the button's confirm text;
+    // null hides the button. Pure: no Docker or GitHub call on a page render.
+    const sha = deployment.commitSha
+    const redeploy = redeployable(deployment, ctx.resource)
+      ? {
+          kind: ctx.resource.kind,
+          sha7: sha !== null && isFullCommitSha(sha) ? sha.slice(0, 7) : null,
+          image:
+            deployment.image === BUILD_PLACEHOLDER ? null : deployment.image,
+        }
+      : null
     return html(
       renderPage(
         "deployment",
@@ -842,6 +856,7 @@ export const appRoutes = new Elysia()
           imagePending: deployment.image === BUILD_PLACEHOLDER,
           lines: deployLogTail(params.deploymentId),
           csrf: session?.csrfToken,
+          redeploy,
         },
         layout(session, "Deployment", {
           activeProjectId: ctx.project.id,
@@ -879,6 +894,38 @@ export const appRoutes = new Elysia()
         return redirect(back, 303)
       }
       return redirect(withError(back, "deploy-already-started"), 303)
+    },
+    { body: t.Object({ csrf: t.String() }) },
+  )
+
+  /**
+   * "Deploy this again" (D60): a new deployment repeating a finished one.
+   *
+   * No await, no Docker, no GitHub: whether the image is still on the server,
+   * and whether the commit can be built again, is decided by the job, which
+   * says why in the deploy log when it cannot. A deployment the page would not
+   * offer the button for is a hand-made request, so it gets a 400.
+   */
+  .post(
+    "/d/:deploymentId/redeploy",
+    ({ params, redirect, session }) => {
+      const deployment = getDeployment(params.deploymentId)
+      const ctx = deployment && getResourceContext(deployment.resourceId)
+      if (!deployment || !ctx) return statusFor(session, 404)
+      if (!redeployable(deployment, ctx.resource)) {
+        return statusFor(session, 400)
+      }
+
+      const deploymentId = enqueueRedeploy(deployment, ctx.resource)
+      logger.info(
+        {
+          resourceId: ctx.resource.id,
+          sourceDeploymentId: deployment.id,
+          deploymentId,
+        },
+        "redeploy queued",
+      )
+      return redirect(`/d/${deploymentId}`, 303)
     },
     { body: t.Object({ csrf: t.String() }) },
   )

@@ -3,7 +3,7 @@ import { caddy, routeIdFor } from "../caddy/client.ts"
 import { CADDY_CONTAINER } from "../caddy/bootstrap.ts"
 import { MIGRATE_LABEL } from "../caddy/kernel.ts"
 import { CERT_WAIT_MS, waitForCertificate } from "../caddy/tls-probe.ts"
-import { BUILD_PLACEHOLDER } from "../build/images.ts"
+import { BUILD_PLACEHOLDER, isBuiltImageTag } from "../build/images.ts"
 import {
   type BuildOptions,
   buildFromSource,
@@ -12,6 +12,7 @@ import {
 import { config } from "../config.ts"
 import {
   type ContainerState,
+  isValidImageRef,
   LABEL_RESOURCE,
   LABEL_ROLE,
   managedLabels,
@@ -23,6 +24,7 @@ import {
   createDeployment,
   getDeployment,
   getResourceContext,
+  gitSource,
   latestDeploymentStatus,
   markDeploymentFailed,
   resolveEnvVars,
@@ -30,11 +32,13 @@ import {
   updateDeployment,
   updateResource,
 } from "../db/queries.ts"
+import type { Deployment, Resource } from "../db/schema.ts"
 import {
   publishDeployLog,
   publishDeployment,
   publishStatus,
 } from "../events.ts"
+import { isFullCommitSha } from "../github/api.ts"
 import { nowIso, shortId } from "../ids.ts"
 import { logger, redactGithub, redactValues } from "../log.ts"
 import {
@@ -70,6 +74,17 @@ export interface DeployPayload {
    * (D59): see step 3 of runDeploy.
    */
   useExistingImage?: boolean
+  /**
+   * On every job enqueueRedeploy writes, and on no other: the deployment being
+   * repeated. Its presence, not its value, is what step 3 of runDeploy and the
+   * fold checks (BRANCH_BUILD) key on.
+   */
+  redeployOf?: string
+  /**
+   * Git redeploys whose source row recorded a full commit: 40 lowercase hex.
+   * Omitted, never null, when there is none.
+   */
+  pinnedSha?: string
 }
 
 /**
@@ -208,7 +223,86 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     // for git resources would be a second place for it to rot. Every failure
     // here is thrown before a new container exists, so the old one keeps
     // serving untouched.
-    if (resource.kind === "git" && !payload.useExistingImage) {
+    if (resource.kind === "git" && payload.redeployOf !== undefined) {
+      // "Deploy this again" of a git deployment (D60). Its image if this
+      // server still holds it — never pulled, for the reason the rollback
+      // branch below gives — otherwise the recorded commit built again.
+      // Decided here, not at enqueue: the prune may remove the image while
+      // the job waits.
+      const pinnedSha = payload.pinnedSha
+      if (pinnedSha !== undefined && !isFullCommitSha(pinnedSha)) {
+        throw new Error("this redeploy names a malformed commit")
+      }
+      const sha7 = pinnedSha?.slice(0, 7)
+      const candidate = isBuiltImageTag(image) ? image : null
+      if (candidate !== null && (await docker.imageExists(candidate))) {
+        emit(
+          sha7 === undefined
+            ? `Using ${candidate} from this server; nothing to build`
+            : `Using ${candidate} from this server, built from commit ${sha7}; nothing to build`,
+        )
+        image = candidate
+      } else {
+        if (pinnedSha === undefined || sha7 === undefined) {
+          throw new Error(
+            candidate === null
+              ? "this redeploy names neither an image nor a commit"
+              : `${candidate} is no longer on this server, and this deployment recorded no commit to build it from. Press Deploy to build the branch.`,
+          )
+        }
+        // Rebuilt only from the repository the commit came from. After a
+        // re-link the SHA is only known to belong to the old repository, and
+        // asking the new one for it deploys from a source the user no longer
+        // points at, or fails with a 422 that reads like a GitHub problem.
+        // A row from before git_repo was recorded cannot be checked at all.
+        const recordedRepo = getDeployment(deploymentId)?.gitRepo ?? null
+        if (recordedRepo === null) {
+          throw new Error(
+            `Commit ${sha7} has no image on this server, and this deployment is older than musdash's record of which repository a build came from, so it is not built again. Press Deploy to build the branch.`,
+          )
+        }
+        const currentRepo = gitSource(resource)?.repo
+        if (
+          currentRepo === undefined ||
+          recordedRepo.toLowerCase() !== currentRepo.toLowerCase()
+        ) {
+          throw new Error(
+            `Commit ${sha7} has no image on this server, and it was built from ${recordedRepo} while this resource now builds ${currentRepo ?? "no repository"}, so it is not built again. Press Deploy to build the branch.`,
+          )
+        }
+        if (candidate !== null) {
+          emit(
+            `${candidate} is no longer on this server; building commit ${sha7} again`,
+          )
+        }
+        // The row named the old tag; a rebuild that fails must read "Not
+        // built", not an image it never produced (P-2).
+        image = BUILD_PLACEHOLDER
+        updateDeployment(deploymentId, { image })
+        // No reuse: the user asked for this commit, and the only image of it
+        // worth reusing was the candidate, which is gone. Commit metadata is
+        // written exactly as in the build branch below.
+        const built = await buildFromSource(
+          resource,
+          deploymentId,
+          emit,
+          env.build,
+          env.secrets,
+          (commit, record) => {
+            updateDeployment(deploymentId, {
+              commitSha: commit.sha,
+              commitMessage: commit.message,
+              commitAuthor: commit.author,
+              gitRepo: record.repo,
+              buildFingerprint: record.fingerprint,
+            })
+          },
+          { commitSha: pinnedSha },
+        )
+        image = built.image
+        updateDeployment(deploymentId, { image })
+      }
+    } else if (resource.kind === "git" && !payload.useExistingImage) {
       const row = getDeployment(deploymentId)
       // Only a push may reuse (D59). A push says "deploy what the branch now
       // holds", and an identical earlier build is exactly that. Deploy is the
@@ -790,7 +884,8 @@ function assertNotRestarted(state: ContainerState): void {
   }
 }
 
-export type DeployTrigger = "manual" | "rollback" | "reconcile" | "webhook"
+export type DeployTrigger =
+  "manual" | "rollback" | "reconcile" | "webhook" | "redeploy"
 
 /**
  * Triggers that deploy an image which already exists locally.
@@ -804,6 +899,10 @@ export type DeployTrigger = "manual" | "rollback" | "reconcile" | "webhook"
  *
  * Adding a trigger now means choosing a side, instead of inheriting an answer
  * from a comparison that never mentioned the concept.
+ *
+ * "redeploy" is deliberately not in the set: whether it reuses an image or
+ * builds its commit again is not known at enqueue time, so the job decides at
+ * step 3 of runDeploy by asking Docker whether the image still exists.
  */
 const REUSES_IMAGE: ReadonlySet<DeployTrigger> = new Set([
   "rollback",
@@ -832,11 +931,25 @@ const REUSES_IMAGE: ReadonlySet<DeployTrigger> = new Set([
  */
 const DEPLOY_MAX_ATTEMPTS = 1
 
+/**
+ * The payload fields of a deploy that builds the branch head: not a rollback
+ * or reconcile (useExistingImage), and not a "Deploy this again" (redeployOf
+ * absent — null matches a missing field, see findPendingJob).
+ *
+ * A queued or running redeploy also has useExistingImage false, but it deploys
+ * a recorded image or a pinned commit, not what the branch now holds. A push
+ * folded into it, or a Deploy press sent to it, would never get the branch
+ * head built; a running one that happens to be at the pushed commit still
+ * says nothing about what the push asked for.
+ */
+const BRANCH_BUILD = { useExistingImage: false, redeployOf: null } as const
+
 /** Queues a deploy and returns the deployment id. Handlers call this, never runDeploy. */
 export function enqueueDeploy(
   resourceId: string,
   image: string,
-  trigger: DeployTrigger = "manual",
+  // A redeploy carries fields this does not write; enqueueRedeploy owns it.
+  trigger: Exclude<DeployTrigger, "redeploy"> = "manual",
 ): string {
   const reuses = REUSES_IMAGE.has(trigger)
   const deployment = createDeployment({
@@ -914,9 +1027,7 @@ export function enqueueDeployCoalesced(
   resourceId: string,
   after?: string | null,
 ): CoalescedDeploy {
-  if (
-    findPendingJob("deploy", { resourceId, useExistingImage: false }) !== null
-  ) {
+  if (findPendingJob("deploy", { resourceId, ...BRANCH_BUILD }) !== null) {
     return { outcome: "folded" }
   }
   if (typeof after === "string") {
@@ -925,7 +1036,7 @@ export function enqueueDeployCoalesced(
     // which is the safe side.
     for (const jobId of findLeasedJobs("deploy", {
       resourceId,
-      useExistingImage: false,
+      ...BRANCH_BUILD,
     })) {
       const deploymentId = deploymentIdOfJob(jobId)
       if (deploymentId === null) continue
@@ -963,8 +1074,8 @@ export function enqueueDeployCoalesced(
  * For the Deploy button: when an identical deploy still waits and nothing else
  * for this resource is queued behind it, a second press would only run the
  * same work again once the first finishes, so the handler sends the user to
- * the waiting one instead. Build deploys only (useExistingImage false) — a
- * queued rollback deploys a different artifact. For a git resource `image` is
+ * the waiting one instead. Branch build deploys only (BRANCH_BUILD) — a queued
+ * rollback or redeploy deploys a different artifact. For a git resource `image` is
  * BUILD_PLACEHOLDER, so this matches a waiting push or Deploy of the branch;
  * for an image resource, the same image ref.
  *
@@ -979,11 +1090,101 @@ export function pendingDeploymentFor(
 ): string | null {
   const jobId = findPendingJob("deploy", {
     resourceId,
-    useExistingImage: false,
+    ...BRANCH_BUILD,
     image,
   })
   if (jobId === null || hasPendingJobAfter(jobId, resourceId)) return null
   return deploymentIdOfJob(jobId)
+}
+
+const FINISHED: ReadonlySet<Deployment["status"]> = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
+])
+
+/**
+ * Whether a deployment can be deployed again ("Deploy this again", D60).
+ *
+ * Pure, so the page and the handler agree on the answer without either asking
+ * Docker or GitHub. A queued or running one is still in progress. A git row
+ * needs something to repeat — a full recorded commit or a built tag; whether
+ * the image survives, or the repository still matches, is decided by the job,
+ * which says why when it cannot. An image row needs a reference that passes
+ * the same validation Settings applies, since it is pulled and becomes the
+ * resource's image.
+ */
+export function redeployable(
+  deployment: Deployment,
+  resource: Resource,
+): boolean {
+  if (!FINISHED.has(deployment.status)) return false
+  if (resource.kind === "git") {
+    return (
+      (deployment.commitSha !== null &&
+        isFullCommitSha(deployment.commitSha)) ||
+      isBuiltImageTag(deployment.image)
+    )
+  }
+  return (
+    deployment.image !== BUILD_PLACEHOLDER && isValidImageRef(deployment.image)
+  )
+}
+
+/**
+ * Creates a "redeploy" row repeating `source`, queues it, and returns its id.
+ *
+ * The row names the source's image when it has a real one — the built tag a
+ * git redeploy tries first, or the reference an image redeploy pulls — and
+ * inherits its commit and build record, so the page names what is being
+ * repeated before the job runs. A git rebuild overwrites them when it
+ * resolves the commit.
+ *
+ * useExistingImage is false even for a git redeploy that will reuse: the job
+ * decides at step 3, because the image may be pruned while this waits.
+ */
+export function enqueueRedeploy(
+  source: Deployment,
+  resource: Resource,
+): string {
+  // The route checks first; this only keeps a stray caller from queueing a
+  // job step 3 would have to reject.
+  if (!redeployable(source, resource)) {
+    throw new Error(`deployment ${source.id} cannot be deployed again`)
+  }
+  const git = resource.kind === "git"
+  const image =
+    git && !isBuiltImageTag(source.image) ? BUILD_PLACEHOLDER : source.image
+  const pinnedSha =
+    git && source.commitSha !== null && isFullCommitSha(source.commitSha)
+      ? source.commitSha
+      : undefined
+  const deployment = createDeployment({
+    resourceId: resource.id,
+    image,
+    trigger: "redeploy",
+    commitSha: source.commitSha,
+    commitMessage: source.commitMessage,
+    commitAuthor: source.commitAuthor,
+    gitRepo: source.gitRepo,
+    buildFingerprint: source.buildFingerprint,
+  })
+  enqueue(
+    "deploy",
+    {
+      resourceId: resource.id,
+      deploymentId: deployment.id,
+      image,
+      useExistingImage: false,
+      redeployOf: source.id,
+      // Omitted rather than null: the payload is JSON, and a null here would
+      // have to be told apart from "absent" by every reader.
+      ...(pinnedSha === undefined ? {} : { pinnedSha }),
+    } satisfies DeployPayload,
+    { maxAttempts: DEPLOY_MAX_ATTEMPTS },
+  )
+  publishStatus({ resourceId: resource.id, state: "queued" })
+  return deployment.id
 }
 
 /**

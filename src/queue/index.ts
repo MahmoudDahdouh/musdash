@@ -198,16 +198,25 @@ export function activeJobCount(database: Database = defaultDb): number {
  * is refused; a boolean is compared as the 0 or 1 json_extract returns for it.
  * `caller` names the public function in the error, so a bad call site can be
  * found from the message alone.
+ *
+ * null means "this field is absent" (or JSON null — json_extract cannot tell
+ * the two apart, and no writer stores a null). It is the only way to exclude
+ * a job by a field it carries: `= NULL` is never true in SQL, so it becomes
+ * `IS NULL` and binds nothing.
  */
 function payloadClauses(
   caller: string,
-  fields: Record<string, string | number | boolean>,
+  fields: Record<string, string | number | boolean | null>,
 ): { sql: string; values: (string | number)[] } {
   let sql = ""
   const values: (string | number)[] = []
   for (const [key, value] of Object.entries(fields)) {
     if (!/^[A-Za-z]+$/.test(key)) {
       throw new Error(`${caller}: invalid payload field "${key}"`)
+    }
+    if (value === null) {
+      sql += ` AND json_extract(payload_json, '$.${key}') IS NULL`
+      continue
     }
     sql += ` AND json_extract(payload_json, '$.${key}') = ?`
     values.push(typeof value === "boolean" ? Number(value) : value)
@@ -217,14 +226,14 @@ function payloadClauses(
 
 /**
  * The oldest job of this type that has not started and whose payload holds
- * each of these fields, or null.
+ * each of these fields (a null field: lacks it), or null.
  *
  * Only 'pending': a job the worker has claimed has already acted on its input,
  * so folding new work into it would lose that work (T-1).
  */
 export function findPendingJob(
   type: JobType,
-  fields: Record<string, string | number | boolean>,
+  fields: Record<string, string | number | boolean | null>,
   database: Database = defaultDb,
 ): string | null {
   const match = payloadClauses("findPendingJob", fields)
@@ -238,7 +247,7 @@ export function findPendingJob(
 
 /**
  * Ids of every leased job of this type whose payload holds each of these
- * fields, oldest first.
+ * fields (a null field: lacks it), oldest first.
  *
  * A list rather than the first match: concurrency is 1, so only one job is
  * really running, but a leased row can outlive its handler (D51, worker.ts),
@@ -246,7 +255,7 @@ export function findPendingJob(
  */
 export function findLeasedJobs(
   type: JobType,
-  fields: Record<string, string | number | boolean>,
+  fields: Record<string, string | number | boolean | null>,
   database: Database = defaultDb,
 ): string[] {
   const match = payloadClauses("findLeasedJobs", fields)
