@@ -3472,3 +3472,71 @@ reconcile.
 re-link against a compiled binary; its two env sentences, stale since D45, were
 corrected in the same change. **Not yet verified:** the webhook paths against
 real GitHub deliveries, and rows 3 and 4 of the plan's real-host test matrix.
+
+### D56 — GitHub failures name their cause; a 403 body may be classified, never included
+
+Every api.github.com failure already went through one function, so each cause the plan's
+Slice B lists gets its own sentence there (`describeFailure`, renamed from
+`describe` and exported so tests can feed it canned responses — the test file
+already imports `describe` from `bun:test`). The plan's references to
+`describe()` now mean `describeFailure`.
+
+**Order.** Primary limit exhausted, then a secondary limit, then 401, then a
+suspended 403, then 404, then a 422 on a commits lookup, then the generic line.
+The rate-limit checks come first because a secondary-limit 403 also has a body.
+
+- **Clock skew (B1).** Only on a 401 to a request that used the App JWT — the
+  token mint and the installation list. `ghFetch` passes the auth _kind_,
+  which cannot carry the credential. The message names the offset in whole
+  seconds and its direction and says to sync the clock with NTP, then to
+  reconnect if that does not help. The threshold is asymmetric because the
+  JWT's window is: `iat` is backdated 60s and `exp` is 480s ahead. A clock more
+  than 50s _ahead_ is named (past 60s, `iat` is in GitHub's future). A clock
+  _behind_ still signs an acceptable JWT until `exp` is in GitHub's past, so it
+  is named only past 450s — blaming a clock 2 minutes behind for a 401 would
+  send the user to the wrong fix. Matrix row 6 therefore sets the clock ahead. A missing or unparseable `Date`, or a 401 on
+  an installation token (checked by GitHub, not by our clock), keeps the old
+  message. No `/zen` call: the header is on the response we already have.
+- **Missing branch (B2).** A 422 on `/repos/*/*/commits/*` says the branch or
+  commit was not found. `getCommit` restates it as "Branch `x` not found in
+  `owner/repo`." through `branchNotFound`. It names the repository and ref on
+  purpose: both are validated before the call and already printed in the
+  deploy log's "Fetching" line, so this is not a relaxation of D11 for any
+  other field. The mapping sits on the commits request itself, inside the
+  token wrapper, so a mint failure is never restated as a missing branch.
+- **Suspended installation (B3).** A 403 whose body matches `/suspended/i`.
+  This replaces D55's "a deploy during a suspension shows GitHub's generic
+  403".
+- **Secondary rate limit (B4).** A 403 with `retry-after`, or any 429. The
+  header is read as seconds or an HTTP date and shown as an absolute time,
+  because the message is stored on the deployment row and read later; when it
+  is missing or unparseable the message says to retry in a minute or two.
+  Nothing retries automatically (D44).
+- **Timeout (B5).** An `AbortSignal` timeout from `fetch` or from reading the
+  JSON body — both reject with a `DOMException` named `TimeoutError`, checked
+  on this runtime — becomes a `GitHubError` with status 0, "GitHub did not
+  respond within 15s (shape)". Status 0 means no HTTP response arrived, and is
+  never 401, so the D55 token retry cannot fire on a timeout. The message never
+  copies the runtime's text or sets a `cause`, either of which can carry the
+  URL. Every other rejection is rethrown untouched.
+- **The access-token 404 (B6)** is unchanged, and now pinned by a test.
+
+**The body.** D11 said `describe` never reads the response body, because a 401
+body can echo fragments of the credential that failed. It still never
+_includes_ it: the body is drained once and reduced to one boolean for the
+suspended check, and no variable holds its text. The pattern runs on every
+drained body, but only the 403 branch reads the result, so a 401 body never
+influences a message. A test plants a `ghs_` string in a suspended 403's body and checks
+it is absent from the message.
+
+**Not yet verified against real GitHub.** That a missing ref answers 422 on the
+commits endpoint (matrix row 11); that a suspended installation's 403 body says
+"suspended" (row 4 — a suspended _user account_ may match too); the units of
+`retry-after` on a secondary limit; and branches with a slash (row 8), which
+`getCommit` still sends through `encodeURIComponent`. The codeload hop after
+the tarball redirect keeps its own 120s timeout until Slice C.
+
+**Verified.** `src/github/api.test.ts` feeds canned responses for each row
+B1–B6 and pins the runtime's timeout error name twice against a local server: once
+for a `fetch` that never gets headers, once for a `res.json()` whose body
+stalls.

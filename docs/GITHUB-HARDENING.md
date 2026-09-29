@@ -221,7 +221,7 @@ the same point faster with a repeatable real-host run. Record the results as a
 | 3   | Uninstall the App while a resource is linked                  | Resource shows as unlinked; clear message on deploy (A1)      |
 | 4   | Suspend, then unsuspend the installation                      | Clear "suspended" error, then recovers (A1/B3)                |
 | 5   | Regenerate the App's private key in GitHub                    | Clear message; reconnect fixes it                             |
-| 6   | Server clock off by 2 minutes                                 | "Clock is off by N seconds" (B1)                              |
+| 6   | Server clock 2 minutes ahead of real time                     | "Clock is N seconds ahead of GitHub" (B1, D56)                |
 | 7   | Repo over 500MB on a slow link                                | Deploys; a stall is reported as a stall (C)                   |
 | 8   | Branch named `feature/x`                                      | Resolves and deploys                                          |
 | 9   | Force-push to the watched branch                              | Deploys the new head                                          |

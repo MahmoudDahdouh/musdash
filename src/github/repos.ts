@@ -1,5 +1,5 @@
 import { getAppPrivateKey, getGithubApp } from "../db/queries.ts"
-import { ghJson, ghPaginate } from "./api.ts"
+import { type Auth, branchNotFound, ghJson, ghPaginate } from "./api.ts"
 import { appJwt } from "./jwt.ts"
 import { withInstallationToken } from "./tokens.ts"
 
@@ -127,11 +127,19 @@ export async function getCommit(
   ref: string,
 ): Promise<CommitMeta> {
   const path = `/repos/${repo}/commits/${encodeURIComponent(ref)}`
+  // The 422 is restated on the commits call itself, inside the token closure,
+  // not around withInstallationToken: a failure to mint the token is a
+  // different problem and must never be reported as a missing branch. Any other
+  // error is rethrown as the same object.
+  const lookup = (auth: Auth): Promise<RawCommit> =>
+    ghJson<RawCommit>(path, auth).catch((err: unknown) => {
+      throw branchNotFound(err, repo, ref) ?? err
+    })
   const raw =
     installationId === null
-      ? await ghJson<RawCommit>(path, { kind: "none" })
+      ? await lookup({ kind: "none" })
       : await withInstallationToken(installationId, (token) =>
-          ghJson<RawCommit>(path, { kind: "installation", token }),
+          lookup({ kind: "installation", token }),
         )
   return {
     sha: raw.sha,
