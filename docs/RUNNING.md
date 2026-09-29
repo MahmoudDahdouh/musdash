@@ -665,11 +665,20 @@ Actions, for example — and deployed as an image.
 
 **Next.js 16** builds with Turbopack by default, which needed about 1.25 GiB
 for a one-page app on the 2GB test host and stalls below that — more than the
-~1 GiB BuildKit gets there. The same app built with webpack in 408 MiB. On a
-2GB host, add the build variable `RAILPACK_BUILD_CMD=npm run build --
---webpack` on that resource (or put `next build --webpack` in your
-Dockerfile); on 1GB, build elsewhere (D52). Do not set it on the project or
-environment: every app there inherits it, and Next.js 15 and older fail with
+~1 GiB BuildKit gets there. The same app built with webpack in 408 MiB. When
+BuildKit's cap is under 1.4 GiB, musdash switches a Railpack build of a Next.js
+16+ app to webpack itself and says so in the deploy log and on the deployment
+page (D64). It leaves the build alone when it cannot be sure — the Next.js
+version is not pinned down (`latest`, `canary`) and no npm lockfile settles
+it, or is overridden, the build
+script is more than `next build` and its flags, there is a
+`prebuild`/`postbuild` script, Railpack would not build it as a plain Node app
+with its default build command (another language's files beside it, a
+`railpack.json` build, Yarn Berry) — and then the old advice applies: add the build
+variable `RAILPACK_BUILD_CMD=npm run build -- --webpack` on that resource, or
+put `next build --webpack` in your Dockerfile. On 1GB, build elsewhere (D52).
+Setting `RAILPACK_BUILD_CMD` yourself always wins. Do not set it on the project
+or environment: every app there inherits it, and Next.js 15 and older fail with
 `Unknown or unexpected option: --webpack`, since they build with webpack
 already.
 

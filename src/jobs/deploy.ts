@@ -162,6 +162,14 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
     publishDeployLog(deploymentId, safe(text))
   }
 
+  // A build that switched a Next.js 16+ app to webpack records BuildKit's cap
+  // on the row, for the deployment page's note. Only builds call it, so
+  // reuse, rollback and reconcile rows stay null — and "Deploy this again"
+  // does not copy it: a redeploy records it only if it rebuilds and switches.
+  const recordAutoWebpack = (capMib: number) => {
+    updateDeployment(deploymentId, { autoWebpackCapMib: capMib })
+  }
+
   const oldContainerId = resource.containerId
   let newContainerId: string | null = null
   // Whether the route switch was entered, and whether it finished. The failure
@@ -297,7 +305,7 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
               buildFingerprint: record.fingerprint,
             })
           },
-          { commitSha: pinnedSha },
+          { commitSha: pinnedSha, onAutoWebpack: recordAutoWebpack },
         )
         image = built.image
         updateDeployment(deploymentId, { image })
@@ -320,8 +328,9 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
                   fingerprint,
                   emit,
                 ),
+              onAutoWebpack: recordAutoWebpack,
             }
-          : {}
+          : { onAutoWebpack: recordAutoWebpack }
       // Commit metadata is written the moment the source is resolved rather
       // than at enqueue time: resolving it in the HTTP handler would put a
       // GitHub call in a request path, and would record the commit that was

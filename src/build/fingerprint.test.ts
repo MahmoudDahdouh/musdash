@@ -22,6 +22,7 @@ const base: FingerprintInputs = {
   dockerfilePath: null,
   buildContext: null,
   buildVars: { NODE_ENV: "production", API_URL: "https://example.test" },
+  buildkitBelowTurbopack: false,
 }
 
 const fp = (patch: Partial<FingerprintInputs> = {}) =>
@@ -61,6 +62,8 @@ describe("buildFingerprint", () => {
       // One added, one removed.
       { buildVars: { ...base.buildVars, EXTRA: "1" } },
       { buildVars: { NODE_ENV: "production" } },
+      // BuildKit's cap crossed the Turbopack threshold (next-webpack.ts).
+      { buildkitBelowTurbopack: true },
     ]
     const seen = new Set([original])
     for (const v of variants) {
@@ -70,6 +73,14 @@ describe("buildFingerprint", () => {
     }
     // Distinct from each other too, not merely from the original.
     expect(seen.size).toBe(variants.length + 1)
+  })
+
+  test("a cap below the Turbopack threshold is a different build", () => {
+    // The same commit builds with webpack below it and Turbopack above, so a
+    // push must not reuse across the line.
+    expect(fp({ buildkitBelowTurbopack: true })).not.toBe(
+      fp({ buildkitBelowTurbopack: false }),
+    )
   })
 
   test("a null path differs from a set one, and from an empty string", () => {

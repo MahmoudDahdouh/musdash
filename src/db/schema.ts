@@ -148,6 +148,10 @@ export const deployments = sqliteTable(
     // written before 0005, which therefore never match.
     gitRepo: text("git_repo"),
     buildFingerprint: text("build_fingerprint"),
+    // BuildKit's cap in MiB when this build switched a Next.js 16+ app from
+    // Turbopack to webpack to fit it (0006); null when it did not, and for
+    // every row that did not build.
+    autoWebpackCapMib: integer("auto_webpack_cap_mib"),
 
     createdAt: text("created_at").notNull(),
   },

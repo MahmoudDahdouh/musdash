@@ -43,6 +43,12 @@ export interface BuildContext {
   stall?: { afterMs: number; isStarved: () => Promise<boolean> }
   /** Appended to every out-of-memory message: what the user can do about it. */
   memoryAdvice?: string
+  /**
+   * Set when musdash chose the build command itself: a Next.js 16+ app on a
+   * BuildKit cap too small for Turbopack gets `next build … --webpack`
+   * (next-webpack.ts). Railpack strategy only, passed as RAILPACK_BUILD_CMD.
+   */
+  railpackBuildCmd?: string
 }
 
 export class BuildError extends Error {

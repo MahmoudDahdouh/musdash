@@ -111,6 +111,22 @@
 </div>
 <% } %>
 
+<%/* Set only on the build that made the switch (D64); reuse, rollback, and
+     reconcile rows leave it null, so the note never shows there. */%>
+<% if (d.autoWebpackCapMib != null) { %>
+<div class="notice notice-info" role="status">
+  <svg class="icon" aria-hidden="true"><use href="#i-info" /></svg>
+  <div>
+    <strong>Built with webpack.</strong>
+    Next.js's default bundler, Turbopack, needs about 1.25 GiB of memory to
+    build, and this server gives builds <%= d.autoWebpackCapMib %> MiB. To
+    choose the build command yourself, set the build variable
+    <code>RAILPACK_BUILD_CMD</code> on
+    <a href="/r/<%= it.resource.id %>">this resource</a>.
+  </div>
+</div>
+<% } %>
+
 <%/* The stream starts after the lines drawn below, so none shows twice. */%>
 <div class="card stack" x-data="logPanel('/d/<%= d.id %>/logs?skip=<%= it.lines.length %>')">
   <h2 class="card-title">Deploy log</h2>

@@ -4026,3 +4026,84 @@ deeper shape that produces, and add tests for both.
 The webhook's comment claiming GitHub "retries a non-2xx forever" was wrong:
 GitHub never redelivers on its own, and a non-2xx only marks the delivery failed
 under the App's Recent Deliveries.
+
+## Build memory (2026-09-29)
+
+### D64 — a Next.js 16 build that Turbopack cannot fit is switched to webpack automatically
+
+D52 left the fix to the user: a Next.js 16 app on a 2GB host built with
+Turbopack, sat at BuildKit's 960 MiB cap for ten minutes, was stopped, and only
+then said to add `RAILPACK_BUILD_CMD=npm run build -- --webpack` on the
+resource. Observed on the 2GB host: a user moved that variable to the
+environment, which broke an older Next.js app there (`--webpack` is rejected
+before 16), removed it, and the Next.js 16 app stalled again. musdash knows
+every input to that decision before the build starts, so it now makes it.
+
+**When.** All of these, checked in `decideAutoWebpack`
+(`src/build/next-webpack.ts`, tested), cheapest first — an app that fails an
+early check never pays for a later one:
+
+- the pack after detection is Railpack — a Dockerfile's command is the user's;
+- BuildKit's RAM cap is known and below **1434 MiB**. D52 saw Turbopack peak at
+  1254 MiB, stall at 900–960 and succeed only at a 1.4 GiB cap, and buildkitd's
+  own memory comes out of the same cap, so the threshold is the cap it was seen
+  to work at, not the peak. Swap (D50) is not counted. An unknown cap does not
+  switch;
+- the resolved **build** environment has no `RAILPACK_BUILD_CMD`, at any level,
+  even an empty one — a runtime-only one never reaches Railpack, so it does not
+  count;
+- `<contextDir>/package.json` names `next` at major 16 or later, with no
+  `overrides`, `pnpm.overrides`, `resolutions` or `optionalDependencies` entry
+  for `next` — those can pin 15 behind a `^16` range. A range whose lower bound cannot be read —
+  `latest`, `canary`, `*`, `workspace:`, `catalog:`, `npm:` aliases, git or URL
+  specs, `||` unions — does not switch unless an npm lockfile settles it (last
+  bullet). Parsing is handwritten; no `semver`;
+- `scripts.build` is exactly `next build` plus `--flag`/`--flag=value` tokens,
+  none of them `--webpack`, `--turbopack` or `--turbo`, and there is no
+  `prebuild` or `postbuild` script, which a direct command would skip;
+- **Railpack itself agrees.** `railpack info --format json`, run on the build
+  context with the same `--env` arguments as the build, must report exactly
+  the `node` provider, a package manager of npm, pnpm, Yarn 1 or bun (Yarn
+  Berry's Plug'n'Play has no `node_modules/.bin`), and a build step whose only
+  command is that manager's default `<pm> run build`. This is shelling out
+  rather than reimplementing Railpack's rules: its providers are checked in a
+  fixed order with Node near the end, so a `go.mod`, `requirements.txt` or
+  `composer.json` beside a Next.js `package.json` makes it a Go, Python or PHP
+  build, which `RAILPACK_BUILD_CMD` would otherwise hijack; and a
+  `railpack.json` or `RAILPACK_CONFIG_FILE` that sets its own build shows up as
+  a non-default command. Measured on the 2GB host (Railpack 0.37.0): 0.13 s,
+  26 MB peak, transient. It gets a 30 s timeout and a 4 MiB output cap; any
+  failure means no switch, logged with its kind and exit code, never its
+  arguments;
+- the exact version in `package-lock.json` wins over the range, but only when
+  Railpack says npm is the package manager — a stale npm lockfile beside a pnpm
+  one must not flag a Next.js 15 app.
+
+**Recorded, and shown.** `deployments.auto_webpack_cap_mib` (0006) holds the cap
+in MiB when that deployment's build was switched, written before the build like
+the commit (D51), so a switched build that fails still says so. Its page shows
+a note. Only rows that built carry it: a push that reuses an image, a rollback,
+a reconcile and a "Deploy this again" that reuses do not copy it; one that
+rebuilds records its own.
+
+**The fingerprint extends D60.** D60 left "musdash's own build flags" out of
+the fingerprint. This one changes the image, so `buildkitBelowTurbopack` — the
+same `belowTurbopackCap` the decision uses — is now an input, always present.
+Every resource rebuilds once on its first push after the upgrade; after that a
+host resized across the threshold never reuses an image built the other way.
+The cap is read once per build, in the job, before the fingerprint, and handed
+to the build for its "may use up to" line; no route handler reads it.
+
+**If Next.js still rejects the flag** — `package.json` said 16 but an older one
+is installed — the advice says musdash added it and how to take the choice back
+by setting `RAILPACK_BUILD_CMD` on the resource, instead of blaming an
+inherited variable.
+
+**Not covered:** Dockerfile builds (the D52 advice still applies), stopping
+early on the Turbopack banner, pnpm, Yarn and bun lockfiles, overrides set in
+`pnpm-workspace.yaml`, monorepo root lockfiles, and non-Next.js frameworks.
+
+**Not verified against a real VPS yet:** the `railpack info` call from inside
+the job, an npm Next.js 16 app switching and serving, the direct `next build`
+under pnpm and bun (bun's image may lack `node` for Next's shebang), the
+one-time rebuild after upgrade, and the note on a failed switched build.

@@ -50,6 +50,15 @@ const WEBPACK_FLAG_REJECTED = /Unknown or unexpected option: --webpack\b/
 const WEBPACK_FLAG_ADVICE =
   "This Next.js version has no `--webpack` flag: before Next.js 16 it builds with webpack already. Remove `--webpack` from the build command. If `RAILPACK_BUILD_CMD` adds it and is inherited from the project or environment, set it only on the resource that needs it."
 
+/**
+ * The same rejection when musdash added the flag itself (next-webpack.ts): the
+ * app's package.json named Next.js 16 or newer but the installed `next` was
+ * older. No variable was inherited from anywhere, so the advice above would
+ * send the user looking for one that does not exist.
+ */
+const WEBPACK_FLAG_AUTO_ADVICE =
+  "musdash added `--webpack` to this build because the app's package.json names Next.js 16 or newer, but the installed Next.js is older and has no such flag. Set the build variable `RAILPACK_BUILD_CMD` on this resource — `RAILPACK_BUILD_CMD=npm run build`, for example — to choose the build command yourself; musdash then leaves it alone."
+
 /** The longest a silent build waits between starvation checks. */
 const STALL_POLL_MAX_MS = 15_000
 
@@ -225,9 +234,11 @@ export async function runBuilder(
       throw new BuildError(`a build step ran out of memory.${advice()}`)
     }
     if (sawWebpackFlagRejected) {
-      throw new BuildError(
-        `${bin} exited with code ${code}. ${WEBPACK_FLAG_ADVICE}`,
-      )
+      const flagAdvice =
+        ctx.railpackBuildCmd === undefined
+          ? WEBPACK_FLAG_ADVICE
+          : WEBPACK_FLAG_AUTO_ADVICE
+      throw new BuildError(`${bin} exited with code ${code}. ${flagAdvice}`)
     }
     throw new BuildError(`${bin} exited with code ${code}`)
   } finally {
