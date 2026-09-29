@@ -1,4 +1,4 @@
-import { and, desc, eq, ne, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm"
 import {
   BUILD_PLACEHOLDER,
   computeKeepSet,
@@ -1308,6 +1308,46 @@ export function countResourcesInProject(projectId: string): number {
       .where(eq(environments.projectId, projectId))
       .get()?.n ?? 0
   )
+}
+
+/** One queued or running deployment, as the activity toast shows it. */
+export interface ActiveDeployment {
+  id: string
+  status: "queued" | "running"
+  resourceId: string
+  /** "<project> / <resource>": the toast has room for one line. */
+  name: string
+}
+
+/**
+ * Every deployment queued or running, oldest first — so the running one, which
+ * the single worker claimed first, leads. One statement per call, like
+ * navTree(): the layout reads it on every signed-in render, and the activity
+ * stream re-reads it on each deployment event rather than holding a copy.
+ * Cancelled rows are not in it (D59).
+ */
+export function activeDeployments(): ActiveDeployment[] {
+  return orm
+    .select({
+      id: deployments.id,
+      status: deployments.status,
+      resourceId: deployments.resourceId,
+      resourceName: resources.name,
+      projectName: projects.name,
+    })
+    .from(deployments)
+    .innerJoin(resources, eq(resources.id, deployments.resourceId))
+    .innerJoin(environments, eq(environments.id, resources.environmentId))
+    .innerJoin(projects, eq(projects.id, environments.projectId))
+    .where(inArray(deployments.status, ["queued", "running"]))
+    .orderBy(deployments.createdAt)
+    .all()
+    .map((d) => ({
+      id: d.id,
+      status: d.status === "running" ? "running" : "queued",
+      resourceId: d.resourceId,
+      name: `${d.projectName} / ${d.resourceName}`,
+    }))
 }
 
 /** The ids of a resource's deployments still waiting in the queue. */

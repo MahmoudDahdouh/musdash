@@ -4235,3 +4235,42 @@ through both.
 **Renames touch the row only.** A resource keeps its slug (D65) and every
 hostname is a stored row (D66), so no route sync is needed. Deleting the last
 environment of a project is allowed; the page already has an empty state.
+
+### D68 — a bottom-right toast while any deploy is queued or running
+
+The request: while a process such as a deployment is running, keep a toast at
+the bottom right of every page, and open that process's page on a click.
+
+**Deploys only.** Every deployment has a page (`/d/:id`). The worker is also
+busy with prune, sidecar bootstrap and route sync jobs, which have none, so a
+toast for them would lead nowhere. "Busy" is read from `deployments`
+(`queued` or `running`, never `cancelled`, per D59), not from `isWorkerBusy()`.
+
+**A view of server state, with no client store.** `activeDeployments()` is one
+joined statement, oldest first so the running deploy leads. The layout reads it
+on every signed-in render, like `navTree()`, so the toast is drawn by the server
+and survives navigation without `localStorage`. `GET /events` (in
+`routes/sse.ts`, through `eventStream()` so disconnect always unsubscribes)
+sends the whole list on connect and again after every deployment transition, via
+a new `deployment:*` wildcard beside `status:*`. The Alpine `activity` component
+only swaps the list. It never reloads the page, so it cannot add a second reload
+trigger next to D40's. Enqueueing now also publishes a `deployment` event with
+status `queued` (it published only `status` before), so a queued deploy shows at
+once; the deployment page ignores it because its initial status is already
+`queued`.
+
+**One toast, not one per row.** It names the running (or first queued) deploy as
+"project / resource" with the live status label from `@status`, plus
+"+N queued". It is not dismissible: dismissal that survives navigation would
+need client-side state, and the toast is small and always leads somewhere.
+
+**Costs.** One more SSE connection per open page. Through Caddy (HTTP/2) that is
+free; straight to `:8000` (HTTP/1.1, six connections per origin) a resource page
+now holds three, so a third such tab can stall — the tunnel advice in RUNNING.md
+already points at Caddy. Assets after this slice: `app.js` 15.8 of 16 KB,
+`app.css` 31.5 of 32 KB, no budget raised. Idle RSS on the release binary was
+81.4 MB before slices D65–D68 and 82.2 MB after, within run-to-run noise.
+
+**Known gap.** A deployment left `running` by a crash reads as running until
+lease recovery re-runs it (`resource-state.ts` documents the same for the
+sidebar); the toast makes that more visible. Not changed here.

@@ -184,6 +184,22 @@ document.addEventListener("alpine:init", () => {
     },
   }))
 
+  /** The activity toast. /events sends the whole queued-and-running list on
+   *  connect and on every change; the words live in the layout. */
+  Alpine.data("activity", (initial) => ({
+    list: initial,
+    get state() {
+      return this.list[0]?.status || "queued"
+    },
+    init() {
+      const es = new EventSource("/events")
+      es.addEventListener("active", (e) => {
+        this.list = JSON.parse(e.data)
+      })
+      window.addEventListener("beforeunload", () => es.close())
+    },
+  }))
+
   // Focus follows the drawer, so Escape never strands it on <body>.
   Alpine.data("drawer", () => ({
     navOpen: false,

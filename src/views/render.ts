@@ -1,5 +1,6 @@
 import { Eta } from "eta"
 import type { ResourceState } from "../events.ts"
+import type { ActiveDeployment } from "../db/queries.ts"
 
 // Templates and assets are imported statically as text, NOT read from disk at
 // render time.
@@ -92,6 +93,8 @@ export interface LayoutData {
   activeSettings?: boolean
   /** This process's resident memory in MiB. Set only for a signed-in render. */
   rssMb?: number
+  /** Queued and running deployments, for the activity toast. */
+  active?: ActiveDeployment[]
 }
 
 export function renderPage(
@@ -113,6 +116,7 @@ export function renderPage(
       : (layout.flash ?? null),
     wide: layout.wide ?? false,
     nav: layout.nav ?? [],
+    active: layout.active ?? [],
     // Empty string rather than undefined: an id comparison in the template can
     // then never accidentally match a missing value.
     activeProjectId: layout.activeProjectId ?? "",

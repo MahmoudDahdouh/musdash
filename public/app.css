@@ -1029,6 +1029,9 @@ textarea {
   gap: var(--s-2) var(--s-4);
   margin-bottom: var(--s-3);
 }
+.env-head .row {
+  flex-wrap: wrap;
+}
 
 .table {
   width: 100%;
@@ -1320,4 +1323,38 @@ form:has(> .scope-boxes) {
   .nav-env {
     line-height: calc(44px - 2 * var(--s-2));
   }
+}
+
+/* The activity toast: pinned bottom-right while a deploy is queued or running.
+   Above the drawer (20), below the skip link (30); dialogs are top layer. */
+.toast {
+  position: fixed;
+  right: var(--s-4);
+  bottom: var(--s-4);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  max-width: calc(100vw - 2 * var(--s-4));
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-3);
+  color: var(--text);
+  font-size: var(--t-sm);
+  text-decoration: none;
+}
+.toast:hover {
+  border-color: var(--border-control);
+}
+.toast > .muted {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.toast-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

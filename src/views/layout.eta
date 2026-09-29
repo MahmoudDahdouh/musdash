@@ -187,6 +187,30 @@
         </div>
         <% } %> <%~ it.body %>
       </main>
+
+      <%/* The activity toast (D68): drawn from SQLite with every page, then
+           kept current by /events, so it survives navigation with no client
+           store. Deploys only — each has a page to open. Hidden, not absent,
+           when idle, so a deploy queued later can still show it. */%>
+      <% var first = it.active[0] %>
+      <a
+        class="toast"
+        href="<%= first ? '/d/' + first.id : '/' %>"
+        x-data="activity(<%= JSON.stringify(it.active) %>)"
+        x-show="list.length"
+        :href="list.length ? '/d/' + list[0].id : '/'"
+        title="Open this deployment"
+        <%~ first ? '' : 'style="display: none"' %>
+      >
+        <%~ include("@status", { state: first ? first.status : 'queued', live: true }) %>
+        <span class="toast-name" x-text="list.length ? list[0].name : ''"><%= first ? first.name : '' %></span>
+        <span
+          class="muted"
+          x-show="list.length > 1"
+          x-text="'+' + (list.length - 1) + ' queued'"
+          <%~ it.active.length > 1 ? '' : 'style="display: none"' %>
+        >+<%= it.active.length - 1 %> queued</span>
+      </a>
     </div>
 
     <dialog

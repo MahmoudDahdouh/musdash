@@ -980,6 +980,13 @@ export function enqueueDeploy(
     { maxAttempts: DEPLOY_MAX_ATTEMPTS },
   )
   publishStatus({ resourceId, state: "queued" })
+  // Announced on the deployment topic too, so the activity toast shows a deploy
+  // the moment it is queued rather than when it starts.
+  publishDeployment({
+    deploymentId: deployment.id,
+    resourceId,
+    status: "queued",
+  })
   return deployment.id
 }
 
@@ -1074,6 +1081,11 @@ export function enqueueDeployCoalesced(
     { maxAttempts: DEPLOY_MAX_ATTEMPTS },
   )
   publishStatus({ resourceId, state: "queued" })
+  publishDeployment({
+    deploymentId: deployment.id,
+    resourceId,
+    status: "queued",
+  })
   return { outcome: "queued", deploymentId: deployment.id }
 }
 
@@ -1193,6 +1205,11 @@ export function enqueueRedeploy(
     { maxAttempts: DEPLOY_MAX_ATTEMPTS },
   )
   publishStatus({ resourceId: resource.id, state: "queued" })
+  publishDeployment({
+    deploymentId: deployment.id,
+    resourceId: resource.id,
+    status: "queued",
+  })
   return deployment.id
 }
 

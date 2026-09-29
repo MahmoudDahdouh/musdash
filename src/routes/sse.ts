@@ -1,8 +1,9 @@
 import { Elysia } from "elysia"
 import { resolveSession, SESSION_COOKIE } from "../auth.ts"
-import { getDeployment, getResource } from "../db/queries.ts"
+import { activeDeployments, getDeployment, getResource } from "../db/queries.ts"
 import {
   deployLogTail,
+  subscribeAllDeployments,
   subscribeDeployLogs,
   subscribeDeployments,
   subscribeLogs,
@@ -145,6 +146,20 @@ export const sseRoutes = new Elysia()
       })
     })
   })
+
+  /**
+   * Queued and running deployments across every resource, for the layout's
+   * activity toast. Each frame is the whole list, re-read from SQLite: on
+   * connect, so a reconnect or a new page heals itself, and after every
+   * deployment transition. The client keeps no list of its own to get wrong.
+   */
+  .get("/events", () =>
+    eventStream((send) => {
+      const snapshot = () => send(frame("active", activeDeployments()))
+      snapshot()
+      return subscribeAllDeployments(snapshot)
+    }),
+  )
 
   .get("/d/:deploymentId/events", ({ params, status }) => {
     const deployment = getDeployment(params.deploymentId)

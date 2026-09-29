@@ -1,5 +1,5 @@
 import type { SessionUser } from "../auth.ts"
-import { navTree } from "../db/queries.ts"
+import { activeDeployments, navTree } from "../db/queries.ts"
 import { statusPage } from "../http.ts"
 import type { LayoutData } from "../views/render.ts"
 import type { ErrorKey } from "./errors.ts"
@@ -34,6 +34,8 @@ export function layout(
     // on the session because the layout only draws the sidebar for a signed-in
     // user, so an anonymous render would query for nothing.
     nav: session ? navTree() : [],
+    // The activity toast's first paint; /events keeps it current after that.
+    active: session ? activeDeployments() : [],
     activeProjectId: options.activeProjectId,
     activeEnvironmentId: options.activeEnvironmentId,
     activeSettings: options.activeSettings,

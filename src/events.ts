@@ -107,6 +107,15 @@ export function subscribeAllStatus(fn: (e: StatusEvent) => void): () => void {
 
 export function publishDeployment(event: DeploymentEvent): void {
   emitter.emit(`deployment:${event.resourceId}`, event)
+  emitter.emit("deployment:*", event)
+}
+
+/** Every resource's deployment transitions: the layout's activity toast. */
+export function subscribeAllDeployments(
+  fn: (e: DeploymentEvent) => void,
+): () => void {
+  emitter.on("deployment:*", fn)
+  return () => emitter.off("deployment:*", fn)
 }
 
 export function subscribeDeployments(
