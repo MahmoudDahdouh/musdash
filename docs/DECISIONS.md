@@ -3540,3 +3540,106 @@ the tarball redirect keeps its own 120s timeout until Slice C.
 B1–B6 and pins the runtime's timeout error name twice against a local server: once
 for a `fetch` that never gets headers, once for a `res.json()` whose body
 stalls.
+
+### D57 — the archive download stops on a stall, not a clock, and is retried once
+
+`FETCH_TIMEOUT_MS` killed the codeload download and `tar` after a fixed 120s.
+A large repository over a slow VPS link failed every time, and a hung transfer
+surfaced as `tar exited 2: gzip: stdin: unexpected end of file`, which never
+says the network stopped. Coolify's limit is 3600s. The download now lives in
+`src/github/archive-fetch.ts`, a pure module (no database, config or logger)
+that `tarball.ts` binds to `ghFetch`, the token wrapper and pino.
+
+**Stall, not clock.** An attempt is stopped when no bytes have arrived for 60s.
+The clock starts before the codeload request, so a host that never sends
+headers is a stall too. A watchdog ticks every 5s, so a stall is caught at
+60–65s. Because the body reaches `tar` under backpressure, the same clock also
+fires if `tar` stops reading for 60s — a hung disk, say — which is the right
+outcome for the same reason.
+
+**One cap.** A single 15-minute deadline covers the whole download, both
+attempts together, and is never retried. Concurrency is 1 (D44, D49), so the
+cap is how long every other queued job can wait behind a slow fetch; one
+deadline keeps that at 15 minutes, not 30. The cap is checked before the
+api.github.com hop, so the worst case is the cap, plus one hop that started
+just before it — up to four 15s requests with an empty token cache and a 401
+(mint, call, re-mint, call; D55) — plus a watchdog tick, the kill grace and the
+stderr drain. The
+job lease does not bound it: nothing reads `leased_until` (D49), and a build
+already runs up to 30 minutes inside the same job.
+
+**Stopping.** The reason is decided first, then the fetch is aborted and the
+body cancelled so gzip sees end-of-file, then `tar` gets SIGTERM and, 5s later,
+SIGKILL; stderr may stay open 2s after `tar` exits (the `run.ts` pattern — GNU
+`tar -z` runs gzip as a child that can hold the pipe). A SIGTERM-killed `tar`
+exits 143, so every message comes from musdash's own stop reason, never from
+the exit code: "stalled: no data for 60s after N MB", "did not finish within 15
+minutes", "lost its connection after N MB".
+
+**Retried once.** This is an in-step retry, like D55's, and does not change
+D44: the deploy job still gets one attempt. Unlike D55 it repeats a download
+and an extraction, not one HTTP call. The unit is the whole download — the
+api.github.com request (through the token wrapper, so a 401 re-mint still
+composes inside it), then codeload, then `tar` — so a retry follows a fresh
+redirect rather than reusing a signed URL that may have expired. Nothing here
+claims how long that URL lives.
+
+- Retried: a 5xx from either hop, a ghFetch timeout (D56's status 0), a
+  codeload request that failed without musdash aborting it, a connection lost
+  mid-body, and a stall.
+- Never retried: any 4xx, the cap, `tar` failing with no network error or stall
+  recorded (a corrupt archive, a full disk), `tar` missing, an empty body, a
+  non-redirect answer from the api hop, a connection failure on the api hop
+  other than a timeout (ghFetch rethrows it untouched, and a host that refuses
+  api.github.com will refuse it again in a second), and `getCommit` failures
+  (outside the download).
+- Before the retry the first `tar` has exited, and the destination is emptied in
+  place: every entry removed, the directory and its parent untouched, symlinks
+  removed as links and never followed. `removeBuildDir` still runs on every
+  path afterwards.
+- The deploy log gets one line when it retries, naming the reason (the
+  `SourceFetcher` signature gained an optional `emit` for it). Pino gets the
+  repository and the reason; neither ever gets the signed URL or an error's own
+  text, which can carry it.
+
+**A 200 from the tarball endpoint is an error.** GitHub answers 302 to codeload.
+The old code streamed any non-redirect body inline, but that body was still
+under ghFetch's 15s signal, so it only worked for archives that finished in
+15s and truncated anything larger into a gzip error — the failure this entry
+removes. Now it says GitHub did not redirect, with the status.
+
+**Memory, measured.** The body is wrapped in a pull-based stream with
+`highWaterMark: 0` so the byte counter sits in the path without a buffer. A
+400MB body into a consumer paused for 3s, server in a separate process:
+
+| Runtime                    | Native body as stdin | Pull wrapper as stdin |
+| -------------------------- | -------------------- | --------------------- |
+| Bun 1.4.2 (`.bun-version`) | +5 MB RSS            | +9 MB, 0.5 MB pulled  |
+| Bun 1.3.11                 | +769 MB              | +1049 MB              |
+
+1.3.11 reads the whole response off the socket regardless of the consumer, in
+every mode including the old code's. The budget therefore rests on the pinned
+runtime (D41). The same container's 1.3.11 also fails the unrelated
+`tls-probe` test that passes on 1.4.2.
+
+**One swallowed error, on purpose.** `tar`'s stderr is collected by a reader
+that ends quietly if the pipe errors. A rejection there would otherwise escape
+the classification — turning a `tar` that exited 0 into a failure, with the
+runtime's own text in the deploy log — and the module has no logger by design.
+The only cost is a failure message that says "no output".
+
+This supersedes D56's "the codeload hop … keeps its own 120s timeout until
+Slice C".
+
+**Verified.** `src/github/archive-fetch.test.ts` runs eight scenarios against a
+local server and a real `tar`, passing on both 1.3.11 and 1.4.2: bytes then a
+hang, no headers, a 503 then a good archive, a partial archive then a hang
+(retried into a destination emptied in place, its parent untouched), a 404 on
+either hop, a trickle that hits the cap, a corrupt archive, and a connection
+dropped mid-body by a raw socket (retried, then "lost its connection").
+`bun run gate:rss` on 1.4.2: idle 58.1MB. **Not yet verified on a real host:**
+a repository over 500MB on a throttled link (matrix row 7, with RSS sampled
+during the download), and a codeload DROP rule during a deploy — reported as a
+stall, retried once, no `tar` or `gzip` left behind. In this container the
+GNU `tar -z` helper shows up as a zombie after a kill, because its PID 1 does
+not reap; on a host, systemd does.

@@ -58,6 +58,8 @@ export interface FetchedSource {
 export type SourceFetcher = (
   source: SourceRequest,
   destDir: string,
+  /** The deploy log, for a line the fetch itself has to say (a retry). */
+  emit?: (line: string) => void,
 ) => Promise<FetchedSource | null>
 
 /**
@@ -129,6 +131,7 @@ export async function buildFromSource(
         installationId: resource.gitInstallationId,
       },
       dir,
+      emit,
     )
     if (commit) {
       emit(`At commit ${commit.sha.slice(0, 7)}`)

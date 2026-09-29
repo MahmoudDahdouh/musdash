@@ -2,7 +2,8 @@ import { existsSync } from "node:fs"
 import type { FetchedSource, SourceFetcher } from "../jobs/build.ts"
 import { localSourceFetcher, setSourceFetcher } from "../jobs/build.ts"
 import { logger } from "../log.ts"
-import { ghFetch, GitHubError } from "./api.ts"
+import { ghFetch } from "./api.ts"
+import { ARCHIVE_TIMINGS, downloadArchive, retryLine } from "./archive-fetch.ts"
 import { getCommit, isValidGitRef, isValidRepoRef } from "./repos.ts"
 import { withInstallationToken } from "./tokens.ts"
 
@@ -12,58 +13,6 @@ import { withInstallationToken } from "./tokens.ts"
  * The tarball endpoint over `git clone`: one authenticated request, no git
  * binary, no `.git` directory, smaller footprint (DECISIONS, "Source fetching").
  */
-
-/** A build can legitimately take minutes; a fetch cannot. Job concurrency is 1,
- *  so a hung fetch parks every queued deploy behind it. */
-const FETCH_TIMEOUT_MS = 120_000
-
-/**
- * Extracts a gzipped tarball stream into `dest`.
- *
- * The stream is handed to Bun.spawn as stdin rather than pumped by hand: a
- * manual write loop over the response body deadlocks once the pipe fills,
- * because nothing is reading the other end while the loop blocks. Letting Bun
- * own the pumping keeps memory flat — the whole point of streaming rather than
- * buffering a tarball that can be hundreds of megabytes.
- *
- * --strip-components=1 removes GitHub's `{owner}-{repo}-{sha}/` wrapper.
- */
-async function extract(
-  body: ReadableStream<Uint8Array>,
-  dest: string,
-): Promise<void> {
-  let proc: ReturnType<typeof Bun.spawn>
-  try {
-    proc = Bun.spawn(["tar", "-xz", "--strip-components=1", "-C", dest], {
-      stdin: body,
-      stdout: "ignore",
-      stderr: "pipe",
-    })
-  } catch (err) {
-    throw new Error(
-      `could not run tar — is it installed and on PATH? (${(err as Error).message})`,
-    )
-  }
-
-  const kill = setTimeout(() => {
-    proc.kill()
-  }, FETCH_TIMEOUT_MS)
-
-  try {
-    // stderr is drained concurrently with the wait: an undrained pipe blocks
-    // tar as soon as its buffer fills, and nothing would ever read it if we
-    // waited for exit first.
-    const [code, stderr] = await Promise.all([
-      proc.exited,
-      new Response(proc.stderr as ReadableStream).text(),
-    ])
-    if (code !== 0) {
-      throw new Error(`tar exited ${code}: ${stderr.trim() || "no output"}`)
-    }
-  } finally {
-    clearTimeout(kill)
-  }
-}
 
 /**
  * Downloads and extracts a repository at a resolved commit.
@@ -80,40 +29,38 @@ async function download(
   sha: string,
   installationId: number | null,
   dest: string,
+  emit?: (line: string) => void,
 ): Promise<void> {
   const path = `/repos/${repo}/tarball/${sha}`
   const init = { redirect: "manual" } as const
-  // Only the api.github.com request is retried on a 401. The codeload hop
-  // below carries no token — its signed URL is the credential — so a failure
-  // there is not a stale token, and re-minting would not fix it. Extraction
-  // stays outside too: a retry must never re-run a half-written tar.
-  const res =
+  // The 401 re-mint stays on the api.github.com request, inside `locate`. The
+  // codeload hop carries no token — its signed URL is the credential — so a
+  // failure there is not a stale token, and re-minting would not fix it. The
+  // whole download (this request, codeload, tar) is retried at most once, and
+  // only after the first tar has exited and `dest` has been emptied: a retry
+  // never extracts over a half-written tree (D57).
+  const locate = () =>
     installationId === null
-      ? await ghFetch(path, { kind: "none" }, init)
-      : await withInstallationToken(installationId, (token) =>
+      ? ghFetch(path, { kind: "none" }, init)
+      : withInstallationToken(installationId, (token) =>
           ghFetch(path, { kind: "installation", token }, init),
         )
 
-  let body = res.body
-  const location = res.headers.get("location")
-  if (location) {
-    // Never log `location`: the signed URL grants read access to the archive.
-    logger.debug({ repo }, "following GitHub's archive redirect")
-    const signed = await fetch(location, {
-      headers: { "user-agent": "musdash" },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    })
-    if (!signed.ok) {
-      throw new GitHubError(
-        `GitHub's archive host returned ${signed.status} for ${repo}`,
-        signed.status,
+  await downloadArchive({
+    repo,
+    dest,
+    timings: ARCHIVE_TIMINGS,
+    locate,
+    onRetry: (reason) => {
+      // The repository and the reason's fields only: never the signed URL,
+      // and never an error's own text, which can carry it.
+      logger.warn(
+        { repo, ...reason },
+        "the archive download failed; retrying once",
       )
-    }
-    body = signed.body
-  }
-
-  if (!body) throw new Error(`GitHub returned an empty archive for ${repo}`)
-  await extract(body, dest)
+      emit?.(retryLine(reason, ARCHIVE_TIMINGS))
+    },
+  })
 }
 
 /**
@@ -123,7 +70,11 @@ async function download(
  * localSourceFetcher, which is what keeps checkpoint 3's end-to-end build
  * verification runnable without GitHub.
  */
-export const githubSourceFetcher: SourceFetcher = async (source, destDir) => {
+export const githubSourceFetcher: SourceFetcher = async (
+  source,
+  destDir,
+  emit,
+) => {
   const { repo, ref, installationId } = source
 
   // A local path: not reachable from the UI, but it is the verification seam.
@@ -147,7 +98,7 @@ export const githubSourceFetcher: SourceFetcher = async (source, destDir) => {
   // the two calls, and the deployment row would record a commit that is not the
   // one that was built.
   const commit = await getCommit(installation, repo, ref)
-  await download(repo, commit.sha, installation, destDir)
+  await download(repo, commit.sha, installation, destDir, emit)
   return commit satisfies FetchedSource
 }
 
