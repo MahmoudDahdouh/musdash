@@ -3830,3 +3830,67 @@ deployments table. D37's inventory grows by one 404 (an unknown deployment) and
 one 400 (a deployment that does not qualify): 18 keys, 19 not-found sites and
 fourteen 400s, all exercised by `scripts/check-error-pages.ts`, which also
 redeploys a failed image deployment and checks the button renders.
+
+### D61 — a repository that uses submodules or Git LFS is refused with a message, until musdash can fetch them
+
+GitHub's tarball leaves a submodule's directory empty and stores an LFS-tracked
+file as its three-line pointer. The build then failed somewhere unrelated — a
+missing file, a `COPY` of nothing, or worse, an image that built and served
+130-byte pointer text as images or fonts. "Source fetching" promised a
+`git clone --depth=1` fallback for this; it never existed. This is step 1 of
+the plan's Slice E: say so, clearly, before the build. The clone fallback is
+deferred to its own slice — it brings `git` and `git-lfs` as host requirements,
+a subprocess lifecycle, a token in the child's environment scoped to github.com,
+and a protocol allow-list so a `file://` submodule cannot copy host paths into
+an image.
+
+After the tarball is extracted and before the build pack is detected,
+`src/build/unsupported-source.ts` (pure, filesystem only) scans the tree and the
+deploy fails naming the feature and the first path if it finds, **inside the
+build context**:
+
+- **a live submodule** — a `path` in the root `.gitmodules` that is missing or
+  an empty directory. A path with contents is a stale entry or a vendored copy
+  and is ignored. A missing path may also be a stale entry for a submodule
+  deleted by hand, a known false refusal until matrix row 12 shows what
+  codeload puts at a gitlink path; if it is always an empty directory, the rule
+  can narrow to that.
+- **an LFS pointer** — a regular file of 100–1023 bytes whose first line is the
+  LFS spec line (43 bytes) and which carries a valid `oid sha256:` and `size`
+  line. The walk runs only when the root `.gitattributes` mentions
+  `filter=lfs`; that attribute alone never refuses, because GitHub can be set
+  to put real LFS content in archives while the attribute stays. An LFS
+  configuration only in a nested `.gitattributes` is not seen — it fails open
+  to today's behaviour.
+
+Findings outside the build context are ignored: BuildKit cannot read them. A
+pointer the context's `.dockerignore` excludes, or a pointer-shaped test
+fixture, still refuses.
+
+- The scan never follows a symlink — every path is reached one `lstat`-checked
+  component at a time or through a directory entry typed as a real directory,
+  every file is opened `O_NOFOLLOW`, and nothing calls `realpath` — because
+  the repository's content is untrusted and a link to `/` would otherwise walk
+  the host.
+- It is bounded: 50 000 entries, 3 seconds, three paths kept per list. Hitting a
+  bound, an unreadable entry, or an entry of unknown type stops the scan with
+  one debug log line naming the reason; the deploy is refused only if
+  something was already found, and otherwise continues as before.
+- The `.gitmodules` parser is a small subset of git-config. A value it misreads
+  (an escaped quote, a line continuation) becomes a path that is "missing",
+  which refuses — rare, and the same class as a stale entry.
+- Repository paths in the message are content, so control characters, line
+  separators and bidi overrides become `?` and long paths are cut. The message
+  is the deploy's failure, so it also reaches the error-level "deploy failed"
+  log line, like every build failure's text.
+- It runs only on the tarball path, after the commit is recorded on the row, so
+  a refused deploy still names its commit (P-2); the old container keeps
+  serving and the build directory is removed. A push that reuses an image (D59)
+  never scans, because no tree is downloaded.
+
+It gets a `bun test` (`src/build/unsupported-source.test.ts`, passing on 1.3.11
+and 1.4.2) because not following symlinks and failing open are
+privilege-boundary behaviour, not convenience. **Not yet verified on a real
+host:** matrix row 12 — a repository with a real submodule and one with LFS
+files, what codeload puts at a gitlink path, and whether the archive carried
+pointers or real LFS content.

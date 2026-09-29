@@ -2,12 +2,17 @@ import { cpSync, existsSync } from "node:fs"
 import { buildFingerprint, fingerprintKey } from "../build/fingerprint.ts"
 import { builtImageTag } from "../build/images.ts"
 import { buildImage, detectBuildPack } from "../build/index.ts"
+import {
+  scanUnsupportedSource,
+  UnsupportedSourceError,
+} from "../build/unsupported-source.ts"
 import { createBuildDir, removeBuildDir } from "../build/workdir.ts"
 import { config } from "../config.ts"
 import { loadKey } from "../crypto.ts"
 import { gitSource } from "../db/queries.ts"
 import type { Resource } from "../db/schema.ts"
 import { shortId } from "../ids.ts"
+import { logger } from "../log.ts"
 
 /**
  * Produces the image a git resource should run, for one deployment.
@@ -210,6 +215,24 @@ export async function buildFromSource(
     const contextDir = source.buildContext
       ? `${dir}/${source.buildContext}`
       : dir
+
+    // A tarball leaves a submodule's directory empty and an LFS file as its
+    // pointer; the build would fail somewhere unrelated, or worse, ship the
+    // pointer text (D61). Only a downloaded tree is scanned: the local-directory
+    // seam resolves no commit and copies a real checkout. After onCommit, so a
+    // refused deploy still names its commit (P-2).
+    if (commit) {
+      const findings = await scanUnsupportedSource(dir, contextDir)
+      if (findings.truncated !== null) {
+        logger.debug(
+          { deploymentId, reason: findings.truncated },
+          "unsupported-source scan stopped early; proceeding",
+        )
+      }
+      if (findings.submodules.length > 0 || findings.lfsPointers.length > 0) {
+        throw new UnsupportedSourceError(findings)
+      }
+    }
     // gitSource() always yields a pack, so detection runs only where the stored
     // value is the "railpack" default AND a Dockerfile is actually present —
     // which is the case where the user never made an explicit choice. Detection

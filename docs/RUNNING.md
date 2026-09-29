@@ -506,6 +506,12 @@ Private repos work through the GitHub App connect flow under **Settings**.
     realistic causes are the first push of a long-lived branch (GitHub includes
     up to 2048 commits) or one commit touching thousands of files. Press
     **Deploy** to deploy it by hand.
+- **Submodules and Git LFS** (D61) — musdash fetches a GitHub repository as a
+  tarball, which does not carry submodules and stores LFS files as pointers. A
+  deploy whose build context contains a submodule, or an LFS pointer when the
+  repository's root `.gitattributes` enables LFS, fails before the build with a
+  message naming the feature and the path; musdash does not fetch them yet.
+  Vendor a submodule's files into the repository to deploy it.
 
 ---
 
