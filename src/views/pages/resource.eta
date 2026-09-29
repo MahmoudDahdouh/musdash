@@ -342,6 +342,29 @@
 <% } %>
 
 <% if (it.tab === 'settings') { %>
+<div class="card stack">
+  <h2 class="card-title">Name</h2>
+  <form method="post" action="/r/<%= it.resource.id %>/rename" class="stack">
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <div class="field">
+      <label class="label" for="res-name">Name</label>
+      <%/* src/names.ts; ( ) [ ] and - escaped for the v flag (M-1). */%>
+      <input id="res-name" name="name" value="<%= it.resource.name %>" required maxlength="60" pattern="[A-Za-z0-9 \(\)\[\]._\-]{1,60}" aria-describedby="res-name-hint" />
+      <p class="hint" id="res-name-hint">
+        Renaming changes only what you see here. The image tag and the automatic
+        domain keep using <span class="mono"><%= it.resource.slug %></span>.
+      </p>
+      <p class="error">Use letters, digits, spaces and ( ) [ ] . _ -, up to 60 characters.</p>
+    </div>
+    <div class="row end">
+      <button class="btn btn-primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Rename
+      </button>
+    </div>
+  </form>
+</div>
+
 <% if (it.resource.kind === 'git') { %>
 <div class="card stack">
   <h2 class="card-title">Source</h2>

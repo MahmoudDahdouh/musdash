@@ -8,10 +8,17 @@ import { config } from "../config.ts"
 import { LABEL_RESOURCE, LABEL_ROLE } from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
 import {
+  deleteEnvironment,
+  deleteProject,
   deleteResource,
+  getEnvironment,
+  getProject,
   getResource,
   listDomains,
+  listEnvironments,
   listProtectedImages,
+  listResources,
+  queuedDeploymentIds,
   updateResource,
 } from "../db/queries.ts"
 import { publishStatus } from "../events.ts"
@@ -19,7 +26,7 @@ import { logger } from "../log.ts"
 import { dropBuffer } from "../logs/buffer.ts"
 import { removeLogFiles } from "../logs/file.ts"
 import { stopLogStream } from "../logs/stream.ts"
-import { type DeployPayload, runDeploy } from "./deploy.ts"
+import { cancelQueuedDeploy, type DeployPayload, runDeploy } from "./deploy.ts"
 import { syncResourceRoutes } from "./routes.ts"
 import { installSourceFetcher } from "../github/tarball.ts"
 
@@ -30,6 +37,14 @@ export interface StopPayload {
 export interface RemovePayload {
   resourceId: string
   deleteRow: boolean
+}
+
+export interface RemoveEnvironmentPayload {
+  environmentId: string
+}
+
+export interface RemoveProjectPayload {
+  projectId: string
 }
 
 export interface PrunePayload {
@@ -104,6 +119,11 @@ async function runRemove(payload: RemovePayload): Promise<void> {
   removeLogFiles(resource.id)
 
   if (payload.deleteRow) {
+    // A deploy still queued for it would run after this and fail on a missing
+    // row; cancelled, it says what happened instead.
+    for (const deploymentId of queuedDeploymentIds(resource.id)) {
+      cancelQueuedDeploy(deploymentId, resource.id)
+    }
     // Gated with the row, not run unconditionally: a caller that removes the
     // container while keeping the resource still wants its layer cache, and
     // throwing it away would make the next deploy cold for no reason. It has to
@@ -115,6 +135,41 @@ async function runRemove(payload: RemovePayload): Promise<void> {
     deleteResource(resource.id)
   }
   publishStatus({ resourceId: resource.id, state: "stopped" })
+}
+
+/**
+ * Deletes an environment: every resource in it through runRemove, in that
+ * function's crash-resumable order, and the environment row last (D67).
+ *
+ * The handler only enqueues this. Deleting the row there would let the
+ * cascade remove the resource rows first, and a remove job that finds no row
+ * returns early — leaving containers for the reconciler's orphan sweep, routes
+ * until the next sync, and log buffers in memory for good. Re-reading the
+ * resources here, rather than taking a list in the payload, also removes any
+ * created after the delete was pressed. A crash part-way leaves the rest of the
+ * rows in place, and lease recovery runs the job again.
+ */
+async function runRemoveEnvironment(
+  payload: RemoveEnvironmentPayload,
+): Promise<void> {
+  const environment = getEnvironment(payload.environmentId)
+  if (!environment) return
+  for (const resource of listResources(environment.id)) {
+    await runRemove({ resourceId: resource.id, deleteRow: true })
+  }
+  deleteEnvironment(environment.id)
+  logger.info({ environmentId: environment.id }, "removed an environment")
+}
+
+/** As runRemoveEnvironment, for every environment of a project, then the project. */
+async function runRemoveProject(payload: RemoveProjectPayload): Promise<void> {
+  const project = getProject(payload.projectId)
+  if (!project) return
+  for (const environment of listEnvironments(project.id)) {
+    await runRemoveEnvironment({ environmentId: environment.id })
+  }
+  deleteProject(project.id)
+  logger.info({ projectId: project.id }, "removed a project")
 }
 
 async function runPrune(payload: PrunePayload): Promise<void> {
@@ -159,6 +214,9 @@ export const handlers: Record<string, JobHandler> = {
   deploy: (p) => runDeploy(p as unknown as DeployPayload),
   stop: (p) => runStop(p as unknown as StopPayload),
   remove: (p) => runRemove(p as unknown as RemovePayload),
+  remove_environment: (p) =>
+    runRemoveEnvironment(p as unknown as RemoveEnvironmentPayload),
+  remove_project: (p) => runRemoveProject(p as unknown as RemoveProjectPayload),
   prune_images: (p) => runPrune(p as unknown as PrunePayload),
   // No payload: the cap comes from config, so a job queued before an operator
   // changed it must not run against the value that was current when it was.

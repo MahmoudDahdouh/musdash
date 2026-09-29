@@ -59,6 +59,19 @@ export function createProject(name: string, description?: string): Project {
   return project
 }
 
+export function updateProject(
+  id: string,
+  patch: { name: string; description: string | null },
+): void {
+  orm.update(projects).set(patch).where(eq(projects.id, id)).run()
+}
+
+/**
+ * Deletes the row, and by cascade every environment, resource, deployment,
+ * variable and domain under it. Only the remove_project job calls this, after
+ * it has torn down each resource's container and route: the cascade alone
+ * would orphan both (trap 8, D67).
+ */
 export function deleteProject(id: string): void {
   orm.delete(projects).where(eq(projects.id, id)).run()
 }
@@ -92,6 +105,11 @@ export function getEnvironment(id: string): Environment | undefined {
   return orm.select().from(environments).where(eq(environments.id, id)).get()
 }
 
+export function updateEnvironment(id: string, patch: { name: string }): void {
+  orm.update(environments).set(patch).where(eq(environments.id, id)).run()
+}
+
+/** As deleteProject: only the remove_environment job calls this (D67). */
 export function deleteEnvironment(id: string): void {
   orm.delete(environments).where(eq(environments.id, id)).run()
 }
@@ -1290,6 +1308,21 @@ export function countResourcesInProject(projectId: string): number {
       .where(eq(environments.projectId, projectId))
       .get()?.n ?? 0
   )
+}
+
+/** The ids of a resource's deployments still waiting in the queue. */
+export function queuedDeploymentIds(resourceId: string): string[] {
+  return orm
+    .select({ id: deployments.id })
+    .from(deployments)
+    .where(
+      and(
+        eq(deployments.resourceId, resourceId),
+        eq(deployments.status, "queued"),
+      ),
+    )
+    .all()
+    .map((d) => d.id)
 }
 
 export function findResourceByNameInEnv(

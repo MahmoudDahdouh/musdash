@@ -249,6 +249,8 @@ export type JobType =
   | "deploy"
   | "stop"
   | "remove"
+  | "remove_environment"
+  | "remove_project"
   | "prune_images"
   | "prune_build_cache"
   | "ensure_caddy"

@@ -6,7 +6,7 @@
     </ol>
   </nav>
   <div class="page-title"><h1><%= it.project.name %></h1></div>
-  <% if (it.tab === 'resources') { %>
+  <% if (it.tab === 'resources' && !it.deleting) { %>
   <div class="actions">
     <button type="button" class="btn btn-quiet" data-open="new-env" commandfor="new-env" command="show-modal">
       <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
@@ -16,11 +16,80 @@
   <% } %>
 </div>
 
+<% if (it.deleting) { %>
+<div class="notice notice-warn" role="status">
+  <svg class="icon" aria-hidden="true"><use href="#i-alert" /></svg>
+  <div>
+    This project is being deleted. Its resources are removed one by one, and
+    then the project disappears from the list.
+  </div>
+</div>
+<% } %>
+
 <nav class="tabs" aria-label="Project sections">
-  <% [['resources', 'Resources'], ['env', 'Variables']].forEach(function (t) { %>
+  <% [['resources', 'Resources'], ['env', 'Variables'], ['settings', 'Settings']].forEach(function (t) { %>
   <a href="/p/<%= it.project.id %>?tab=<%= t[0] %>" <%~ it.tab === t[0] ? 'aria-current="page"' : '' %>><%= t[1] %></a>
   <% }) %>
 </nav>
+
+<% if (it.tab === 'settings') { %>
+<%
+  var resourceTotal = it.environments.reduce(function (n, e) { return n + e.resources.length }, 0)
+%>
+<div class="card stack">
+  <h2 class="card-title">Project</h2>
+  <form method="post" action="/p/<%= it.project.id %>/settings" class="stack">
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <div class="field">
+      <label class="label" for="project-name">Name</label>
+      <%/* src/names.ts; ( ) [ ] and - escaped for the v flag (M-1). */%>
+      <input id="project-name" name="name" value="<%= it.project.name %>" required maxlength="60" pattern="[A-Za-z0-9 \(\)\[\]._\-]{1,60}" />
+      <p class="error">Use letters, digits, spaces and ( ) [ ] . _ -, up to 60 characters.</p>
+    </div>
+    <div class="field">
+      <label class="label" for="project-description">Description <span class="opt">optional</span></label>
+      <input id="project-description" name="description" value="<%= it.project.description || '' %>" maxlength="200" />
+    </div>
+    <div class="row end">
+      <button class="btn btn-primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Save
+      </button>
+    </div>
+  </form>
+</div>
+
+<% if (!it.deleting) { %>
+<div class="card card-danger stack">
+  <h2 class="card-title">Delete project</h2>
+  <p class="muted">
+    Removes <%= it.environments.length %> environment<%= it.environments.length === 1 ? '' : 's' %>
+    and <%= resourceTotal %> resource<%= resourceTotal === 1 ? '' : 's' %>: every
+    container, route and domain, every variable, and all deployment history.
+    This cannot be undone.
+  </p>
+  <form
+    method="post"
+    action="/p/<%= it.project.id %>/delete"
+    class="stack"
+  >
+    <%/* No data-confirm: typing the name is the confirmation, and a second
+         prompt after it would only train people to click through both. */%>
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <div class="field">
+      <label class="label" for="project-confirm">Type <span class="mono"><%= it.project.name %></span> to confirm</label>
+      <input id="project-confirm" name="confirm" required autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="row end">
+      <button class="btn btn-danger" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-trash" /></svg>
+        Delete this project
+      </button>
+    </div>
+  </form>
+</div>
+<% } %>
+<% } %>
 
 <% if (it.tab === 'env') { %>
 <div class="card stack">
@@ -155,10 +224,32 @@
 %>
 <% it.environments.forEach(function (env) { %>
 <% var res = 'new-res-' + env.environment.id, git = 'new-git-' + env.environment.id %>
+<% var ren = 'rename-env-' + env.environment.id %>
 <section class="env" id="env-<%= env.environment.id %>">
   <div class="env-head">
     <h2><%= env.environment.name %></h2>
+    <% if (env.deleting || it.deleting) { %>
+    <span class="status status-queued">Deleting</span>
+    <% } else { %>
     <div class="row gap">
+      <button type="button" class="btn btn-quiet btn-sm" data-open="<%= ren %>" commandfor="<%= ren %>" command="show-modal">
+        Rename
+      </button>
+      <form
+        method="post"
+        action="/e/<%= env.environment.id %>/delete"
+        class="inline"
+        data-confirm
+        data-confirm-danger
+        data-confirm-title="Delete <%= env.environment.name %>?"
+        data-confirm-body="<%= env.resources.length %> resource<%= env.resources.length === 1 ? '' : 's' %> in it <%= env.resources.length === 1 ? 'is' : 'are' %> removed, with <%= env.resources.length === 1 ? 'its' : 'their' %> containers, routes, domains, variables and history, and so are the environment's shared variables. This cannot be undone."
+        data-confirm-label="Delete environment"
+      >
+        <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+        <button class="btn btn-quiet btn-sm btn-icon" type="submit" aria-label="Delete <%= env.environment.name %>">
+          <svg class="icon" aria-hidden="true"><use href="#i-trash" /></svg>
+        </button>
+      </form>
       <button type="button" class="btn btn-sm" data-open="<%= git %>" commandfor="<%= git %>" command="show-modal">
         <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
         From repository
@@ -168,6 +259,7 @@
         Add resource
       </button>
     </div>
+    <% } %>
   </div>
 
   <% if (env.resources.length === 0) { %>
@@ -195,6 +287,25 @@
   </div>
   <% } %>
 </section>
+
+<dialog id="<%= ren %>" aria-labelledby="<%= ren %>-title">
+  <form method="post" action="/e/<%= env.environment.id %>/settings" class="stack">
+    <header class="dialog-head">
+      <h2 id="<%= ren %>-title">Rename <%= env.environment.name %></h2>
+    </header>
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <div class="field">
+      <label class="label" for="<%= ren %>-name">Name</label>
+      <input id="<%= ren %>-name" name="name" value="<%= env.environment.name %>" required pattern="[a-z0-9\-]{1,32}" autocomplete="off" aria-describedby="<%= ren %>-hint" />
+      <p class="hint" id="<%= ren %>-hint">Existing domains keep working; nothing else changes.</p>
+      <p class="error"><%= nameError %></p>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn" data-close commandfor="<%= ren %>" command="close">Cancel</button>
+      <button type="submit" class="btn btn-primary">Rename</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="<%= res %>" aria-labelledby="<%= res %>-title">
   <form method="post" action="/e/<%= env.environment.id %>/resources" class="stack">

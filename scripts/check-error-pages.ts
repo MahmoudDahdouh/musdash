@@ -93,6 +93,8 @@ const SENTENCES: Record<ErrorKey, string> = {
     "This deploy was not cancelled, because it had already started. Only a deploy that is still queued can be cancelled.",
   "public-ip-invalid":
     "That is not an IPv4 address. Enter the address the internet reaches this server on, such as 203.0.113.7.",
+  "project-confirm":
+    "The project was not deleted, because the name you typed did not match. Type the project's name exactly to confirm.",
 }
 
 const FORBIDDEN_SENTENCE =
@@ -622,6 +624,14 @@ try {
     "/settings?error=github-confirm",
   )
   await keyed(
+    "project delete with a name that does not match (D67)",
+    "project-confirm",
+    "POST",
+    `${p}/delete`,
+    withCsrf({ confirm: SENTINEL }),
+    `${p}?tab=settings&error=project-confirm`,
+  )
+  await keyed(
     "public address not an IPv4 address (D66)",
     "public-ip-invalid",
     "POST",
@@ -711,6 +721,11 @@ try {
       ],
       ["680 auto-deploy", "POST", `/r/${BOGUS}/auto-deploy`, { enabled: "on" }],
       ["699 delete", "POST", `/r/${BOGUS}/delete`, {}],
+      ["D67 resource rename", "POST", `/r/${BOGUS}/rename`, { name: "x" }],
+      ["D67 project settings", "POST", `/p/${BOGUS}/settings`, { name: "x" }],
+      ["D67 project delete", "POST", `/p/${BOGUS}/delete`, { confirm: "x" }],
+      ["D67 environment rename", "POST", `/e/${BOGUS}/settings`, { name: "x" }],
+      ["D67 environment delete", "POST", `/e/${BOGUS}/delete`, {}],
       ["713 GET /d/:id", "GET", `/d/${BOGUS}`],
     ]
   for (const [label, method, path, form] of notFound) {

@@ -41,6 +41,8 @@ import {
   setResourceImage,
   setSetting,
   setSharedEnvVars,
+  updateEnvironment,
+  updateProject,
   updateResource,
   type EnvVarInput,
 } from "../db/queries.ts"
@@ -65,7 +67,7 @@ import {
 } from "../jobs/deploy.ts"
 import { logger } from "../log.ts"
 import { tail } from "../logs/buffer.ts"
-import { enqueue } from "../queue/index.ts"
+import { enqueue, findPendingJob } from "../queue/index.ts"
 import {
   requestRestart,
   restartBlockedReason,
@@ -278,7 +280,7 @@ export const appRoutes = new Elysia()
     const project = getProject(params.projectId)
     if (!project) return statusFor(session, 404)
 
-    const tab = ["resources", "env"].includes(String(query.tab))
+    const tab = ["resources", "env", "settings"].includes(String(query.tab))
       ? String(query.tab)
       : "resources"
 
@@ -287,6 +289,12 @@ export const appRoutes = new Elysia()
 
     const environments = listEnvironments(project.id).map((environment) => ({
       environment,
+      // A delete was pressed and the job has not run yet — usually a second,
+      // longer behind a running build (D67).
+      deleting:
+        findPendingJob("remove_environment", {
+          environmentId: environment.id,
+        }) !== null,
       sharedEnv: listSharedEnvKeys({ environmentId: environment.id }),
       envText: showEnv
         ? getSharedEnvText({ environmentId: environment.id })
@@ -309,6 +317,9 @@ export const appRoutes = new Elysia()
           project,
           environments,
           tab,
+          deleting:
+            findPendingJob("remove_project", { projectId: project.id }) !==
+            null,
           projectEnv: listSharedEnvKeys({ projectId: project.id }),
           envText: showEnv
             ? getSharedEnvText({ projectId: project.id })
@@ -351,6 +362,102 @@ export const appRoutes = new Elysia()
       return redirect(`/p/${params.projectId}`, 303)
     },
     { body: t.Object({ name: t.String(), csrf: t.String() }) },
+  )
+
+  /** Renames a project and edits its description. Touches nothing but the row. */
+  .post(
+    "/p/:projectId/settings",
+    ({ params, body, redirect, session }) => {
+      const project = getProject(params.projectId)
+      if (!project) return statusFor(session, 404)
+      // The form's pattern mirrors this, so a refusal is a hand-made request.
+      const name = normalizeDisplayName(body.name)
+      if (!isValidDisplayName(name)) return statusFor(session, 400)
+      updateProject(project.id, {
+        name,
+        description: body.description?.trim() || null,
+      })
+      return redirect(`/p/${project.id}?tab=settings`, 303)
+    },
+    {
+      body: t.Object({
+        name: t.String({ maxLength: 60 }),
+        description: t.Optional(t.String({ maxLength: 200 })),
+        csrf: t.String(),
+      }),
+    },
+  )
+
+  /**
+   * Deletes a project and everything in it — on the queue, which tears down
+   * each resource before any row goes (D67). The typed name is the one check
+   * the form cannot make for itself.
+   */
+  .post(
+    "/p/:projectId/delete",
+    ({ params, body, redirect, session }) => {
+      const project = getProject(params.projectId)
+      if (!project) return statusFor(session, 404)
+      if (normalizeDisplayName(body.confirm) !== project.name) {
+        return redirect(
+          withError(`/p/${project.id}?tab=settings`, "project-confirm"),
+          303,
+        )
+      }
+      if (!findPendingJob("remove_project", { projectId: project.id })) {
+        enqueue("remove_project", { projectId: project.id })
+      }
+      return redirect("/", 303)
+    },
+    {
+      body: t.Object({
+        confirm: t.String({ maxLength: 200 }),
+        csrf: t.String(),
+      }),
+    },
+  )
+
+  /**
+   * Renames an environment. Nothing outside the row reads the name any more:
+   * automatic hostnames are stored rows, not recomputed from it (D66).
+   */
+  .post(
+    "/e/:environmentId/settings",
+    ({ params, body, redirect, session }) => {
+      const environment = getEnvironment(params.environmentId)
+      if (!environment) return statusFor(session, 404)
+      if (!isValidResourceName(body.name)) return statusFor(session, 400)
+      const back = `/p/${environment.projectId}`
+      if (
+        body.name !== environment.name &&
+        listEnvironments(environment.projectId).some(
+          (e) => e.name === body.name,
+        )
+      ) {
+        return redirect(withError(back, "env-name-taken"), 303)
+      }
+      updateEnvironment(environment.id, { name: body.name })
+      return redirect(`${back}#env-${environment.id}`, 303)
+    },
+    { body: t.Object({ name: t.String(), csrf: t.String() }) },
+  )
+
+  /** Deletes an environment and its resources, on the queue (D67). */
+  .post(
+    "/e/:environmentId/delete",
+    ({ params, redirect, session }) => {
+      const environment = getEnvironment(params.environmentId)
+      if (!environment) return statusFor(session, 404)
+      if (
+        !findPendingJob("remove_environment", {
+          environmentId: environment.id,
+        })
+      ) {
+        enqueue("remove_environment", { environmentId: environment.id })
+      }
+      return redirect(`/p/${environment.projectId}`, 303)
+    },
+    { body: t.Object({ csrf: t.String() }) },
   )
 
   // ------------------------------------------------------------ resources
@@ -858,6 +965,28 @@ export const appRoutes = new Elysia()
         csrf: t.String(),
       }),
     },
+  )
+
+  /**
+   * Renames a resource. Only the display name changes: the slug, and with it
+   * the image tag and every hostname, stays as it was (D65).
+   */
+  .post(
+    "/r/:resourceId/rename",
+    ({ params, body, redirect, session }) => {
+      const ctx = getResourceContext(params.resourceId)
+      if (!ctx) return statusFor(session, 404)
+      const name = normalizeDisplayName(body.name)
+      if (!isValidDisplayName(name)) return statusFor(session, 400)
+      const back = `/r/${ctx.resource.id}?tab=settings`
+      const other = findResourceByNameInEnv(ctx.environment.id, name)
+      if (other && other.id !== ctx.resource.id) {
+        return redirect(withError(back, "resource-name-taken"), 303)
+      }
+      updateResource(ctx.resource.id, { name })
+      return redirect(back, 303)
+    },
+    { body: t.Object({ name: t.String({ maxLength: 60 }), csrf: t.String() }) },
   )
 
   .post(

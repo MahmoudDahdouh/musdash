@@ -4197,3 +4197,41 @@ app.
 
 **Not verified on a real host yet:** issuance for a `<pair>.<ip>.sslip.io` name
 (staging first), and the installer's seed on a provider image.
+
+### D67 — rename and delete for every level; a parent is deleted on the queue
+
+Projects and environments could be created and never changed; resources could
+be deleted but not renamed. `deleteProject` and `deleteEnvironment` existed with
+no caller.
+
+**Routes.** `POST /p/:id/settings` (name, description), `POST /p/:id/delete`,
+`POST /e/:id/settings` (rename), `POST /e/:id/delete`, `POST /r/:id/rename`. All
+POST with the CSRF body field, in the order the environment-create handler set:
+404, then 400 for what the form's own pattern refuses, then a keyed refusal,
+then the write. PHASES §11's `DELETE /r/:id` was already `POST …/delete`; the new
+routes follow the code, not the table. A duplicate environment or resource name
+reuses `env-name-taken` and `resource-name-taken`; `project-confirm` is new.
+
+**Deleting a parent is a job, never a row delete in the handler.** The cascade
+would remove the resource rows first, and `runRemove` returns early for a row
+that is gone — so the containers would wait for the reconciler's orphan sweep,
+the routes for the next `sync_routes`, and the log ring buffers would stay in
+memory for good (traps 5 and 8). `remove_environment` and `remove_project`
+re-read the children when they run, call `runRemove` for each resource — the
+same function, in its container, route, row order — and delete the parent row
+last. Re-reading picks up a resource created after the delete was pressed. A
+crash part-way leaves the remaining rows, and lease recovery runs the job
+again; a second run of a finished job does nothing. The handler does not
+enqueue a second job while one is pending, and the project page shows
+"being deleted" until it runs, since a running build can hold it for minutes.
+`runRemove` now also cancels the resource's queued deploys before its row goes,
+so they end as cancelled rather than failing on a missing row.
+
+**Confirmation.** Environments and resources use the shared confirm dialog,
+whose text counts what goes. A project asks for its name to be typed and has no
+dialog on top: a second prompt after typing would only teach people to click
+through both.
+
+**Renames touch the row only.** A resource keeps its slug (D65) and every
+hostname is a stored row (D66), so no route sync is needed. Deleting the last
+environment of a project is allowed; the page already has an empty state.

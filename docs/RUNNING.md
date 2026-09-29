@@ -540,6 +540,13 @@ this again** ignore markers.
   deployment it pulls that tag again.
 - **Stop / restart / delete** — delete removes the container, the route, and the
   volumes.
+- **Rename and delete, at every level** — rename a resource on its Settings tab
+  (only the name changes; the image tag and domains keep its slug), an
+  environment from its header on the project page, and a project on the
+  project's Settings tab. Deleting an environment or a project removes every
+  resource in it the same way deleting a resource does, one at a time on the
+  queue, and the rows last; a project asks you to type its name first. While
+  a build is running the deletion waits behind it, and the page says so.
 - **Logs** — live over SSE, from an in-memory ring buffer (1000 lines per
   resource) plus rotated files under `data/logs/`. Logs are never written to
   SQLite.
