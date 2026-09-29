@@ -376,8 +376,13 @@ docker exec musdash-caddy wget -qO- --timeout=3 http://musdash-host:8000/health
 
 ```bash
 ssh root@<server-ip>
-cd /opt/musdash-src && ./scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/MahmoudDahdouh/musdash/main/scripts/install.sh | bash
 ```
+
+`cd /opt/musdash-src && ./scripts/install.sh` does the same. Before D54 it
+rebuilt the old source without fetching, so an install that upgraded that way
+may still be on the version it was first installed with — check with
+`git -C /opt/musdash-src log --oneline -1`.
 
 It pulls the latest source, rebuilds, stops the service, replaces the binary, and
 restarts. Migrations run at startup and `musdash.env` is never overwritten.

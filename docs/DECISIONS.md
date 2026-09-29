@@ -3359,3 +3359,19 @@ script under `curl | bash`. Port, data directory and network come from
 `musdash.env` before it is deleted, so a non-default install is removed as it
 was configured. The GitHub App cannot be deleted through GitHub's API, so the
 script prints where to delete it.
+
+### D54 — running `install.sh` from inside its own clone upgrades
+
+RUNNING.md's upgrade command was `cd /opt/musdash-src && ./scripts/install.sh`.
+From there the "local checkout wins" branch matched — a `package.json` and a
+`src/` in the working directory — so the script rebuilt the source it already
+had, printed "Installed", and exited 0 without fetching. Found upgrading the
+2GB host from `179aabd`: the log said "Building from the current directory"
+and the checkout did not move.
+
+The default `/opt/musdash-src`, when it is a git clone, is now excluded from
+that branch, so running from inside it fetches `MUSDASH_REF` as the one-liner
+does. Only the default: a `MUSDASH_SRC` the operator set is their checkout,
+and fetching over it — or reaching the clone branch's `rm -rf` when it is not
+a git repository — would destroy their changes. RUNNING.md now leads with the
+one-liner, which never had the bug.

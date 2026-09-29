@@ -227,8 +227,15 @@ command -v git >/dev/null 2>&1 || {
 
 # ------------------------------------------------------------------ source
 # A local checkout wins over cloning: it is how an operator installs a working
-# copy they have already modified, and how this script is tested.
-if [ -f "./package.json" ] && [ -d "./src" ]; then
+# copy they have already modified, and how this script is tested. The default
+# SRC_DIR is the exception (D54): it is this script's own clone, and running
+# from inside it is an upgrade, which rebuilding as-is would report as done
+# without fetching. A MUSDASH_SRC the operator named is theirs and never fetched.
+OWN_CLONE=""
+if [ -z "${MUSDASH_SRC:-}" ] && [ -d "$SRC_DIR/.git" ]; then
+  OWN_CLONE=$(cd "$SRC_DIR" && pwd -P)
+fi
+if [ -f "./package.json" ] && [ -d "./src" ] && [ "$(pwd -P)" != "$OWN_CLONE" ]; then
   log "Building from the current directory"
   SRC_DIR="$(pwd)"
 elif [ -d "$SRC_DIR/.git" ]; then
