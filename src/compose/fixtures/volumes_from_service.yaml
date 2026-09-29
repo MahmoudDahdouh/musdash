@@ -1,0 +1,2 @@
+services: {app: {image: nginx, volumes_from: ["side"]}, side: {image: busybox, volumes: ["d:/d"]}}
+volumes: {d: {}}

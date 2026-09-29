@@ -1,0 +1,43 @@
+{
+  "name": "musdash-01jfixture",
+  "networks": {
+    "default": {
+      "name": "musdash-01jfixture_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "app": {
+      "command": null,
+      "depends_on": {
+        "side": {
+          "condition": "service_started",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "image": "nginx",
+      "networks": {
+        "default": null
+      },
+      "volumes_from": [
+        "side"
+      ]
+    },
+    "side": {
+      "command": null,
+      "entrypoint": null,
+      "image": "busybox",
+      "networks": {
+        "default": null
+      },
+      "volumes": [
+        {
+          "type": "volume",
+          "target": "d:/d",
+          "volume": {}
+        }
+      ]
+    }
+  }
+}

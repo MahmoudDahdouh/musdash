@@ -1,0 +1,1 @@
+services: {app: {image: nginx, network_mode: "service:side"}, side: {image: busybox}}

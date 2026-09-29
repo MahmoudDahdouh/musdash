@@ -4107,3 +4107,66 @@ early on the Turbopack banner, pnpm, Yarn and bun lockfiles, overrides set in
 the job, an npm Next.js 16 app switching and serving, the direct `next build`
 under pnpm and bun (bun's image may lack `node` for Next's shebang), the
 one-time rebuild after upgrade, and the note on a failed switched build.
+
+## Phase 3 — Compose stacks and templates (docs/PHASE-3-PLAN.md, 2026-09-29)
+
+### D65 — the Compose spike: what v5.5.1 actually does
+
+Run on the 2 GB VPS (Docker 29.8.1, API 1.56, Compose v5.5.1, cgroup v2) in
+scratch projects, before any Compose code. Each answer below is one the plan
+leaned on; where it contradicted the plan, the plan changed.
+
+1. **`docker compose config --format json` normalises everything.** Short
+   volume syntax becomes `{type: "bind"|"volume", source, target, read_only}`
+   with a relative bind resolved against `--project-directory`; `environment`
+   becomes a map; `ports` become `{target, published?, protocol, mode}`; named
+   volumes get `name: "<project>_<key>"`; `mem_limit` and `memswap_limit` come
+   out as **strings of bytes** (`"67108864"`). Setting both `mem_limit` and a
+   different `deploy.resources.limits.memory` is refused by Compose itself.
+   Validation reads this output, not the raw YAML.
+2. **`config` reads host files as root.** An `env_file: /root/…` put that
+   file's contents into the output. So a raw-YAML prescan refuses `env_file`,
+   `include`, `extends.file` and file-backed `configs`/`secrets` before
+   `config` ever runs.
+3. **A missing variable is only a warning**: `The "NOPE" variable is not set.
+Defaulting to a blank string.` on stderr, exit 0. musdash's own prescan
+   fails the deploy instead (D13), rather than parsing that sentence.
+4. **`environment: [BAR]` pass-through reads the `--env-file`.** With a fixed
+   process environment, the env file is the only way a value gets in.
+5. **`ports: ["81"]` publishes too** — to a random host port. So every `ports`
+   entry is refused, not only ones with a host port; `expose` is the
+   alternative.
+6. **Service-name aliases collide on a shared network.** Two stacks each with a
+   `db` on one external network: six lookups of `db` answered 1 × one stack, 5 ×
+   the other. Only services with a domain join the `musdash` network.
+7. **A label change recreates the container.** Stack services therefore carry
+   no `musdash.deployment_id`; it would restart the database on every deploy.
+8. **`up --wait` fails on a one-shot service** that exits 0 (`container …
+exited (0)`). musdash gates stacks itself and does not use `--wait`.
+9. **Explicit `-p` and `-f` beat `COMPOSE_PROJECT_NAME`/`COMPOSE_FILE` in the
+   env file**; without the flags the env file redirects Compose entirely. musdash
+   always passes both, and also leaves `COMPOSE_*`/`DOCKER_*` keys out of the
+   env file.
+10. **`-p <project> stop` and `down --remove-orphans` work with no file**, from
+    labels. So the interpolated file can be deleted right after `up`.
+11. **`--progress plain` is line-shaped** (each event printed, some twice). The
+    `docker compose` process peaked at **32 MiB RSS** for `up` of a
+    two-service stack including a pull — transient, as a subprocess.
+12. **Address pools: 29 more networks fit** beside the four already there,
+    then `all predefined address pools have been fully subnetted`. Each stack
+    takes one, so a default host holds about 29 stacks. The deploy log maps the
+    error to a sentence; `daemon.json` is not touched.
+13. **`/system/df?type=volume` took 9.8 s** with a 1 GiB volume of 20,000 files
+    beside BuildKit's cache: it measures every volume on the host, with no
+    filter. Sizes are therefore fetched after the page loads, cached, and one
+    request at a time — never awaited by a page render.
+14. **`config` output re-escapes `$` as `$$`.** A value `pa$word${X}"q's` came
+    out as `pa$$word$${X}"q's`, and `up` on that output with an empty
+    environment printed the literal value. So user variables reach Compose only
+    as the **process environment of `config`**, never an env file (Compose's
+    dotenv re-interpolates unquoted and double-quoted values, and a
+    single-quoted one cannot hold `'`). `up`, `pull`, `stop` and `down` run with
+    a fixed environment and the already-interpolated file. `PATH`, `HOME` and
+    keys starting `COMPOSE_`, `DOCKER_` or `BUILDKIT_` are left out of what the
+    user can set there, with a log line naming each, so a variable cannot steer
+    the CLI.

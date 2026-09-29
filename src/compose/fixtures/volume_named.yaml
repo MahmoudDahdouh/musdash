@@ -1,0 +1,2 @@
+services: {app: {image: nginx, volumes: ["caddy:/data"]}}
+volumes: {caddy: {name: musdash-caddy-data}}

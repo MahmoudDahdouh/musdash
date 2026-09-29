@@ -1,0 +1,1 @@
+services: {app: {image: nginx, devices: ["/dev/sda:/dev/sda"]}}

@@ -1,0 +1,24 @@
+{
+  "name": "musdash-01jfixture",
+  "networks": {
+    "default": {
+      "name": "musdash-01jfixture_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "app": {
+      "command": null,
+      "entrypoint": null,
+      "gpus": [
+        {
+          "count": -1
+        }
+      ],
+      "image": "nginx",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

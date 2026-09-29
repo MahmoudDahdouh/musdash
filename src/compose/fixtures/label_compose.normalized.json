@@ -1,0 +1,22 @@
+{
+  "name": "musdash-01jfixture",
+  "networks": {
+    "default": {
+      "name": "musdash-01jfixture_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "app": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx",
+      "labels": {
+        "com.docker.compose.project": "musdash-other"
+      },
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

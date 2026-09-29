@@ -169,7 +169,7 @@ A  prescan   (pure; Bun.YAML.parse)    refuse include / extends.file / env_file 
 B  env       (pure)                    resolved vars ∪ placeholders; a reference with no
                                        value and no default fails, naming the key (D13)
 C  normalise (subprocess)              docker compose -p <project> -f <tmp>/in.yaml
-                                       --env-file <tmp>/.env --project-directory <tmp>
+                                       --project-directory <tmp>   (user vars as process env)
                                        config --format json
 D  validate  (pure, authoritative)     §3.3 rules on the normalised model
 E  transform (pure)                    labels, networks, memory, restart, logging,
@@ -190,13 +190,13 @@ F  apply     (subprocess)              write <tmp>/stack.json (0600) → compose
   holds interpolated secrets between deploys. `stop` and `down` do not need the
   file: `docker compose -p <project> stop|down` works from labels alone. The
   spike (S0) must confirm this for v5.5.1.
-- **The subprocess environment is fixed**: `PATH`, `HOME` (an empty dir under
-  data), and `DOCKER_HOST` from the DockerClient's endpoint. It never inherits
-  `process.env`. User variables reach Compose only through `--env-file`, so a
-  variable named `PATH` or `DOCKER_HOST` cannot steer the CLI. Keys matching
-  `^(COMPOSE_|DOCKER_)` are left out of the env file with a log line, because
-  Compose reads `COMPOSE_FILE` and `COMPOSE_PROFILES` from it. S0 confirms that
-  explicit `-p`/`-f` flags win anyway.
+- **The subprocess environment is fixed** (D65 items 9 and 14): `PATH`,
+  `HOME` (an empty dir under data), and `DOCKER_HOST` from the DockerClient's
+  endpoint. It never inherits `process.env`. User variables are added only to
+  the `config` call's environment, minus `PATH`, `HOME` and keys starting
+  `COMPOSE_`, `DOCKER_` or `BUILDKIT_`. `config` writes values back with `$`
+  escaped, so `up` runs on its output with no user environment at all, and no
+  env file is ever written.
 - **The CLI sits behind the Docker seam.** A new `ComposeCli` in
   `src/docker/compose.ts` is the only code that spawns `docker compose`.
   `DockerClient` gains `composeHost(): string`, which returns `unix://<socket>`
@@ -216,7 +216,7 @@ F  apply     (subprocess)              write <tmp>/stack.json (0600) → compose
     project: string
     dir: string
     file: string
-    envFile: string
+    env?: Record<string, string> // config only
   }
   ```
 
@@ -249,7 +249,7 @@ prints the same sentence. **Refuse, never strip** (DECISIONS: Compose).
 | `security_opt` containing `unconfined` or `disable`                                   | turns off seccomp or AppArmor                                                  |
 | `oom_kill_disable: true`, `oom_score_adj` < 0                                         | a leaking stack must not take down the box                                     |
 | `mem_limit` ≤ 0, or `memswap_limit` other than equal to `mem_limit`                   | no "unlimited" (invariant). Swap stays off (D38)                               |
-| `ports` with a published host port                                                    | bypasses Caddy and ufw (Docker writes iptables itself). `expose` is fine       |
+| any `ports` entry (`"81"` alone publishes a random host port, D65)                    | bypasses Caddy and ufw (Docker writes iptables itself). `expose` is fine       |
 | `container_name`                                                                      | global names collide, including with `musdash-caddy`                           |
 | `deploy.replicas` > 1, `scale` > 1                                                    | routing and naming assume one container per service                            |
 | `build`                                                                               | `docker compose build` bypasses BuildKit's memory cap (D33, D50)               |
@@ -353,11 +353,12 @@ every address on `musdash` is a trusted peer of the dashboard (N-9). So:
   gets `--volumes`. This is covered in S2's criteria and tested on the VPS
   (DoD 4).
 - **Sizes** come from `GET /system/df?type=volume` (API ≥ 1.42). A new
-  read-only `DockerClient.volumeUsage(labelFilter)` returns
-  `{name, sizeBytes|null, refCount}`. It is a read-only inspect, so a handler may
-  call it (invariant exception). It is cached for 5 minutes per resource and
-  given a 10 s timeout, because `df` walks the volume. On timeout, sizes show
-  "unknown".
+  read-only `DockerClient.volumeUsage()` returns `{name, sizeBytes|null,
+refCount, labels}`. `df` measures every volume on the host and took 9.8 s in
+  the spike (D65), so **no page render awaits it**: the page loads, then fetches
+  `/r/:id/volumes/sizes` (and `/settings/volumes/sizes`). That handler shares one
+  in-flight `df` (30 s timeout) and caches the result for 10 minutes. On a
+  timeout the sizes read "unknown".
 - **Delete asks.** The compose resource's delete card lists the volumes with
   their sizes. It has one unchecked checkbox, "Also delete these N volumes (X
   GB). This cannot be undone.", and uses the existing confirm dialog. The
@@ -391,7 +392,7 @@ every address on `musdash` is a trusted peer of the dashboard (N-9). So:
 - **The gate:**
   - _Routed services_ use the existing `healthGate`: HTTP to `<ip>:<port><healthPath>`, then `HEALTHCHECK`, then uptime, plus `assertNotRestarted`.
   - _Every other service_ must be running and not restarting, or exited 0 when it is a one-shot (`restart: "no"`).
-  - All of this runs under one deadline (`config.healthTimeoutSec`). `--wait` is not relied on until S0 shows how v5.5.1 treats one-shot services.
+  - All of this runs under one deadline (`config.healthTimeoutSec`). `--wait` is not used: it fails on a one-shot service that exits 0 (D65).
 - **Downtime is documented, not hidden.** Compose stops a changed service before
   starting its replacement, so a stack has **brief downtime on redeploy**. The
   deploy page and RUNNING.md say so. There is no drain step, because there is no
@@ -818,14 +819,14 @@ cheap to run and test). The real catalogue comes in S7.
 
 ## 9. Progress
 
-| Slice | Status | Commit | Decisions |
-| ----- | ------ | ------ | --------- |
-| S0    | —      |        |           |
-| S1    | —      |        |           |
-| S2    | —      |        |           |
-| S3    | —      |        |           |
-| S4    | —      |        |           |
-| S5    | —      |        |           |
-| S6    | —      |        |           |
-| S7    | —      |        |           |
-| S8    | —      |        |           |
+| Slice | Status     | Commit | Decisions |
+| ----- | ---------- | ------ | --------- |
+| S0    | spike done |        | D65       |
+| S1    | —          |        |           |
+| S2    | —          |        |           |
+| S3    | —          |        |           |
+| S4    | —          |        |           |
+| S5    | —          |        |           |
+| S6    | —          |        |           |
+| S7    | —          |        |           |
+| S8    | —          |        |           |

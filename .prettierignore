@@ -12,3 +12,6 @@ package-lock.json
 # local plugin/session data
 .remember
 public/alpine.js
+
+# Compose output captured on a real host (D65); kept byte for byte
+src/compose/fixtures

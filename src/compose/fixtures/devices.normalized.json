@@ -1,0 +1,26 @@
+{
+  "name": "musdash-01jfixture",
+  "networks": {
+    "default": {
+      "name": "musdash-01jfixture_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "app": {
+      "command": null,
+      "devices": [
+        {
+          "source": "/dev/sda",
+          "target": "/dev/sda",
+          "permissions": "rwm"
+        }
+      ],
+      "entrypoint": null,
+      "image": "nginx",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

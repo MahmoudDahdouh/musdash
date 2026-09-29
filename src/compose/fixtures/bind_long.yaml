@@ -1,0 +1,5 @@
+services:
+  app:
+    image: nginx
+    volumes:
+      - {type: bind, source: /, target: /host}

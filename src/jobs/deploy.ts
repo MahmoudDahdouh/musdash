@@ -34,6 +34,7 @@ import {
 } from "../db/queries.ts"
 import type { Deployment, Resource } from "../db/schema.ts"
 import {
+  markDeployLogFinished,
   publishDeployLog,
   publishDeployment,
   publishStatus,
@@ -555,6 +556,8 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
       containerId: newContainerId,
     })
     emit("Deploy succeeded")
+    // After the last emit, so the whole log is what the sweep's clock counts from.
+    markDeployLogFinished(deploymentId)
     logPeakRss(resourceId, deploymentId, "succeeded")
 
     startLogStream(resourceId, newContainerId)
@@ -610,6 +613,7 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
       containerId: oldContainerId,
     })
     emit(`Deploy failed: ${message}`)
+    markDeployLogFinished(deploymentId)
     logPeakRss(resourceId, deploymentId, "failed")
     throw err
   }
@@ -1226,6 +1230,9 @@ export function cancelQueuedDeploy(
   })()
   if (!cancelled) return false
 
+  // A queued deploy has logged nothing, so this is normally a no-op; it is
+  // here so every terminal state releases its log, not just the common ones.
+  markDeployLogFinished(deploymentId)
   publishDeployment({ deploymentId, resourceId, status: "cancelled" })
   const ctx = getResourceContext(resourceId)
   if (ctx) {
@@ -1248,5 +1255,6 @@ export function failStuckDeployment(deploymentId: string): void {
   const d = getDeployment(deploymentId)
   if (d && d.status === "running") {
     markDeploymentFailed(deploymentId, "interrupted by a restart")
+    markDeployLogFinished(deploymentId)
   }
 }
