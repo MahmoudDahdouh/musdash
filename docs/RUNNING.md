@@ -401,6 +401,27 @@ cap from the host (D46), and again after a resize. Unlike the build daemon,
 your sites go through it: expect them to be unreachable for a few seconds while
 the new proxy starts. Certificates and routes are kept.
 
+### B7. Uninstalling
+
+```bash
+ssh root@<server-ip>
+curl -fsSL https://raw.githubusercontent.com/MahmoudDahdouh/musdash/main/scripts/uninstall.sh | bash
+```
+
+It asks you to type the hostname, then removes the service, every container
+musdash created (your apps, Caddy, BuildKit), the images it built, the build
+cache, the `musdash` network, `/opt/musdash` — **the database and
+`secret.key`, so back them up first** — `/opt/musdash-src`, the `musdash` user,
+its firewall rules and the swapfile the installer made. Running `install.sh`
+afterwards starts from scratch. From a private checkout, run
+`./scripts/uninstall.sh` on the host instead.
+
+Docker stays installed. So do the certificate volumes, so a reinstall does not
+re-issue every certificate, and `bun`, `buildctl` and `railpack`, which
+`install.sh` reuses. `MUSDASH_PURGE=1` removes those too, and
+`MUSDASH_UNINSTALL_YES=1` skips the prompt. If GitHub was connected, delete
+its App under your GitHub settings: the key it was created with is gone.
+
 ---
 
 ## Using the dashboard

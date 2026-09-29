@@ -3336,3 +3336,26 @@ shorter one only for Turbopack would be another guess.
 
 **A git resource's empty deployments card says Deploy builds the latest
 commit on the branch**, using the same wording as the Deploy confirmation.
+
+## An uninstaller (2026-09-29)
+
+### D53 — `uninstall.sh` removes what musdash made, and keeps certificates and shared tools
+
+Re-testing on the same VPS needs a clean host, and removing musdash by hand
+means knowing every name `install.sh` and the running process create.
+`scripts/uninstall.sh` is that list. It stops the unit first, so the
+reconciler cannot re-create a sidecar mid-removal, then removes every container
+labelled `musdash.managed` (apps and sidecars alike, `sidecarLabels` sets it
+too), `musdash/*` images, the BuildKit cache volume, the network, the install
+and source directories, the user, the three ufw rules and `/musdash.swap` with
+its fstab line.
+
+It keeps Docker, which the host may have had before; the Caddy volumes, for the
+rate-limit reason RUNNING.md gives for never deleting them; and `bun`,
+`buildctl` and `railpack`, which `install.sh` reuses and `bun` may predate
+musdash. `MUSDASH_PURGE=1` removes all three groups except Docker. The
+confirmation is the typed hostname, read from `/dev/tty` because stdin is the
+script under `curl | bash`. Port, data directory and network come from
+`musdash.env` before it is deleted, so a non-default install is removed as it
+was configured. The GitHub App cannot be deleted through GitHub's API, so the
+script prints where to delete it.
