@@ -1,12 +1,15 @@
 import { Database } from "bun:sqlite"
 import { beforeEach, describe, expect, test } from "bun:test"
 import {
+  cancelPendingDeploy,
   claim,
   complete,
   enqueue,
   fail,
+  findLeasedJobs,
   findPendingJob,
   getJob,
+  hasPendingJobAfter,
   pendingCount,
   pruneFinishedJobs,
   recoverOrphanedLeases,
@@ -283,5 +286,207 @@ describe("findPendingJob", () => {
 
   test("refuses a field name that is not a plain identifier", () => {
     expect(() => findPendingJob("deploy", { "a') OR 1=1 --": 1 }, db)).toThrow()
+  })
+})
+
+/**
+ * Cancelling a queued deploy (D58) is one guarded UPDATE racing claim(): the
+ * statement that runs first moves the row out of 'pending', and the other
+ * matches nothing. So a cancelled deploy can never run, and a claimed one can
+ * never be cancelled.
+ */
+describe("cancelPendingDeploy", () => {
+  const deploy = (resourceId: string, deploymentId: string) =>
+    enqueue(
+      "deploy",
+      { resourceId, deploymentId, image: "x", useExistingImage: false },
+      {},
+      db,
+    )
+
+  test("cancels a pending deploy, which is then never claimed", () => {
+    const id = deploy("r1", "d1")
+
+    expect(cancelPendingDeploy("d1", db)).toBe(true)
+    const job = getJob(id, db)
+    expect(job?.status).toBe("cancelled")
+    expect(job?.leased_until).toBeNull()
+    expect(claim(db)).toBeNull()
+  })
+
+  test("a deploy queued after a cancelled one is still claimed", () => {
+    deploy("r1", "d1")
+    expect(cancelPendingDeploy("d1", db)).toBe(true)
+    const next = deploy("r1", "d2")
+
+    expect(claim(db)?.id).toBe(next)
+  })
+
+  test("refuses a claimed deploy and leaves it leased", () => {
+    const id = deploy("r1", "d1")
+    expect(claim(db)?.id).toBe(id)
+
+    expect(cancelPendingDeploy("d1", db)).toBe(false)
+    expect(getJob(id, db)?.status).toBe("leased")
+  })
+
+  test("refuses an unknown deployment id", () => {
+    deploy("r1", "d1")
+
+    expect(cancelPendingDeploy("nope", db)).toBe(false)
+    expect(pendingCount(db)).toBe(1)
+  })
+
+  test("refuses a job of another type carrying that deployment id", () => {
+    const id = enqueue("stop", { resourceId: "r1", deploymentId: "d1" }, {}, db)
+
+    expect(cancelPendingDeploy("d1", db)).toBe(false)
+    expect(getJob(id, db)?.status).toBe("pending")
+  })
+
+  test("cancelling one resource's deploy leaves another's pending", () => {
+    deploy("rA", "dA")
+    const b = deploy("rB", "dB")
+
+    expect(cancelPendingDeploy("dA", db)).toBe(true)
+    expect(getJob(b, db)?.status).toBe("pending")
+    expect(claim(db)?.id).toBe(b)
+  })
+
+  test("prune removes an old cancelled job and keeps a fresh one", () => {
+    const old = deploy("r1", "d1")
+    cancelPendingDeploy("d1", db)
+    db.run("UPDATE jobs SET created_at = ? WHERE id = ?", [
+      new Date(Date.now() - 200 * 3600 * 1000).toISOString(),
+      old,
+    ])
+    const fresh = deploy("r1", "d2")
+    cancelPendingDeploy("d2", db)
+
+    expect(pruneFinishedJobs(168, db)).toBe(1)
+    expect(getJob(old, db)).toBeNull()
+    expect(getJob(fresh, db)?.status).toBe("cancelled")
+  })
+
+  test("startup recovery never revives a cancelled job", () => {
+    const id = deploy("r1", "d1")
+    cancelPendingDeploy("d1", db)
+
+    expect(recoverOrphanedLeases(db)).toBe(0)
+    expect(getJob(id, db)?.status).toBe("cancelled")
+    expect(claim(db)).toBeNull()
+  })
+})
+
+/**
+ * A push whose commit a running build of the same resource already fetched
+ * queues nothing (D58). The running build is found by its leased job; every
+ * other state, resource, or a rollback must not match.
+ */
+describe("findLeasedJobs", () => {
+  const push = (resourceId: string, useExistingImage = false) => ({
+    resourceId,
+    deploymentId: "d",
+    useExistingImage,
+  })
+  const match = { resourceId: "r1", useExistingImage: false }
+
+  test("returns a claimed deploy of the resource", () => {
+    const id = enqueue("deploy", push("r1"), {}, db)
+    expect(claim(db)?.id).toBe(id)
+
+    expect(findLeasedJobs("deploy", match, db)).toEqual([id])
+  })
+
+  test("ignores pending, done, failed and cancelled deploys", () => {
+    enqueue("deploy", push("r1"), {}, db)
+    expect(findLeasedJobs("deploy", match, db)).toEqual([])
+
+    const done = claim(db)
+    complete(done?.id ?? "", db)
+    expect(findLeasedJobs("deploy", match, db)).toEqual([])
+
+    enqueue("deploy", push("r1"), { maxAttempts: 1 }, db)
+    fail(claim(db)?.id ?? "", "build failed", db)
+    expect(findLeasedJobs("deploy", match, db)).toEqual([])
+
+    enqueue("deploy", { ...push("r1"), deploymentId: "dc" }, {}, db)
+    expect(cancelPendingDeploy("dc", db)).toBe(true)
+    expect(findLeasedJobs("deploy", match, db)).toEqual([])
+  })
+
+  test("ignores another resource and a rollback", () => {
+    enqueue("deploy", push("r2"), {}, db)
+    claim(db)
+    enqueue("deploy", push("r1", true), {}, db)
+    claim(db)
+
+    expect(findLeasedJobs("deploy", match, db)).toEqual([])
+  })
+
+  test("refuses a field name that is not a plain identifier", () => {
+    expect(() => findLeasedJobs("deploy", { "a') OR 1=1 --": 1 }, db)).toThrow()
+  })
+})
+
+/**
+ * A Deploy press folds into a waiting deploy only when nothing else for the
+ * resource is queued behind it; otherwise the press would run before, say, a
+ * Stop queued later, and the resource would end stopped although Deploy was
+ * the last thing asked for.
+ */
+describe("hasPendingJobAfter", () => {
+  const at = (id: string, msAgo: number) =>
+    db.run("UPDATE jobs SET created_at = ? WHERE id = ?", [
+      new Date(Date.now() - msAgo).toISOString(),
+      id,
+    ])
+  const deploy = (resourceId: string) =>
+    enqueue("deploy", { resourceId, deploymentId: "d" }, {}, db)
+
+  test("a stop queued after the deploy for the same resource blocks a fold", () => {
+    const d = deploy("r1")
+    at(d, 2000)
+    const stop = enqueue("stop", { resourceId: "r1" }, {}, db)
+    at(stop, 1000)
+
+    expect(hasPendingJobAfter(d, "r1", db)).toBe(true)
+  })
+
+  test("a job queued after it for another resource does not", () => {
+    const d = deploy("r1")
+    at(d, 2000)
+    const other = enqueue("stop", { resourceId: "r2" }, {}, db)
+    at(other, 1000)
+
+    expect(hasPendingJobAfter(d, "r1", db)).toBe(false)
+  })
+
+  test("a job for the resource queued before it does not", () => {
+    const stop = enqueue("stop", { resourceId: "r1" }, {}, db)
+    at(stop, 2000)
+    const d = deploy("r1")
+    at(d, 1000)
+
+    expect(hasPendingJobAfter(d, "r1", db)).toBe(false)
+  })
+
+  test("a later job that already ran does not", () => {
+    const d = deploy("r1")
+    at(d, 2000)
+    const stop = enqueue("stop", { resourceId: "r1" }, {}, db)
+    at(stop, 1000)
+    complete(stop, db)
+
+    expect(hasPendingJobAfter(d, "r1", db)).toBe(false)
+  })
+
+  test("an equal timestamp counts as after, since claim's tie order is undefined", () => {
+    const d = deploy("r1")
+    const stop = enqueue("stop", { resourceId: "r1" }, {}, db)
+    const same = new Date(Date.now() - 1000).toISOString()
+    db.run("UPDATE jobs SET created_at = ? WHERE id IN (?, ?)", [same, d, stop])
+
+    expect(hasPendingJobAfter(d, "r1", db)).toBe(true)
   })
 })

@@ -12,11 +12,13 @@ import {
   managedLabels,
 } from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
+import { db } from "../db/index.ts"
 import {
   commitForImage,
   createDeployment,
   getDeployment,
   getResourceContext,
+  latestDeploymentStatus,
   markDeploymentFailed,
   resolveEnvVars,
   updateDeployment,
@@ -29,7 +31,15 @@ import {
 } from "../events.ts"
 import { nowIso, shortId } from "../ids.ts"
 import { logger, redactGithub, redactValues } from "../log.ts"
-import { enqueue, findPendingJob } from "../queue/index.ts"
+import {
+  cancelPendingDeploy,
+  enqueue,
+  findLeasedJobs,
+  findPendingJob,
+  getJob,
+  hasPendingJobAfter,
+} from "../queue/index.ts"
+import { resourceState } from "../resource-state.ts"
 import { startLogStream, stopLogStream } from "../logs/stream.ts"
 import { routeHosts } from "./routes.ts"
 
@@ -773,28 +783,78 @@ export function enqueueDeploy(
 }
 
 /**
+ * The deploymentId a queued job's payload names, or null when the job is gone
+ * or its payload is not the shape enqueueDeploy writes.
+ *
+ * The payload is read back from TEXT, so it is narrowed rather than trusted.
+ */
+function deploymentIdOfJob(jobId: string): string | null {
+  const job = getJob(jobId)
+  if (!job) return null
+  let payload: unknown
+  try {
+    payload = JSON.parse(job.payload_json)
+  } catch {
+    return null
+  }
+  if (typeof payload !== "object" || payload === null) return null
+  const id: unknown = Reflect.get(payload, "deploymentId")
+  return typeof id === "string" ? id : null
+}
+
+/** What enqueueDeployCoalesced did with a push. */
+export type CoalescedDeploy =
+  | { outcome: "queued"; deploymentId: string }
+  /** Folded into a build deploy of the resource that has not started (D52). */
+  | { outcome: "folded" }
+  /** A running deploy of the resource is already building `after`. */
+  | { outcome: "running"; deploymentId: string }
+
+/**
  * Queues a push-triggered deploy, folding it into one that has not started.
  *
  * Pushes arrive in bursts — five commits in one `git push`, a merge, a CI bot —
  * and job concurrency is exactly 1, so a job per delivery parks real work
  * behind a queue of redundant builds of nearly the same tree. A deploy that is
  * still waiting has not fetched yet, and fetches the branch's newest commit
- * when it runs, so this push is already in it: returns null.
+ * when it runs, so this push is already in it: "folded".
  *
- * Only a waiting one. A deploy that is running fetched an older commit, and one
- * that has finished — or failed — deployed nothing of this push; either way the
- * push gets its own deploy. The 60-second bucket this replaces treated a failed
- * row as "already queued", so a fix pushed within a minute of a broken build
- * was dropped (T-1, D52).
+ * Otherwise only a running deploy that fetched exactly `after` — the commit
+ * the push moved the branch to — makes the push redundant: "running". That is
+ * a redelivery, or the same push reaching GitHub twice. A running deploy of
+ * any other commit fetched an older tree, and one that has finished — or
+ * failed — deployed nothing of this push; either way the push gets its own
+ * deploy. The 60-second bucket this replaces treated a failed row as "already
+ * queued", so a fix pushed within a minute of a broken build was dropped (T-1,
+ * D52). With no `after`, the running check is skipped: behaves as before.
  *
- * The lookup and the insert are synchronous calls on the one write connection,
- * so no other enqueue can land between them.
+ * Every lookup and the insert are synchronous calls on the one write
+ * connection, so no other enqueue — and no claim — can land between them.
  */
-export function enqueueDeployCoalesced(resourceId: string): string | null {
+export function enqueueDeployCoalesced(
+  resourceId: string,
+  after?: string | null,
+): CoalescedDeploy {
   if (
     findPendingJob("deploy", { resourceId, useExistingImage: false }) !== null
   ) {
-    return null
+    return { outcome: "folded" }
+  }
+  if (typeof after === "string") {
+    // commitSha is recorded when the deploy fetches, so a running deploy that
+    // has not fetched yet has none and never matches: the push is queued,
+    // which is the safe side.
+    for (const jobId of findLeasedJobs("deploy", {
+      resourceId,
+      useExistingImage: false,
+    })) {
+      const deploymentId = deploymentIdOfJob(jobId)
+      if (deploymentId === null) continue
+      const deployment = getDeployment(deploymentId)
+      if (deployment?.status === "running" && deployment.commitSha === after) {
+        return { outcome: "running", deploymentId }
+      }
+    }
   }
   // A push always builds, so the row names the placeholder, never an image.
   const image = BUILD_PLACEHOLDER
@@ -815,7 +875,83 @@ export function enqueueDeployCoalesced(resourceId: string): string | null {
     { maxAttempts: DEPLOY_MAX_ATTEMPTS },
   )
   publishStatus({ resourceId, state: "queued" })
-  return deployment.id
+  return { outcome: "queued", deploymentId: deployment.id }
+}
+
+/**
+ * The queued build deploy of `image` for this resource, or null.
+ *
+ * For the Deploy button: when an identical deploy still waits and nothing else
+ * for this resource is queued behind it, a second press would only run the
+ * same work again once the first finishes, so the handler sends the user to
+ * the waiting one instead. Build deploys only (useExistingImage false) — a
+ * queued rollback deploys a different artifact. For a git resource `image` is
+ * BUILD_PLACEHOLDER, so this matches a waiting push or Deploy of the branch;
+ * for an image resource, the same image ref.
+ *
+ * Null when any other job for the resource — a Stop, a Rollback, anything —
+ * is queued after the match: folding would run this press BEFORE that job, so
+ * the resource would end stopped or rolled back although Deploy was the last
+ * thing asked for. A new deploy at the back of the queue keeps the order.
+ */
+export function pendingDeploymentFor(
+  resourceId: string,
+  image: string,
+): string | null {
+  const jobId = findPendingJob("deploy", {
+    resourceId,
+    useExistingImage: false,
+    image,
+  })
+  if (jobId === null || hasPendingJobAfter(jobId, resourceId)) return null
+  return deploymentIdOfJob(jobId)
+}
+
+/**
+ * Removes a queued deploy before the worker claims it; false if it has
+ * already been claimed (or has no pending job), in which case nothing changes.
+ *
+ * Synchronous from the guarded UPDATE to the last publish, with no await:
+ * nothing can run between the job leaving 'pending' and its deployment row
+ * saying so, so no page or SSE subscriber ever sees a cancelled job whose
+ * deployment still reads queued. No Docker either — nothing was started, so
+ * there is nothing to stop.
+ *
+ * The two writes share one transaction: if the row update threw after the job
+ * was cancelled, the job could never run and the row would read queued
+ * forever. Rolled back, the job is pending again and the deploy simply runs.
+ * SSE and the log line come after the commit, so they never announce a cancel
+ * that was rolled back.
+ */
+export function cancelQueuedDeploy(
+  deploymentId: string,
+  resourceId: string,
+): boolean {
+  const cancelled = db.transaction((): boolean => {
+    if (!cancelPendingDeploy(deploymentId)) return false
+    updateDeployment(deploymentId, {
+      status: "cancelled",
+      finishedAt: nowIso(),
+    })
+    return true
+  })()
+  if (!cancelled) return false
+
+  publishDeployment({ deploymentId, resourceId, status: "cancelled" })
+  const ctx = getResourceContext(resourceId)
+  if (ctx) {
+    // Recomputed rather than assumed: a cancelled deploy queued behind a
+    // running one leaves the resource deploying, not healthy.
+    publishStatus({
+      resourceId,
+      state: resourceState(ctx.resource, latestDeploymentStatus(resourceId)),
+    })
+  }
+  logger.info(
+    { deploymentId, resourceId },
+    "deploy cancelled before it started",
+  )
+  return true
 }
 
 /** After a crash, a deployment can be left claiming to be running. */

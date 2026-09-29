@@ -35,6 +35,8 @@ const REF_PREFIX = "refs/heads/"
 
 interface PushEvent {
   ref?: unknown
+  /** The commit the push moved the branch to. */
+  after?: unknown
   deleted?: unknown
   repository?: { full_name?: unknown }
 }
@@ -63,6 +65,16 @@ function handlePush(body: PushEvent, delivery: string | null): void {
   const repo = body.repository?.full_name
   if (typeof repo !== "string" || repo.length === 0) return
 
+  // Only a full lowercase SHA-1 is compared against what a running deploy
+  // fetched; anything else — absent, abbreviated, another hash format — skips
+  // that check, so the push is handled exactly as before rather than dropped.
+  // An all-zeros SHA passes the pattern but no fetched commit is all zeros, so
+  // it never matches and the push is queued as before.
+  const after =
+    typeof body.after === "string" && /^[0-9a-f]{40}$/.test(body.after)
+      ? body.after
+      : null
+
   const affected = resourcesForPush(repo, branch)
   logger.info(
     { delivery, repo, branch, resources: affected.length },
@@ -70,11 +82,22 @@ function handlePush(body: PushEvent, delivery: string | null): void {
   )
 
   for (const resource of affected) {
-    const deploymentId = enqueueDeployCoalesced(resource.id)
-    if (deploymentId === null) {
+    const result = enqueueDeployCoalesced(resource.id, after)
+    if (result.outcome === "folded") {
       logger.info(
         { resourceId: resource.id, repo, branch },
         "push folded into a deploy of this resource that has not started yet",
+      )
+    } else if (result.outcome === "running") {
+      logger.info(
+        {
+          resourceId: resource.id,
+          repo,
+          branch,
+          deploymentId: result.deploymentId,
+          commit: after,
+        },
+        "push skipped: a deploy of this commit is already running",
       )
     }
   }

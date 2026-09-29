@@ -15,6 +15,27 @@
   </div>
   <div class="actions">
     <a class="btn btn-quiet" href="/r/<%= it.resource.id %>">Back to resource</a>
+    <%/* Only a queued deploy can be cancelled; once the worker has claimed it
+         the route answers with a notice instead. A reconciler deploy heals
+         drift and would only be queued again, so it gets no button. */%>
+    <% if (it.deployment.status === 'queued' && it.deployment.trigger !== 'reconcile') { %>
+    <form
+      method="post"
+      action="/d/<%= it.deployment.id %>/cancel"
+      class="inline"
+      data-confirm
+      data-confirm-danger
+      data-confirm-title="Remove this deploy from the queue?"
+      data-confirm-body="Nothing is built or deployed, and what is running now keeps running.<%= it.deployment.trigger === 'rollback' ? '' : it.resource && it.resource.kind === 'git' ? ' Pushes and Deploy clicks that arrived while it waited were folded into it, so they are dropped too. Push again or press Deploy to build the branch.' : ' Deploy clicks that arrived while it waited were folded into it, so they are dropped too. Press Deploy to queue it again.' %>"
+      data-confirm-label="Remove from queue"
+    >
+      <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+      <button class="btn" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
+        Cancel deploy
+      </button>
+    </form>
+    <% } %>
   </div>
 </div>
 
@@ -25,6 +46,7 @@
   var emptyLog = {
     queued: 'Queued. Deploys run one at a time, so this one may be behind another.',
     running: 'Waiting for the first line.',
+    cancelled: 'Cancelled before it started, so nothing was deployed.',
   }[d.status] || 'No log lines to show. Deploy logs are held in memory only, so a restart of musdash clears them.'
 %>
 <dl class="kv-strip">

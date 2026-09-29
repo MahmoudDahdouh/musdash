@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm"
+import { and, desc, eq, ne, sql } from "drizzle-orm"
 import { decrypt, encrypt } from "../crypto.ts"
 import { interpolate } from "../env/interpolate.ts"
 import { formatEnvText } from "../env/parse.ts"
@@ -525,6 +525,34 @@ export function listDeployments(resourceId: string, limit = 20): Deployment[] {
     .orderBy(desc(deployments.createdAt))
     .limit(limit)
     .all()
+}
+
+/**
+ * The status of the resource's newest deployment that was not cancelled, or
+ * null when there is none — the `latest` resourceState() derives state from.
+ *
+ * Cancelled rows are skipped because a cancelled deploy did nothing: letting
+ * it define the state would make a deploy cancelled while queued behind a
+ * running one read Healthy while the running one is still deploying (D58).
+ * navTree's subquery applies the same filter, so every surface agrees.
+ */
+export function latestDeploymentStatus(
+  resourceId: string,
+): DeploymentStatus | null {
+  return (
+    orm
+      .select({ status: deployments.status })
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.resourceId, resourceId),
+          ne(deployments.status, "cancelled"),
+        ),
+      )
+      .orderBy(desc(deployments.createdAt))
+      .limit(1)
+      .get()?.status ?? null
+  )
 }
 
 /**
@@ -1190,11 +1218,12 @@ export function navTree(): NavProject[] {
       desiredState: resources.desiredState,
       containerId: resources.containerId,
       currentDeploymentId: resources.currentDeploymentId,
-      // Same ordering as listDeployments, so the dot and the resource page
-      // agree on which deployment is the latest.
+      // The same row latestDeploymentStatus picks — same ordering, cancelled
+      // skipped — so the dot and the resource page agree on the state.
       latest: sql<DeploymentStatus | null>`(
         SELECT ${deployments.status} FROM ${deployments}
         WHERE ${deployments.resourceId} = ${resources.id}
+          AND ${deployments.status} <> 'cancelled'
         ORDER BY ${deployments.createdAt} DESC LIMIT 1)`,
     })
     .from(projects)

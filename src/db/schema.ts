@@ -222,7 +222,9 @@ export const domains = sqliteTable("domains", {
   createdAt: text("created_at").notNull(),
 })
 
-export type JobStatus = "pending" | "leased" | "done" | "failed"
+// jobs.status is TEXT with no CHECK constraint either, so "cancelled" (a deploy
+// removed from the queue before the worker claimed it, D58) needs no migration.
+export type JobStatus = "pending" | "leased" | "done" | "failed" | "cancelled"
 // jobs.type is a plain TEXT column with no CHECK constraint, so widening this
 // union needs no migration.
 export type JobType =

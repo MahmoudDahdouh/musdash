@@ -3643,3 +3643,71 @@ during the download), and a codeload DROP rule during a deploy — reported as a
 stall, retried once, no `tar` or `gzip` left behind. In this container the
 GNU `tar -z` helper shows up as a zombie after a kill, because its PID 1 does
 not reap; on a host, systemd does.
+
+### D58 — a queued deploy can be cancelled; a push already building is skipped; Deploy folds into a queued deploy
+
+**Cancel is for a deploy that has not started.** `POST /d/:id/cancel` marks the
+job `cancelled` with one guarded statement —
+`UPDATE jobs … WHERE type='deploy' AND status='pending' AND <payload deploymentId> = ?`
+— that races `claim()`'s own guarded `UPDATE` on the one connection, so exactly
+one of them wins. If the cancel won, the deployment row becomes `cancelled`
+with `finished_at` and no `started_at` in the same transaction — a failed
+second write rolls the job back to `pending` rather than leaving a cancelled
+job under a row that reads "queued" forever — and the SSE events go out after
+it commits, all with no `await`. If the worker won, the answer is the keyed
+notice `deploy-already-started`. Nothing is killed: cancelling a build that is
+already running (the subprocess, the partial build) is a later slice.
+
+- `cancelled` is a new job status. The column is TEXT with no CHECK, so no
+  migration. `claim` never selects it, `recoverOrphanedLeases` still resets
+  only `leased` (D49), so a cancelled job is never resurrected at boot,
+  `activeJobCount` does not count it (the D26 restart guard is unaffected),
+  and `pruneFinishedJobs` deletes it after 168h like `done` and `failed`.
+- A reconcile deployment is not cancellable: there is no button, and a
+  hand-made POST gets a 400. `redeployPlan` would queue another redeploy on its
+  next tick, so the cancel would not stick.
+- Manual, webhook and rollback deploys are cancellable. A cancelled git build
+  drops every push and Deploy click folded into it (D52), and the confirmation
+  says so.
+- The reconciler is unchanged: a cancelled manual, webhook or rollback row that
+  is the newest row ends a reconcile streak as the deploy itself would have,
+  so the backoff resets. Harmless — the next tick redeploys as it would have.
+- Resource state ignores cancelled rows: the resource head, the project card and
+  the sidebar read the newest deployment that is _not_ cancelled. A cancelled
+  deploy did nothing; without this, cancelling a deploy queued behind a running
+  one would show the resource as healthy while the older one was still
+  deploying.
+
+**A push already building is skipped (refines D52).** The webhook now reads the
+push's `after` (40 lowercase hex, otherwise ignored). A push still folds into a
+pending build deploy first, as before. Otherwise it is skipped when a leased
+deploy of the same resource has a `running` deployment whose `commit_sha`
+equals `after` — which is what a redelivery from GitHub's UI during a build
+looks like (plan matrix row 10). Only an exact match is skipped. A redelivery
+before the running deploy has recorded its commit still enqueues (an accepted
+window), and a redelivery after a failed build always enqueues: the row must be
+`running`, so a stale lease (D51) whose deployment already failed cannot
+swallow it.
+
+**No delivery-id set.** Coolify reads `X-GitHub-Delivery` and never uses it;
+musdash does not keep one either. Redelivering from GitHub's UI is the
+documented recovery after a failed build (D44), and a set of seen delivery ids
+would silently refuse it. The commit rule above already covers a redelivery
+during a running build.
+
+**Deploy folds into a queued deploy.** Pressing Deploy while a build deploy of
+the same resource is still queued (same payload image, not a rollback or
+reconcile) goes to that deployment instead of creating a second row — but only
+when that deploy is the newest queued job for the resource. If a Stop or a
+Rollback was queued after it, the press gets its own job behind them;
+folding would have run the deploy first and left the resource stopped or
+rolled back although the user's last action was Deploy. A push (D52) still
+folds into a pending build deploy regardless of what was queued after it; that
+ordering predates this slice and is unchanged. The row
+keeps its original trigger, so a click folded into a push reads "webhook".
+There is no dedup against a _running_ deploy for manual Deploy: knowing the
+branch head would need a GitHub call in the request handler.
+
+D37's inventory grows by one of each: 18 keys (`deploy-already-started`), 18
+not-found sites (cancel on an unknown deployment), thirteen 400s (cancel on a
+reconcile deployment), all exercised by `scripts/check-error-pages.ts`.

@@ -89,6 +89,8 @@ const SENTENCES: Record<ErrorKey, string> = {
     "Enter a repository as owner/name, or a local path, before saving the source.",
   "repo-invalid":
     "That is not a repository reference. With a GitHub account chosen, enter the repository as owner/name, such as acme/web.",
+  "deploy-already-started":
+    "This deploy was not cancelled, because it had already started. Only a deploy that is still queued can be cancelled.",
 }
 
 const FORBIDDEN_SENTENCE =
@@ -276,7 +278,11 @@ function readOne(sql: string, ...params: string[]): string {
 // ------------------------------------------------------------------ checks
 
 /** Problems with the layout's error notice on a followed page (criterion 2). */
-function noticeProblems(body: string, key: ErrorKey): string[] {
+function noticeProblems(
+  body: string,
+  key: ErrorKey,
+  otherNotices = 0,
+): string[] {
   const problems: string[] = []
   // The repository picker renders one hidden notice per failing installation,
   // tagged data-installation; it is not the layout's notice.
@@ -285,7 +291,9 @@ function noticeProblems(body: string, key: ErrorKey): string[] {
     /class="notice notice-error"\s+role="alert"\s+data-installation=/g,
   )
   const total = count(body, /notice-error/g) - picker
-  if (total !== 1) problems.push(`${total} notice-error elements, want 1`)
+  if (total !== 1 + otherNotices) {
+    problems.push(`${total} notice-error elements, want ${1 + otherNotices}`)
+  }
   // The layout's notice: an icon, then the text in its own <div>. Compared
   // exactly, so an extra word or a double-escaped quote fails too.
   const notice =
@@ -312,6 +320,8 @@ async function keyed(
   path: string,
   form: Record<string, string> | undefined,
   expected: string,
+  /** Error notices the followed page shows besides the layout's own. */
+  otherNotices = 0,
 ): Promise<Reply> {
   exercised.add(key)
   const before = snapshot()
@@ -332,7 +342,9 @@ async function keyed(
       problems.push(`followed: content-type ${page.type}`)
     }
     problems.push(
-      ...noticeProblems(page.body, key).map((p) => `followed: ${p}`),
+      ...noticeProblems(page.body, key, otherNotices).map(
+        (p) => `followed: ${p}`,
+      ),
     )
   }
   verdict(`[1,2] ${label}`, problems, `303 ${r.location}, ${after.counts}`)
@@ -833,6 +845,7 @@ try {
   await stop()
   const now = new Date().toISOString()
   const noImage = "01V4SEEDEDNOIMAGE000000000"
+  const reconcileRow = "01V4SEEDEDRECONCILE0000000"
   {
     const db = new Database(dbPath)
     try {
@@ -851,6 +864,12 @@ try {
            desired_state, memory_limit_mb, created_at)
          VALUES (?, ?, 'noimage', 'image', '{}', 'stopped', 512, ?)`,
       ).run(noImage, eid, now)
+      // A reconcile deployment: the cancel route refuses it with a 400
+      // (D58), and no form can create one.
+      db.query(
+        `INSERT INTO deployments (id, resource_id, status, image, trigger,
+           created_at) VALUES (?, ?, 'queued', 'nginx:alpine', 'reconcile', ?)`,
+      ).run(reconcileRow, noImage, now)
     } finally {
       db.close()
     }
@@ -1039,6 +1058,59 @@ try {
     }
     verdict("[A3] valid re-link", problems, "303, both places, nothing queued")
   }
+
+  // ---- Slice D-a: cancelling a deploy that has already left the queue
+  {
+    const queued = await send("POST", `${r}/deploy`, withCsrf({}))
+    const did = /^\/d\/([^/?#]+)$/.exec(queued.location)?.[1] ?? ""
+    if (!did) throw new Error(`deploy fixture failed: ${queued.status}`)
+    // Docker points at a socket that does not exist, so the worker claims the
+    // job and fails it within moments; wait for that before cancelling.
+    let status = ""
+    for (
+      let i = 0;
+      i < 100 && (status === "" || status === "queued" || status === "running");
+      i++
+    ) {
+      await Bun.sleep(100)
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        const row = db
+          .query("SELECT status FROM deployments WHERE id = ?")
+          .get(did) as { status?: unknown } | null
+        status = typeof row?.status === "string" ? row.status : ""
+      } finally {
+        db.close()
+      }
+    }
+    if (status !== "failed" && status !== "succeeded") {
+      throw new Error(`deploy fixture never finished: ${status}`)
+    }
+    await keyed(
+      "cancel a deploy that already ran",
+      "deploy-already-started",
+      "POST",
+      `/d/${did}/cancel`,
+      withCsrf({}),
+      `/d/${did}?error=deploy-already-started`,
+      // The failed deployment's own error, which its page shows below.
+      1,
+    )
+  }
+  await statusCase(
+    "[6] 404 cancel an unknown deployment",
+    404,
+    "POST",
+    `/d/${BOGUS}/cancel`,
+    {},
+  )
+  await statusCase(
+    "[7] 400 cancel a reconcile deployment (seeded)",
+    400,
+    "POST",
+    `/d/${reconcileRow}/cancel`,
+    {},
+  )
 
   // ---- whole-run checks
   const missing = ERROR_KEYS.filter((k) => !exercised.has(k))

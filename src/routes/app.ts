@@ -24,6 +24,7 @@ import {
   getResourceContext,
   getSetting,
   getSharedEnvText,
+  latestDeploymentStatus,
   listDeployments,
   listDomains,
   listEnvironments,
@@ -53,7 +54,12 @@ import {
 import { listInstallationRepos } from "../github/repos.ts"
 import { flashFromQuery, settingsViewModel } from "../github/settings.ts"
 import { clearTokenCache } from "../github/tokens.ts"
-import { BUILD_PLACEHOLDER, enqueueDeploy } from "../jobs/deploy.ts"
+import {
+  BUILD_PLACEHOLDER,
+  cancelQueuedDeploy,
+  enqueueDeploy,
+  pendingDeploymentFor,
+} from "../jobs/deploy.ts"
 import { logger } from "../log.ts"
 import { tail } from "../logs/buffer.ts"
 import { enqueue } from "../queue/index.ts"
@@ -278,10 +284,8 @@ export const appRoutes = new Elysia()
         image: resourceImage(resource),
         // One query per resource, like domainCount: a project page holds a
         // handful, and navTree already does the whole tree in one statement.
-        state: resourceState(
-          resource,
-          listDeployments(resource.id, 1)[0]?.status ?? null,
-        ),
+        // Cancelled rows are skipped there and here alike (D58).
+        state: resourceState(resource, latestDeploymentStatus(resource.id)),
         domainCount: listDomains(resource.id).length,
       })),
     }))
@@ -492,7 +496,9 @@ export const appRoutes = new Elysia()
           project,
           tab,
           image: resourceImage(resource),
-          state: resourceState(resource, deployments[0]?.status ?? null),
+          // Not deployments[0]: that may be a cancelled row, which did nothing
+          // and must not define the state (D58).
+          state: resourceState(resource, latestDeploymentStatus(resource.id)),
           deployments,
           domains: listDomains(resource.id),
           autoDomain: autoDomainFor(resource.name, environment.name),
@@ -533,6 +539,18 @@ export const appRoutes = new Elysia()
           ? BUILD_PLACEHOLDER
           : resourceImage(ctx.resource)
       if (!image) return statusFor(session, 400)
+
+      // An identical build deploy still waiting in the queue already does
+      // what this press asks for, and concurrency 1 would run the copy right
+      // after it for nothing — so the press goes to the waiting one.
+      const existing = pendingDeploymentFor(ctx.resource.id, image)
+      if (existing !== null) {
+        logger.info(
+          { resourceId: ctx.resource.id, deploymentId: existing },
+          "deploy folded into a queued deploy",
+        )
+        return redirect(`/d/${existing}`, 303)
+      }
 
       // Enqueue and redirect immediately — never await Docker in a handler.
       const deploymentId = enqueueDeploy(ctx.resource.id, image, "manual")
@@ -806,7 +824,7 @@ export const appRoutes = new Elysia()
     { body: t.Object({ csrf: t.String() }) },
   )
 
-  .get("/d/:deploymentId", ({ params, session }) => {
+  .get("/d/:deploymentId", ({ params, query, session }) => {
     const deployment = getDeployment(params.deploymentId)
     // The page has no context of its own: the breadcrumb and the sidebar
     // highlight both come from the resource it belongs to.
@@ -823,14 +841,47 @@ export const appRoutes = new Elysia()
           duration: formatDuration(deployment.startedAt, deployment.finishedAt),
           imagePending: deployment.image === BUILD_PLACEHOLDER,
           lines: deployLogTail(params.deploymentId),
+          csrf: session?.csrfToken,
         },
         layout(session, "Deployment", {
           activeProjectId: ctx.project.id,
           activeEnvironmentId: ctx.environment.id,
+          errorKey: errorKeyFromQuery(query.error),
         }),
       ),
     )
   })
+
+  /**
+   * Removes a queued deploy from the queue (D58).
+   *
+   * No await anywhere, and no Docker: the cancel is one guarded UPDATE racing
+   * the worker's claim, and whichever runs first wins outright. Losing that
+   * race is not an error the user caused, so it redirects back with a notice
+   * rather than a status page.
+   */
+  .post(
+    "/d/:deploymentId/cancel",
+    ({ params, redirect, session }) => {
+      const deployment = getDeployment(params.deploymentId)
+      if (!deployment) return statusFor(session, 404)
+      // The reconciler's redeploys heal drift; cancelling one would leave the
+      // resource down until the next pass re-queued it. The form never shows
+      // for them, so reaching here means a hand-made request.
+      if (deployment.trigger === "reconcile") return statusFor(session, 400)
+
+      const back = `/d/${deployment.id}`
+      // Already done — a double submit, or a second tab. The outcome the user
+      // asked for holds, so there is nothing to report.
+      if (deployment.status === "cancelled") return redirect(back, 303)
+
+      if (cancelQueuedDeploy(deployment.id, deployment.resourceId)) {
+        return redirect(back, 303)
+      }
+      return redirect(withError(back, "deploy-already-started"), 303)
+    },
+    { body: t.Object({ csrf: t.String() }) },
+  )
 
   // --------------------------------------------------------------- github
 
