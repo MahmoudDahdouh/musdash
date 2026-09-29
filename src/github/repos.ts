@@ -7,8 +7,20 @@ import {
   ghPaginate,
   isFullCommitSha,
 } from "./api.ts"
+import { logger } from "../log.ts"
 import { appJwt } from "./jwt.ts"
-import { withInstallationToken } from "./tokens.ts"
+import {
+  createRepoCache,
+  REPO_CACHE_MAX_ENTRIES,
+  REPO_CACHE_MAX_ITEMS,
+  REPO_LIST_STALE_MAX_AGE_MS,
+  REPO_LIST_TTL_MS,
+} from "./repo-cache.ts"
+import {
+  clearTokenCache,
+  invalidateToken,
+  withInstallationToken,
+} from "./tokens.ts"
 
 /** Everything musdash reads from GitHub: installations, repositories, commits. */
 
@@ -112,6 +124,66 @@ export async function listInstallationRepos(
     ),
   )
   return raw.map(toRepoRef)
+}
+
+/** The picker's repository lists, one per installation. See repo-cache.ts. */
+const repoCache = createRepoCache<RepoRef>({
+  ttlMs: REPO_LIST_TTL_MS,
+  staleMaxAgeMs: REPO_LIST_STALE_MAX_AGE_MS,
+  maxEntries: REPO_CACHE_MAX_ENTRIES,
+  maxItems: REPO_CACHE_MAX_ITEMS,
+})
+
+/**
+ * An installation's repositories, from GitHub only on a cache miss.
+ *
+ * For the repository picker only. Deploys never read this: they resolve the
+ * commit themselves, so a list up to an hour old can at worst offer a
+ * repository the grant no longer covers, and that fails visibly at deploy.
+ *
+ * A failed refresh with an older list still cached renders that list and logs
+ * a warning, rather than blanking the picker over a transient GitHub error.
+ */
+export async function cachedInstallationRepos(
+  installationId: number,
+): Promise<readonly RepoRef[]> {
+  const { items, stale } = await repoCache.get(installationId, () =>
+    listInstallationRepos(installationId),
+  )
+  if (stale !== null) {
+    logger.warn(
+      {
+        installationId,
+        ageSeconds: Math.round(stale.ageMs / 1000),
+        err:
+          stale.error instanceof Error
+            ? stale.error.message
+            : String(stale.error),
+      },
+      "could not refresh repositories for an installation; showing the list cached earlier",
+    )
+  }
+  return items
+}
+
+/**
+ * Drops everything cached for one installation: its token and its repository
+ * list. For lifecycle events (suspend, permissions, repository access,
+ * removal), after which both were obtained under terms that no longer hold.
+ *
+ * Lives here rather than in tokens.ts because repos.ts already imports
+ * tokens.ts; the reverse import would be a cycle.
+ */
+export function forgetInstallation(installationId: number): void {
+  invalidateToken(installationId)
+  repoCache.forget(installationId)
+}
+
+/** Drops every cached token and repository list. For any change to the App
+ *  itself (registration, disconnect) and for every installation sync. */
+export function clearGitHubCaches(): void {
+  clearTokenCache()
+  repoCache.clear()
 }
 
 interface RawCommit {

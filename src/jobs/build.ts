@@ -88,8 +88,10 @@ function assertLocalSource(repo: string): void {
 /**
  * Copies from a local directory. `repo` is a filesystem path here.
  *
- * Not reachable from the UI — there is no way to create a git resource pointing
- * at a local path — so this is a verification seam, not a user-facing feature.
+ * Reached from the create dialog's "Local path" field when what is typed there
+ * is a directory rather than `owner/name` (which githubSourceFetcher fetches
+ * from GitHub without credentials). A path on the server is for testing on the
+ * host itself, not a way to deploy from someone else's machine.
  * Resolves to no commit: a directory is not a repository.
  */
 export const localSourceFetcher: SourceFetcher = {

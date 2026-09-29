@@ -7,8 +7,12 @@ import {
   resourcesForPush,
   upsertInstallation,
 } from "../db/queries.ts"
-import { invalidateToken } from "../github/tokens.ts"
-import { verifySignature, WEBHOOK_PATH } from "../github/webhook.ts"
+import { forgetInstallation } from "../github/repos.ts"
+import {
+  shouldSkipPush,
+  verifySignature,
+  WEBHOOK_PATH,
+} from "../github/webhook.ts"
 import { enqueueDeployCoalesced } from "../jobs/deploy.ts"
 import { logger } from "../log.ts"
 
@@ -39,6 +43,9 @@ interface PushEvent {
   after?: unknown
   deleted?: unknown
   repository?: { full_name?: unknown }
+  /** Unvalidated payload; only shouldSkipPush reads it. Never logged — a
+   *  commit message is user text and may hold anything. */
+  commits?: unknown
 }
 
 interface InstallationEvent {
@@ -81,6 +88,20 @@ function handlePush(body: PushEvent, delivery: string | null): void {
     "push received",
   )
 
+  if (affected.length > 0 && shouldSkipPush(body.commits)) {
+    logger.info(
+      {
+        delivery,
+        repo,
+        branch,
+        commits: Array.isArray(body.commits) ? body.commits.length : 0,
+        resources: affected.length,
+      },
+      "push skipped: every commit asks to skip deploys ([skip ci])",
+    )
+    return
+  }
+
   for (const resource of affected) {
     const result = enqueueDeployCoalesced(resource.id, after)
     if (result.outcome === "folded") {
@@ -121,7 +142,7 @@ function handleInstallation(body: InstallationEvent): void {
     // GitHub's integer as a decimal string.
     const unlinked = clearGitLinkage(String(installationId))
     deleteInstallation(installationId)
-    invalidateToken(installationId)
+    forgetInstallation(installationId)
     logger.info(
       { installationId, action, unlinked },
       "installation deleted on GitHub",
@@ -132,9 +153,10 @@ function handleInstallation(body: InstallationEvent): void {
   if (action === "suspend") {
     // The row and every resource link are KEPT. A suspension is reversible on
     // GitHub's side, and keeping them is what lets `unsuspend` restore deploys
-    // with no action here. Only the cached token goes: GitHub has revoked it,
-    // and handing it out until its hour ends would fail every call.
-    invalidateToken(installationId)
+    // with no action here. Only the cached token and repository list go:
+    // GitHub has revoked the token, and handing it out until its hour ends
+    // would fail every call.
+    forgetInstallation(installationId)
     logger.info(
       { installationId, action },
       "installation suspended; its resource links are kept",
@@ -145,8 +167,9 @@ function handleInstallation(body: InstallationEvent): void {
   // Any other action (created, unsuspend, new_permissions_accepted) means the
   // installation exists and its login may have changed. A cached token was
   // minted under the previous permissions or before a suspension, so it is
-  // dropped and the next call mints one under the current terms.
-  invalidateToken(installationId)
+  // dropped (with the cached repository list) and the next call mints one
+  // under the current terms.
+  forgetInstallation(installationId)
   const app = getGithubApp()
   if (!app) return
   const login = body.installation?.account?.login
@@ -174,8 +197,10 @@ export const githubWebhookRoutes = new Elysia().post(
 
     const secret = getWebhookSecret()
     if (!secret) {
-      // 202, not an error: GitHub retries a non-2xx forever, and "musdash is
-      // not connected to GitHub" is not something a retry can fix.
+      // 202 rather than an error: no redelivery can fix "musdash has no GitHub
+      // App registered", and GitHub never redelivers on its own anyway — a
+      // non-2xx only marks the delivery failed under the App's Recent
+      // Deliveries.
       logger.warn(
         { event, delivery },
         "webhook delivery ignored — no GitHub App is registered",
@@ -214,14 +239,15 @@ export const githubWebhookRoutes = new Elysia().post(
         handleInstallation(body as InstallationEvent)
         break
       case "installation_repositories": {
-        // A token is scoped to the repositories granted when it was minted, so
-        // the cached one no longer matches the grant: drop it. Nothing else is
-        // needed — the repository list is re-fetched every time the picker
-        // renders, so there is no local copy to keep in sync, and a
-        // syncInstallations() here would put a GitHub round trip inside a
-        // request GitHub times out at 10 seconds.
+        // A token is scoped to the grant it was minted under, and the cached
+        // repository list no longer matches the grant either.
+        // forgetInstallation drops both, so the next picker render refetches
+        // the list under the new grant. A syncInstallations() here would still
+        // put a GitHub round trip inside a request GitHub times out at 10
+        // seconds.
         const installationId = (body as InstallationEvent).installation?.id
-        if (typeof installationId === "number") invalidateToken(installationId)
+        if (typeof installationId === "number")
+          forgetInstallation(installationId)
         logger.info({ delivery }, "installation repositories changed")
         break
       }

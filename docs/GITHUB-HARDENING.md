@@ -10,6 +10,13 @@ build → verify → validate). The notes here are input for each slice's spec, 
 an approved spec. Anything that departs from an existing decision needs its own
 `docs/DECISIONS.md` entry, marked as such below.
 
+**Status (2026-09-29).** A — built (D55). B — built (D56). C — built (D57). D —
+built: D3 and D4 in D58, D2 in D59, D1 in D60. E — step 1 built (D61); step 2,
+the `git clone` fallback, not started. Small items — built (D62), except
+branches with a slash, which wait on matrix row 8. The real-VPS matrix below has
+not been run; each entry says what it leaves unverified. Line numbers below are
+as of the plan's writing and have drifted.
+
 ---
 
 ## Where musdash already beats Coolify — keep these
@@ -229,6 +236,10 @@ the same point faster with a repeatable real-host run. Record the results as a
 | 11  | Delete the watched branch                                     | Push is ignored; the next deploy says "branch not found" (B2) |
 | 12  | Repo with a submodule / with LFS files                        | Clear message (E step 1), or deploys (E step 2)               |
 | 13  | Idle RSS after all of the above                               | Still ≤ 100MB                                                 |
+
+Row 8, if GitHub does not resolve `feature%2Fx`: encode `getCommit`'s ref per
+path segment, widen the `/repos/*/*/commits/*` shape match in `api.ts` (B2's
+restatement) to the deeper paths that produces, and add tests for both (D62).
 
 ---
 

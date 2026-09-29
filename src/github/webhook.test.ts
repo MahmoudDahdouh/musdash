@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto"
 import { describe, expect, test } from "bun:test"
-import { verifySignature } from "./webhook.ts"
+import { shouldSkipPush, verifySignature } from "./webhook.ts"
 
 /**
  * The digests here are computed with an independent createHmac call rather than
@@ -111,5 +111,70 @@ describe("verifySignature", () => {
     // because nothing parses before the digest is computed.
     const raw = '{\n\t"b": 2,\n\t"a": 1\n}\n'
     expect(verifySignature(raw, sign(raw, SECRET), SECRET)).toBe(true)
+  })
+})
+
+describe("shouldSkipPush", () => {
+  const commit = (message: unknown): unknown => ({ message })
+
+  test("is false for anything that is not a non-empty array", () => {
+    expect(shouldSkipPush(undefined)).toBe(false)
+    expect(shouldSkipPush(null)).toBe(false)
+    expect(shouldSkipPush("[skip ci]")).toBe(false)
+    expect(shouldSkipPush({ message: "[skip ci]" })).toBe(false)
+    expect(shouldSkipPush([])).toBe(false)
+  })
+
+  test("is true for a single commit carrying any one of the markers", () => {
+    for (const marker of [
+      "[skip ci]",
+      "[ci skip]",
+      "[no ci]",
+      "[skip cd]",
+      "[cd skip]",
+    ]) {
+      expect(shouldSkipPush([commit(`chore: bump ${marker}`)])).toBe(true)
+    }
+  })
+
+  test("is true when every commit is tagged, and the marker may sit mid-subject", () => {
+    expect(
+      shouldSkipPush([commit("[skip ci] one"), commit("two [ci skip]")]),
+    ).toBe(true)
+    expect(shouldSkipPush([commit("docs: typo [skip ci]")])).toBe(true)
+  })
+
+  test("is false when one commit is tagged and another is not", () => {
+    // The untagged commit is a real change; skipping would leave it undeployed.
+    expect(shouldSkipPush([commit("[skip ci] docs"), commit("fix: bug")])).toBe(
+      false,
+    )
+  })
+
+  test("only the subject line counts", () => {
+    expect(shouldSkipPush([commit("fix\n\n[skip ci]")])).toBe(false)
+    // A squash merge lists the branch's commits in its body; a tagged WIP
+    // commit there must not skip the merge itself.
+    expect(
+      shouldSkipPush([commit("Merge feature (#12)\n\n* wip [skip ci]")]),
+    ).toBe(false)
+  })
+
+  test("is false for any element it cannot read, never throwing", () => {
+    const shapes: unknown[] = [
+      [commit("[skip ci]"), null],
+      [commit(42)],
+      [{}],
+      ["[skip ci]"],
+    ]
+    for (const shape of shapes) {
+      expect(() => shouldSkipPush(shape)).not.toThrow()
+      expect(shouldSkipPush(shape)).toBe(false)
+    }
+  })
+
+  test("is case-sensitive, and a CRLF subject still matches", () => {
+    expect(shouldSkipPush([commit("[SKIP CI] x")])).toBe(false)
+    expect(shouldSkipPush([commit("x [skip ci]\r\nbody")])).toBe(true)
   })
 })

@@ -52,9 +52,8 @@ import {
   replaceGithubApp,
   syncInstallations,
 } from "../github/register.ts"
-import { listInstallationRepos } from "../github/repos.ts"
+import { cachedInstallationRepos, clearGitHubCaches } from "../github/repos.ts"
 import { flashFromQuery, settingsViewModel } from "../github/settings.ts"
-import { clearTokenCache } from "../github/tokens.ts"
 import { BUILD_PLACEHOLDER } from "../build/images.ts"
 import {
   cancelQueuedDeploy,
@@ -306,8 +305,9 @@ export const appRoutes = new Elysia()
             : undefined,
           csrf: session?.csrfToken,
           defaultMemoryMb: config.defaultMemoryMb,
-          // Only on the resources tab: gitPicker makes one GitHub API call per
-          // installation, and the env tab renders none of it.
+          // Only on the resources tab: on a cache miss gitPicker makes one
+          // GitHub API call per installation, and the env tab renders none of
+          // it.
           gitPicker:
             tab === "resources"
               ? await gitPicker()
@@ -1138,9 +1138,9 @@ export const appRoutes = new Elysia()
       // backstop would not save a careless line here.
       const converted = await convertManifestCode(code)
       replaceGithubApp(converted)
-      // Mandatory after ANY App change: tokens are cached by installation id,
-      // and a new App mints tokens that a stale cache would shadow for an hour.
-      clearTokenCache()
+      // Mandatory after ANY App change: tokens and repository lists are cached
+      // by installation id, and a stale cache would shadow the new App's.
+      clearGitHubCaches()
       logger.info({ appId: converted.appId }, "registered a GitHub App")
     } catch (err) {
       logger.error(
@@ -1212,9 +1212,9 @@ export const appRoutes = new Elysia()
         unlinked += clearGitLinkage(String(installation.installationId))
       }
       deleteGithubApp(app.id)
-      // Same reason as registration: a revoked App's tokens must not linger in
-      // memory for the rest of their hour.
-      clearTokenCache()
+      // Same reason as registration: a revoked App's tokens and repository
+      // lists must not linger in memory.
+      clearGitHubCaches()
 
       logger.info({ appId: app.appId, unlinked }, "disconnected GitHub")
       return redirect(flashUrl("ok", "GitHub is disconnected."), 303)
@@ -1261,7 +1261,7 @@ interface GitPickerRepo {
 interface GitPickerInstallation {
   installationId: number
   accountLogin: string
-  repos: GitPickerRepo[]
+  repos: readonly GitPickerRepo[]
   /** Non-null when this installation's listing failed. */
   error: string | null
 }
@@ -1274,18 +1274,20 @@ interface GitPicker {
 /**
  * The repository choices for the project page's git dialog.
  *
- * Rendered server-side at page load, one API call per installation, rather
- * than from a client fetch endpoint — the UI is a view of server state and
- * this project does not add an XHR API to populate a <select>.
+ * Rendered server-side at page load, on a cache miss one API call per
+ * installation, rather than from a client fetch endpoint — the UI is a view of
+ * server state and this project does not add an XHR API to populate a
+ * <select>.
  *
  * Each call is isolated: an installation the user revoked on GitHub still has
  * a row here, and its token mint 404s. Letting that reject would take down the
  * whole project page for a resource that has nothing to do with GitHub.
  *
- * Caveat, surfaced in the template: listInstallationRepos paginates to
- * completion at 100/page, so an installation granting several hundred
- * repositories makes this page slow and its HTML large. The fix is to scope
- * the installation to fewer repositories, not to fetch from the client.
+ * Caveat, surfaced in the template: on a cache miss listInstallationRepos
+ * paginates to completion at 100/page, so an installation granting several
+ * hundred repositories makes that render slow, and every render's HTML large.
+ * The fix is to scope the installation to fewer repositories, not to fetch
+ * from the client.
  */
 async function gitPicker(): Promise<GitPicker> {
   const installations = listGithubInstallations()
@@ -1299,7 +1301,7 @@ async function gitPicker(): Promise<GitPicker> {
         return {
           installationId: installation.installationId,
           accountLogin: installation.accountLogin,
-          repos: await listInstallationRepos(installation.installationId),
+          repos: await cachedInstallationRepos(installation.installationId),
           error: null,
         }
       } catch (err) {

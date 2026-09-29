@@ -79,7 +79,10 @@ type ValidatedSource =
 function validate(source: SourceRequest): ValidatedSource {
   const { repo, ref, installationId } = source
 
-  // A local path: not reachable from the UI, but it is the verification seam.
+  // A local path: the create dialog's Local path field reaches this, and it is
+  // the verification seam. An owner/name typed into that same field is not a
+  // local path — it falls through below and is fetched from GitHub without
+  // credentials, as a public repository.
   if (!isValidRepoRef(repo)) {
     if (existsSync(repo)) return { kind: "local" }
     throw new Error(

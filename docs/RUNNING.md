@@ -3,8 +3,9 @@
 How to run the code on your local machine (Windows + WSL2) and on a VPS, step by
 step, and what you can actually do with it once it is up.
 
-This describes the code as it stands at commit `1ec05d0` (Phase 2, checkpoint
-4a). Anything not listed under **What works today** is not built yet.
+This describes the code as it stands after the GitHub hardening slices
+(`docs/GITHUB-HARDENING.md`, D55–D62). Anything not listed under **What works
+today** is not built yet.
 
 ---
 
@@ -25,15 +26,15 @@ This describes the code as it stands at commit `1ec05d0` (Phase 2, checkpoint
 
 **Deploy targets**
 
-| Source                        | Status                                               |
-| ----------------------------- | ---------------------------------------------------- |
-| Public Docker image           | Works — `nginx:alpine`, `ghcr.io/you/app:v1.2`       |
-| Locally-built image           | Works — an image already in the daemon deploys as-is |
-| Public git repo (Dockerfile)  | Works — repo URL typed in by hand                    |
-| Public git repo (zero-config) | Works — Railpack detects the language and builds     |
-| Private git repo              | Client exists, **no UI to connect GitHub yet**       |
-| Docker Compose / templates    | Not built (Phase 3)                                  |
-| Managed databases / backups   | Not built (Phase 4)                                  |
+| Source                        | Status                                                                           |
+| ----------------------------- | -------------------------------------------------------------------------------- |
+| Public Docker image           | Works — `nginx:alpine`, `ghcr.io/you/app:v1.2`                                   |
+| Locally-built image           | Works — an image already in the daemon deploys as-is                             |
+| Public git repo (Dockerfile)  | Works — picked from a connected GitHub App, or typed as `owner/name` without one |
+| Public git repo (zero-config) | Works — Railpack detects the language and builds                                 |
+| Private git repo              | Works — connect a GitHub App under **Settings** (needs a dashboard address, B4)  |
+| Docker Compose / templates    | Not built (Phase 3)                                                              |
+| Managed databases / backups   | Not built (Phase 4)                                                              |
 
 **Platform features**
 
@@ -43,7 +44,9 @@ This describes the code as it stands at commit `1ec05d0` (Phase 2, checkpoint
   reach a log line, including on error paths and in build logs.
 - Zero-downtime deploys — the old container keeps serving until the new one
   passes its health gate _and_ the Caddy route has switched.
-- One-click rollback to the previous image (rollback never rebuilds).
+- One-click rollback to the previous image (rollback never rebuilds), and
+  **Deploy this again** on a finished deployment that names a commit or an image
+  (D60).
 - Live deploy and container logs over SSE.
 - Automatic HTTPS at `<resource>-<environment>.<wildcard-domain>`, plus custom
   domains.
@@ -54,12 +57,12 @@ This describes the code as it stands at commit `1ec05d0` (Phase 2, checkpoint
 - Daily image prune, because disk fills before RAM does.
 - Hard memory limit on every container it creates (512 MB by default).
 
-**The GitHub gap.** `src/github/` has a working client — App JWT minting,
-installation-token caching, repo listing, tarball fetch — and it is covered by
-tests. What does not exist yet is the route and page that register the App and
-run the install callback, so there is no way to connect GitHub through the UI.
-Private repositories are therefore not deployable yet. Public repos work: the
-git-resource form takes the repo URL as free text.
+**GitHub.** Connect a GitHub App under **Settings** and install it on the
+accounts whose repositories you deploy. **From repository** then lists every
+repository those installations grant, and a push to a resource's branch deploys
+it. A push is not deployed when every commit's subject line carries `[skip ci]`,
+`[ci skip]`, `[no ci]`, `[skip cd]` or `[cd skip]` (D62). Connecting needs a
+dashboard address of its own (B4), not a bare IP.
 
 ---
 
@@ -287,8 +290,9 @@ with no DNS at all. Create your admin account and start adding projects.
 
 **This is plain HTTP.** No certificate authority issues certificates for an IP
 address, so until you attach a domain the admin session cookie travels in
-plaintext, and **GitHub cannot be connected** — its App requires a public HTTPS
-URL. Treat an IP-only install as fine for trying musdash out, and attach a domain
+plaintext, and **GitHub cannot be connected**: **Connect GitHub** stays
+disabled until the dashboard has an address of its own (B4), because GitHub
+delivers the registration callback and push webhooks there. Treat an IP-only install as fine for trying musdash out, and attach a domain
 before you rely on it.
 
 ### B3. Deploy an app on your main domain
@@ -444,17 +448,37 @@ its App under your GitHub settings: the key it was created with is gone.
    `<resource>-<environment>.<wildcard-domain>` with a certificate issued
    automatically.
 
-### Deploy from a public git repo
+### Deploy from a git repository
 
-Use the git-resource form. Fields: repo URL, branch (defaults to `main`), and
-either `railpack` (zero-config detection) or `dockerfile` with an optional
-Dockerfile path and build context.
+Press **From repository** in an environment. With a GitHub App connected, choose
+the account and the repository; the branch fills in from the repository's
+default branch. Then choose the build pack — **Detect automatically (Railpack)**
+or **Dockerfile**, with an optional Dockerfile path and build context.
+
+The repository list is read from GitHub and kept for five minutes. A repository
+you grant the App appears on the next page load once GitHub's webhook arrives;
+if it does not, **Sync installations** under **Settings** refreshes the list. If
+GitHub cannot be reached, the page waits for the failed request and then shows
+the last list it read, up to an hour old — unless Sync or a GitHub App event has
+dropped that list since, in which case it says it could not read the
+repositories.
+
+Without a GitHub App a **public** repository still deploys: open **Build from a
+local directory instead** and type `owner/name` into **Local path**. A value
+shaped like `owner/name` is always fetched from GitHub, without credentials, not
+read from disk. A push deploys such a resource only if a connected App is
+installed on that repository; otherwise press **Deploy**. Do not use this for a
+private repository: the fetch has no credentials, so every deploy of it —
+including each push the App delivers — fails. Choose the App's account instead.
 
 The source is fetched as a **tarball**, not a `git clone` — it is one HTTP
 request and no `.git` directory on disk. BuildKit builds it, the image is loaded
 into the daemon, and the normal deploy pipeline takes over from there.
 
-Private repos work through the GitHub App connect flow under **Settings**.
+A push to the tracked branch deploys it while **Deploy automatically** is on,
+unless every commit in the push has a skip marker in its subject line (D62). A
+marker in a commit's body does not count. **Deploy**, **Rollback** and **Deploy
+this again** ignore markers.
 
 ### Everything else
 
@@ -486,7 +510,12 @@ Private repos work through the GitHub App connect flow under **Settings**.
   certificate before it reports success, and says in the deploy log if none
   arrived (D39).
 - **Rollback** — one click, back to the previous image. It reuses the existing
-  image and never rebuilds.
+  image and never rebuilds. To go further back, open any finished deployment and
+  press **Deploy this again** (D60). For a git deployment it reuses that build's
+  image while it is still on the server (the newest three builds per resource
+  are kept, D59), and otherwise rebuilds the recorded commit — only while the
+  resource still points at the repository it came from. For an image
+  deployment it pulls that tag again.
 - **Stop / restart / delete** — delete removes the container, the route, and the
   volumes.
 - **Logs** — live over SSE, from an in-memory ring buffer (1000 lines per

@@ -1168,6 +1168,10 @@ auto-deploy.
 
 ### Known and deferred: the repo picker refetches on every project page
 
+> **Resolved by D62:** the list is cached per installation for 5 minutes and
+> dropped by the installation webhooks, Sync, registration and Disconnect. A
+> cold or expired entry still awaits GitHub in this request.
+
 `GET /p/:projectId` awaits one authenticated GitHub call per installation,
 paginating to completion, with no cache. It runs on every project page load —
 including for projects holding no git resources at all — and with GitHub slow or
@@ -1186,6 +1190,13 @@ The `repoTotal >= 200` notice in `project.eta` tells the user when the _size_ is
 the problem. Nothing yet tells them when the _latency_ is.
 
 ### Still unverified, and not claimed
+
+> **Superseded by D52 for the callback and pushes:** the first 2GB run passed
+> the Phase 2 run on a public host, which connects GitHub through the manifest
+> callback, and handled real push deliveries (T-1 is one). The `installation`
+> and `installation_repositories` deliveries are still unverified against real
+> GitHub (D55), as is most of GITHUB-HARDENING.md's real-host matrix (D55–D58,
+> D61).
 
 Two paths in this checkpoint are **inbound HTTP from GitHub**, and this is an
 RFC1918 box — the same constraint recorded for Slice D above, now actually
@@ -3894,3 +3905,63 @@ privilege-boundary behaviour, not convenience. **Not yet verified on a real
 host:** matrix row 12 — a repository with a real submodule and one with LFS
 files, what codeload puts at a gitlink path, and whether the archive carried
 pointers or real LFS content.
+
+### D62 — a push whose every commit asks to skip is not deployed; the repository list is cached; a slash in a branch waits for a host
+
+**Skip markers.** A push is skipped when its `commits` array is non-empty and
+every commit's **subject line** — the text before the first newline — contains
+`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip cd]` or `[cd skip]`, case-sensitive.
+Subject only, because a squash merge's body lists every commit of the PR, so one
+`[skip ci]` WIP commit would otherwise skip the merge that ships the feature.
+`head_commit` is not consulted: the rule is about every commit, not the last.
+Anything malformed — no array, an empty one (a branch created at an existing
+commit, a force-push back to an ancestor), an element without a string message
+— deploys, because a skipped push has no retry loop: the wrong way to fail is
+silently not deploying. The check is `shouldSkipPush` (`src/github/webhook.ts`,
+tested) and runs after the push is matched to resources. It logs one line with
+counts and never the messages, and writes no row.
+
+What a skipped push does **not** stop: a deploy of that resource already queued
+fetches the branch head when it runs, so it ships the skipped commit (D52); a
+running deploy continues; Deploy, Rollback and Deploy this again ignore markers;
+and the next push without a marker deploys everything, skipped commits
+included. `[skip actions]` and the `skip-checks:` trailer are not honoured —
+they are about GitHub's checks, not deploys.
+
+**Repository list cache.** `src/github/repo-cache.ts` (pure, tested with an
+injected clock) keeps each installation's list for 5 minutes. A failed refresh
+serves a list up to 1 hour old and logs a warning; past that, the page shows its
+error sentence. At most 16 installations and 5,000 repositories are cached,
+oldest evicted first; an installation whose list alone exceeds 5,000 is fetched
+on every render and never stored. Expiry is lazy, on read and write, with no
+timer. Concurrent misses share one fetch, like the token cache, and an
+invalidation during a fetch is not undone by that fetch completing. There is no
+background refresh: no GitHub call outlives the request that made it, so with
+GitHub down every render past 5 minutes still waits for the failing call before
+it serves the older list.
+
+Invalidation: `forgetInstallation` (token and list) on every `installation`
+action and on `installation_repositories`; `clearGitHubCaches` (every token and
+list) on registration, Disconnect, and every `syncInstallations`, successful or
+not — which makes the UI's "press Sync installations" advice true.
+`clearGitHubCaches` replaces `clearTokenCache` at the call sites D11 names. Not
+on the D55 401 retry: a rejected token says nothing about the grant. A missed
+`installation_repositories` delivery leaves a newly granted repository out of
+the picker for up to 5 minutes, or until Sync.
+
+Measured once by hand under Bun 1.4.2 (a throwaway script, not a repeatable
+check): 5,000 entries shaped like the real list, parsed from JSON across 16
+installations, add about 4.2 MiB of RSS (0.8 MiB of it heap) — a
+full cache, which only a user with that many repositories reaches, and only
+after visiting a project page. The RAM gate idles without visiting one and
+reads 58.1 MB, unchanged.
+
+**Branches with a slash.** No change. `getCommit` still sends
+`encodeURIComponent(ref)`, so `feature/x` goes out as `feature%2Fx`, and nobody
+has seen whether GitHub resolves it (matrix row 8, D56). If it does not: encode
+the ref per path segment, widen `api.ts`'s `/repos/*/*/commits/*` match to the
+deeper shape that produces, and add tests for both.
+
+The webhook's comment claiming GitHub "retries a non-2xx forever" was wrong:
+GitHub never redelivers on its own, and a non-2xx only marks the delivery failed
+under the App's Recent Deliveries.
