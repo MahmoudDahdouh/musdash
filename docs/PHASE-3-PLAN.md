@@ -825,7 +825,7 @@ cheap to run and test). The real catalogue comes in S7.
 | S1    | done                      | `27de0a3`                 |           |
 | S2    | built, VPS checks pending | `ff4fa65`, `992b25e` (UI) | D66       |
 | S3    | built, VPS checks pending | `1088bcf`                 | D66       |
-| S4    | built, VPS checks pending |                           | D67       |
+| S4    | built, VPS checks pending | `07ecdd6`                 | D67       |
 | S5    | —                         |                           |           |
 | S6    | —                         |                           |           |
 | S7    | —                         |                           |           |
