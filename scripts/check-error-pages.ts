@@ -223,6 +223,7 @@ interface Reply {
   location: string
   /** The first Set-Cookie pair, `name=value`, or "". */
   cookie: string
+  cacheControl: string
   body: string
 }
 
@@ -247,6 +248,7 @@ async function send(
     type: res.headers.get("content-type") ?? "",
     location: res.headers.get("location") ?? "",
     cookie: res.headers.getSetCookie()[0]?.split(";")[0] ?? "",
+    cacheControl: res.headers.get("cache-control") ?? "",
     body: await res.text(),
   }
   if (SENTINEL_RE.test(reply.location) || SENTINEL_RE.test(reply.body)) {
@@ -284,6 +286,20 @@ function readOne(sql: string, ...params: string[]): string {
   try {
     const row = db.query(sql).get(...params) as { id?: unknown } | null
     return typeof row?.id === "string" ? row.id : ""
+  } finally {
+    db.close()
+  }
+}
+
+/** How many jobs exist: the worker rewrites failing jobs' rows in the
+ * background, so a refusal is checked by count, not by row. */
+function jobCount(): number {
+  const db = new Database(dbPath, { readonly: true })
+  try {
+    const row = db.query("SELECT count(*) AS n FROM jobs").get() as {
+      n: number
+    }
+    return row.n
   } finally {
     db.close()
   }
@@ -651,6 +667,81 @@ try {
     `${s}/domains/${BOGUS}/target`,
     { serviceName: "api", containerPort: "80" },
   )
+
+  // S4: volume sizes and kept-volume deletes. A refused delete queues nothing.
+  await statusCase(
+    "sizes of an unknown resource",
+    404,
+    "GET",
+    `/r/${BOGUS}/volumes/sizes`,
+  )
+  await statusCase(
+    "sizes of an image resource",
+    404,
+    "GET",
+    `${r}/volumes/sizes`,
+  )
+  const refusedVolumes: [string, string][] = [
+    ["a sidecar volume", "musdash-caddy-data"],
+    ["an upper-case resource id", `musdash-${sid}_data`],
+    ["a live stack's volume", `musdash-${sid.toLowerCase()}_data`],
+  ]
+  for (const [what, name] of refusedVolumes) {
+    const jobsBefore = jobCount()
+    await statusCase(
+      `delete ${what} from Settings`,
+      400,
+      "POST",
+      `/settings/volumes/${name}/delete`,
+      {},
+    )
+    report(
+      jobCount() === jobsBefore,
+      `delete ${what} from Settings queues no job`,
+      "",
+    )
+  }
+  {
+    const jobsBefore = jobCount()
+    await statusCase(
+      "roll back a stack with no earlier file",
+      400,
+      "POST",
+      `${s}/rollback`,
+      {},
+    )
+    report(
+      jobCount() === jobsBefore,
+      "roll back a stack with no earlier file queues no job",
+      "",
+    )
+  }
+  // Docker is unreachable here, so the sizes are unknown — and must say so
+  // quickly rather than hold the request.
+  for (const path of [`${s}/volumes/sizes`, "/settings/volumes/sizes"]) {
+    const started = performance.now()
+    const reply = await send("GET", path)
+    const ms = Math.round(performance.now() - started)
+    report(
+      reply.status === 200 &&
+        reply.type.startsWith("application/json") &&
+        reply.cacheControl.includes("no-store") &&
+        reply.body === '{"known":false,"volumes":{},"totalBytes":null}' &&
+        ms < 10_000,
+      `GET ${path} with Docker unreachable`,
+      `${reply.status} ${reply.type} ${reply.cacheControl} ${ms}ms ${reply.body}`,
+    )
+  }
+  {
+    const reply = await send("GET", `${s}/volumes/sizes`, undefined, {
+      anonymous: true,
+    })
+    report(
+      reply.status === 303 && reply.location === "/login",
+      "signed-out sizes request goes to /login",
+      `${reply.status} ${reply.location}`,
+    )
+  }
 
   // Criterion 4: the duplicate environment is a notice, not a 500.
   const mark4 = (await logText()).length

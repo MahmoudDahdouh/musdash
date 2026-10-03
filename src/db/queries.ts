@@ -336,11 +336,13 @@ export function resourcesForPush(repo: string, branch: string): Resource[] {
 /**
  * "Not deliberately stopped" — which is NOT the same as desiredState='running'.
  *
- * desiredState has exactly three writers, and between them they overload
- * 'stopped' with two different meanings:
- *   - createResource / createGitResource write 'stopped' at creation
- *   - runDeploy writes 'running' only after a deploy SUCCEEDS (deploy.ts:230-231)
- *   - runStop writes 'stopped' when the user presses Stop (jobs/index.ts:42)
+ * desiredState's writers overload 'stopped' with two different meanings:
+ *   - createResource / createGitResource / createComposeResource write
+ *     'stopped' at creation
+ *   - runDeploy and runComposeDeploy write 'running' only after a deploy
+ *     SUCCEEDS
+ *   - runStop / runComposeStop write 'stopped' when the user presses Stop, and
+ *     the delete route and runRemove write it before a resource is removed
  *
  * So a brand-new resource and a resource the user switched off are
  * indistinguishable by desiredState alone. Filtering on 'running' meant the
@@ -647,9 +649,14 @@ export function createDeployment(args: {
 
 /**
  * The file a compose Roll back deploys: that of the newest SUCCEEDED
- * deployment created before the current one, or null when there is none.
- * "Before the current one" by creation time, so a rollback of a rollback goes
- * further back rather than bouncing between two files.
+ * deployment created before the current one whose file differs from the
+ * current one's, or null when there is none.
+ *
+ * Rows that ran the same file are skipped: rolling back to them would redeploy
+ * exactly what runs now, and a Roll back button that changes nothing is a
+ * lie. A rollback is itself a new deployment, so right after rolling back
+ * from B to A this returns B — it toggles between the two files, like the
+ * image Roll back, rather than walking further back.
  */
 export function composeRollbackFile(resource: Resource): string | null {
   const current = resource.currentDeploymentId
@@ -666,6 +673,11 @@ export function composeRollbackFile(resource: Resource): string | null {
           eq(deployments.status, "succeeded"),
           lt(deployments.createdAt, current.createdAt),
           sql`${deployments.composeFile} IS NOT NULL`,
+          // A null current file (never true of a stack's deployment) would
+          // make `<>` NULL and exclude every row, so it adds no condition.
+          current.composeFile === null
+            ? undefined
+            : ne(deployments.composeFile, current.composeFile),
         ),
       )
       .orderBy(desc(deployments.createdAt))

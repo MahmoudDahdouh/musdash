@@ -8,7 +8,11 @@ import {
 import { autoDomainFor, isValidHostname } from "../caddy/client.ts"
 import { config } from "../config.ts"
 import { randomToken, safeEqual } from "../crypto.ts"
-import { isValidImageRef, isValidResourceName } from "../docker/client.ts"
+import {
+  isValidImageRef,
+  isValidResourceName,
+  LABEL_VOLUME,
+} from "../docker/client.ts"
 import {
   addDomain,
   clearGitLinkage,
@@ -30,6 +34,7 @@ import {
   getGithubApp,
   getProject,
   getEnvText,
+  getResource,
   getResourceContext,
   getSetting,
   getSharedEnvText,
@@ -103,6 +108,13 @@ import {
   setDashboardHost,
 } from "../settings.ts"
 import { renderPage } from "../views/render.ts"
+import {
+  keptVolumesForPage,
+  stackVolumesForPage,
+  volumeSizes,
+} from "../volumes/index.ts"
+import { isStackVolumeName, stackVolumeResourceId } from "../volumes/select.ts"
+import type { VolumeSizeEntry, VolumeSizes } from "../volumes/sizes.ts"
 import { saveComposeDraft, takeComposeDraft } from "./compose-draft.ts"
 import { checkComposeForm, generatePlaceholders } from "./compose-form.ts"
 import { parseContainerPort } from "./container-port.ts"
@@ -116,9 +128,10 @@ const html = (body: string, headers?: Record<string, string>) =>
   })
 
 /**
- * For the two pages whose Variables tab renders decrypted values into the
- * edit boxes: keeps that HTML out of the browser's disk cache. Every other
- * page is value-free and keeps the default.
+ * For responses that carry values or a Compose file — the Variables tabs, a
+ * stack's Settings and deployment pages, drafts, and the volume sizes JSON:
+ * keeps them out of the browser's disk cache. Every other page keeps the
+ * default.
  */
 const NO_STORE = { "cache-control": "no-store" }
 
@@ -648,13 +661,34 @@ export const appRoutes = new Elysia()
     }))
 
     const isCompose = resource.kind === "compose"
+    // A stack's named volumes, for Overview's Volumes section and the delete
+    // card on Settings. Started before the container list and awaited with
+    // it, so Overview waits for the slower of two bounded reads, not their
+    // sum. Names only: sizes come later from their own endpoint, so the page
+    // never waits on a df.
+    const volumesRead =
+      isCompose && (tab === "overview" || tab === "settings")
+        ? stackVolumesForPage(resource.id)
+        : undefined
     // The container list is the one Docker call a render may make, and only
     // Overview draws the services table — every other tab renders without it.
-    const compose = isCompose
-      ? await composeView(resource, environment, {
-          withContainers: tab === "overview",
-        })
-      : undefined
+    const [compose, volumeList] = await Promise.all([
+      isCompose
+        ? composeView(resource, environment, {
+            withContainers: tab === "overview",
+          })
+        : undefined,
+      volumesRead,
+    ])
+    const volumes =
+      volumesRead === undefined
+        ? undefined
+        : {
+            known: volumeList !== null && volumeList !== undefined,
+            items: (volumeList ?? [])
+              .map((v) => ({ name: v.name, key: v.labels[LABEL_VOLUME] ?? "" }))
+              .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+          }
     // Taken only where the form is: a draft is read once, so another tab
     // rendering first must leave it for Settings.
     const draft =
@@ -715,6 +749,10 @@ export const appRoutes = new Elysia()
           csrf: session?.csrfToken,
           compose,
           composeDraft,
+          volumes,
+          // Whether a stack's Roll back has somewhere to go: an earlier
+          // succeeded deployment that ran a different file. SQLite only.
+          stackRollback: isCompose && composeRollbackFile(resource) !== null,
           // What a stack's service without mem_limit gets, for the Settings
           // copy; the same value the deploy's transform applies.
           defaultMemoryMb: config.defaultMemoryMb,
@@ -1152,16 +1190,48 @@ export const appRoutes = new Elysia()
 
   .post(
     "/r/:resourceId/delete",
-    ({ params, redirect, session }) => {
+    ({ params, body, redirect, session }) => {
       const ctx = getResourceContext(params.resourceId)
       if (!ctx) return statusFor(session, 404)
       const projectId = ctx.project.id
-      // Cleanup ordering lives in the job: container, route, volumes, then row.
-      enqueue("remove", { resourceId: ctx.resource.id, deleteRow: true })
+      // Stopped first, before the job exists: a delete can fail and leave the
+      // row (a volume still attached elsewhere, a daemon that cannot answer),
+      // and a row still marked running would have the reconciler redeploy
+      // what the user asked to delete.
+      updateResource(ctx.resource.id, { desiredState: "stopped" })
+      // Cleanup ordering lives in the job. An image or git resource: its
+      // container, its route, its logs, then the row. A stack: its routes,
+      // `compose down`, its named volumes only when the box was ticked, its
+      // logs, then the row. Only a stack has volumes to choose about, so the
+      // field is ignored for every other kind.
+      enqueue("remove", {
+        resourceId: ctx.resource.id,
+        deleteRow: true,
+        deleteVolumes:
+          ctx.resource.kind === "compose" && body.deleteVolumes === "1",
+      })
       return redirect(`/p/${projectId}`, 303)
     },
-    { body: t.Object({ csrf: t.String() }) },
+    {
+      body: t.Object({
+        // The delete card's checkbox: "1" when ticked, absent when not.
+        deleteVolumes: t.Optional(t.String()),
+        csrf: t.String(),
+      }),
+    },
   )
+
+  /**
+   * A stack's volume sizes, for its page to fill in after load. JSON, so the
+   * page writes numbers with textContent and every word stays in the
+   * template. Answers within VOLUME_SIZES_ANSWER_MS whatever the daemon does,
+   * and no page waits on it.
+   */
+  .get("/r/:resourceId/volumes/sizes", async ({ params, session }) => {
+    const resource = getResource(params.resourceId)
+    if (resource?.kind !== "compose") return statusFor(session, 404)
+    return sizesJson(await volumeSizes(), (v) => v.resourceId === resource.id)
+  })
 
   .get("/d/:deploymentId", ({ params, query, session }) => {
     const deployment = getDeployment(params.deploymentId)
@@ -1180,6 +1250,10 @@ export const appRoutes = new Elysia()
             deployment.image === BUILD_PLACEHOLDER ? null : deployment.image,
         }
       : null
+    // The file a stack's deployment ran, shown read-only. Only a stack's row
+    // has one; every other page stays as it was, cacheable.
+    const composeFile =
+      ctx.resource.kind === "compose" ? deployment.composeFile : null
     return html(
       renderPage(
         "deployment",
@@ -1193,6 +1267,7 @@ export const appRoutes = new Elysia()
           lines: deployLogTail(params.deploymentId),
           csrf: session?.csrfToken,
           redeploy,
+          composeFile,
         },
         layout(session, "Deployment", {
           activeProjectId: ctx.project.id,
@@ -1200,6 +1275,8 @@ export const appRoutes = new Elysia()
           errorKey: errorKeyFromQuery(query.error),
         }),
       ),
+      // A Compose file may hold pasted secrets, as on the Settings tab.
+      composeFile !== null ? NO_STORE : undefined,
     )
   })
 
@@ -1285,12 +1362,16 @@ export const appRoutes = new Elysia()
    * this handler cannot accidentally hand the template a spread of the App row
    * — which carries three ciphertext columns.
    */
-  .get("/settings", ({ query, session }) => {
+  .get("/settings", async ({ query, session }) => {
     const view = settingsViewModel({
       csrf: session?.csrfToken ?? "",
       flash: flashFromQuery(query.flash, query.msg),
     })
     const restarting = query.restarting === "1"
+    // Volumes left by deleted stacks: one bounded, read-only list, so a slow
+    // or stopped daemon costs this page a fixed wait, and the page then says
+    // the list could not be read rather than that there is nothing to show.
+    const kept = await keptVolumesForPage()
     // Spread into a literal rather than casting: an interface has no index
     // signature, so SettingsView is not assignable to Record<string, unknown>
     // directly, and a cast would also silence a genuine shape mismatch.
@@ -1308,6 +1389,9 @@ export const appRoutes = new Elysia()
           // says "applying" — so the page does not say it twice (M-3), while an
           // unrelated flash no longer hides the note (N-11).
           hostJustSaved: query.saved === "host",
+          keptVolumes: { known: kept !== null, items: kept ?? [] },
+          // Set only by the volume delete's own redirect.
+          volumeQueued: query.volumeQueued === "1",
         },
         // The layout renders the flash, above the page head. Settings is the
         // first route to hand it one; the page no longer renders its own.
@@ -1321,6 +1405,42 @@ export const appRoutes = new Elysia()
       ),
     )
   })
+
+  /** The sizes of the volumes deleted stacks left, for /settings to fill in. */
+  .get("/settings/volumes/sizes", async () => {
+    // One lookup per resource id, not per volume: a stack has several.
+    const gone = new Map<string, boolean>()
+    return sizesJson(await volumeSizes(), (v) => {
+      let noRow = gone.get(v.resourceId)
+      if (noRow === undefined) {
+        noRow = getResource(v.resourceId) === undefined
+        gone.set(v.resourceId, noRow)
+      }
+      return noRow
+    })
+  })
+
+  /**
+   * Deletes one volume a deleted stack left behind (the Settings list).
+   *
+   * Never calls Docker: it checks what it can from the name and SQLite, and
+   * the remove_volume job checks everything again against the daemon's
+   * labels when it runs. The page only offers this for a stack volume whose
+   * resource is gone, so a refusal here is a hand-made request.
+   */
+  .post(
+    "/settings/volumes/:name/delete",
+    ({ params, redirect, session }) => {
+      const name = params.name
+      if (!isStackVolumeName(name)) return statusFor(session, 400)
+      // A live resource's data is never removed from here.
+      const resourceId = stackVolumeResourceId(name)
+      if (getResource(resourceId) !== undefined) return statusFor(session, 400)
+      enqueue("remove_volume", { name })
+      return redirect("/settings?volumeQueued=1#kept-volumes", 303)
+    },
+    { body: t.Object({ csrf: t.String() }) },
+  )
 
   /**
    * Sets, or clears, the hostname the dashboard answers on.
@@ -1569,6 +1689,33 @@ export const appRoutes = new Elysia()
   )
 
 // --------------------------------------------------------------- helpers
+
+/**
+ * The sizes endpoints' answer: the snapshot's entries `include` keeps, as
+ * name → bytes, and their total — null when the sizes are not known, there
+ * are none, or any one was not measured, so the page never shows a total
+ * smaller than the truth. no-store: the server-side cache already decides
+ * how fresh a size is, and a browser copy would outlive it.
+ */
+function sizesJson(
+  sizes: VolumeSizes,
+  include: (v: VolumeSizeEntry) => boolean,
+): Response {
+  const entries = sizes.known ? sizes.volumes.filter(include) : []
+  let total: number | null = entries.length > 0 ? 0 : null
+  for (const v of entries) {
+    total = total === null || v.sizeBytes === null ? null : total + v.sizeBytes
+  }
+  return Response.json(
+    {
+      known: sizes.known,
+      // fromEntries, so a volume named `__proto__` is an own key.
+      volumes: Object.fromEntries(entries.map((v) => [v.name, v.sizeBytes])),
+      totalBytes: total,
+    },
+    { headers: NO_STORE },
+  )
+}
 
 /**
  * Settings for a compose resource: the file, the public service and its port,

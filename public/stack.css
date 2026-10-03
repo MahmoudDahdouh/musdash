@@ -23,9 +23,11 @@ textarea.compose-file {
   margin-bottom: 0;
 }
 
-/* The services table sits above the Details/Deployments columns. app.css
-   spaces only card-after-card, and a grid is not a card. */
-.stack-services {
+/* The services and volumes tables sit above the Details/Deployments columns.
+   app.css spaces only card-after-card, and a grid is not a card. Between the
+   two cards the margins collapse into one gap. */
+.stack-services,
+.stack-volumes {
   margin-bottom: var(--s-4);
 }
 

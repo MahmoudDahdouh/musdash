@@ -108,12 +108,26 @@ export interface LayoutData {
  * handler: the project page's resources tab always carries the paste dialog,
  * and a resource page links them when the resource is a stack — on every tab,
  * and even when its source row fails to parse, so the page never half-styles.
+ * Settings links them only while it lists volumes left by deleted stacks,
+ * whose sizes stack.js fills in; with none it stays as it was.
  */
 function rendersCompose(
   page: PageName,
   data: Record<string, unknown>,
 ): boolean {
   if (page === "project") return data.tab === "resources"
+  if (page === "settings") {
+    const kept = data.keptVolumes
+    return (
+      typeof kept === "object" &&
+      kept !== null &&
+      "known" in kept &&
+      kept.known === true &&
+      "items" in kept &&
+      Array.isArray(kept.items) &&
+      kept.items.length > 0
+    )
+  }
   if (page === "resource") {
     const resource = data.resource
     return (

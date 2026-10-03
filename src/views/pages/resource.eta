@@ -41,7 +41,26 @@
         Deploy
       </button>
     </form>
-    <% if (it.resource.previousImage) { %>
+    <%/* A stack rolls back to the file of its newest earlier successful
+         deploy that ran a different file; the route sets stackRollback only
+         when there is one, so the button never repeats what runs now. */%>
+    <% if (isCompose && it.stackRollback) { %>
+    <form
+      method="post"
+      action="/r/<%= it.resource.id %>/rollback"
+      class="inline"
+      data-confirm
+      data-confirm-title="Roll back to the previous Compose file?"
+      data-confirm-body="A new deploy runs the Compose file of the last successful deploy that used a different file, with the current variables. It does not change the file in Settings. Services it does not declare are removed, services whose configuration changed are recreated, and named volumes keep their data."
+      data-confirm-label="Roll back"
+    >
+      <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+      <button class="btn" type="submit" title="Roll back to the previous Compose file">
+        <svg class="icon" aria-hidden="true"><use href="#i-rotate-ccw" /></svg>
+        Rollback
+      </button>
+    </form>
+    <% } else if (!isCompose && it.resource.previousImage) { %>
     <form
       method="post"
       action="/r/<%= it.resource.id %>/rollback"
@@ -136,6 +155,40 @@
           <% } else { %>
           <td class="muted">—</td>
           <% } %>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+  <% } %>
+</div>
+<%/* Read from Docker by label, so a volume the current file no longer
+     declares is listed too: it still holds data. Sizes are not in this HTML —
+     measuring walks every volume on the disk — so stack.js fetches them after
+     load and writes each into its cell, with the words from data-*. */%>
+<div class="card stack stack-volumes">
+  <h2 class="card-title">Volumes</h2>
+  <% if (!it.volumes || !it.volumes.known) { %>
+  <p class="muted">The stack's volumes could not be read from Docker just now. Reload the page to try again.</p>
+  <% } else if (it.volumes.items.length === 0) { %>
+  <p class="muted">No named volumes. A named volume the Compose file declares is listed here once a deploy has created it.</p>
+  <% } else { %>
+  <p class="muted">Named volumes keep their data across deploys and rollbacks. Deleting the stack asks whether to delete them too.</p>
+  <div class="table-scroll" data-volume-sizes="/r/<%= it.resource.id %>/volumes/sizes" data-unknown="unknown">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Volume</th>
+          <th>Docker name</th>
+          <th>Size</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% it.volumes.items.forEach(function (v) { %>
+        <tr>
+          <td class="mono"><%= v.key %></td>
+          <td class="mono"><%= v.name %></td>
+          <td data-volume-size="<%= v.name %>">Measuring…</td>
         </tr>
         <% }) %>
       </tbody>
@@ -928,30 +981,85 @@
 </div>
 <% } %>
 
+<%
+  /* A stack's delete card has three states, from the same volume read the
+     delete job makes: volumes it could not list (deleting keeps whatever
+     there is), none, or N — with an unticked box to delete them too. The
+     count named here is the count the job deletes. With the box, the confirm
+     text is swapped by stack.js from the two data-* texts on the form, the
+     keep text being the default, so without the script the prompt is the
+     safe one. */
+  var vols = isCompose ? it.volumes : null
+  var volsKnown = !!(vols && vols.known)
+  var volCount = volsKnown ? vols.items.length : 0
+  var volWord = volCount === 1 ? 'volume' : 'volumes'
+  var stackBase = 'Every service\'s container, the stack\'s routes and its deployment history are removed.'
+  var keepBody = stackBase + (volCount > 0
+    ? ' Its ' + volCount + ' named ' + volWord + ' ' + (volCount === 1 ? 'is' : 'are') + ' kept, with ' + (volCount === 1 ? 'its' : 'their') + ' data, and listed in Settings, where ' + (volCount === 1 ? 'it' : 'they') + ' can be deleted later.'
+    : !volsKnown ? ' Its named volumes are kept, with their data, and listed in Settings.'
+    : '') + ' This cannot be undone.'
+  var deleteBody = stackBase + ' Its ' + volCount + ' named ' + volWord + ' and all the data in ' + (volCount === 1 ? 'it are' : 'them are') + ' deleted too. This cannot be undone.'
+%>
 <div class="card card-danger stack">
   <h2 class="card-title">Delete resource</h2>
   <% if (isCompose) { %>
   <p class="muted">
     Stops and removes every service's container, the stack's routes and its
-    deployment history. Named volumes are kept, with their data. This cannot
-    be undone.
+    deployment history. This cannot be undone.
   </p>
+  <% if (!volsKnown) { %>
+  <p class="muted">
+    The stack's volumes could not be read from Docker just now, so deleting
+    keeps them, with their data. They will then be listed in
+    <a href="/settings#kept-volumes">Settings</a>, where they can be deleted.
+  </p>
+  <% } %>
   <% } else { %>
   <p class="muted">
-    Stops and removes the container, its route and its volumes. This cannot be
-    undone.
+    Stops and removes the container and its route. This cannot be undone.
   </p>
+  <% } %>
+  <% if (isCompose && volCount > 0) { %>
+  <%/* Outside the form, joined to it by form=, so the card's own spacing
+       lays it out and the form keeps the same markup as every other kind. */%>
+  <div class="field" data-volume-sizes="/r/<%= it.resource.id %>/volumes/sizes">
+    <label class="checkline">
+      <input type="checkbox" name="deleteVolumes" value="1" form="res-delete" aria-describedby="res-delete-volumes-hint" />
+      <span>
+        Also delete <%= volCount === 1 ? 'this volume' : 'these ' + volCount + ' volumes' %>
+        (<span data-volume-total data-unknown="size unknown">measuring…</span>)
+      </span>
+    </label>
+    <ul class="plain">
+      <% vols.items.forEach(function (v) { %>
+      <li class="mono"><%= v.name %></li>
+      <% }) %>
+    </ul>
+    <p class="hint" id="res-delete-volumes-hint">
+      Left unticked, <%= volCount === 1 ? 'it is' : 'they are' %> kept with
+      <%= volCount === 1 ? 'its' : 'their' %> data and listed in Settings,
+      where <%= volCount === 1 ? 'it' : 'they' %> can be deleted later.
+      Ticked, the data is gone for good.
+    </p>
+  </div>
   <% } %>
   <form
     method="post"
     action="/r/<%= it.resource.id %>/delete"
+    <% if (isCompose && volCount > 0) { %>
+    id="res-delete"
+    <% } %>
     data-confirm
     data-confirm-danger
     data-confirm-title="Delete this resource?"
-    <% if (isCompose) { %>
-    data-confirm-body="Every service's container, the stack's routes and its deployment history are removed. Named volumes are kept, with their data. This cannot be undone."
+    <% if (isCompose && volCount > 0) { %>
+    data-confirm-body="<%= keepBody %>"
+    data-confirm-body-keep="<%= keepBody %>"
+    data-confirm-body-delete="<%= deleteBody %>"
+    <% } else if (isCompose) { %>
+    data-confirm-body="<%= keepBody %>"
     <% } else { %>
-    data-confirm-body="The container, its route, its volumes and its deployment history are removed. This cannot be undone."
+    data-confirm-body="The container, its route and its deployment history are removed. This cannot be undone."
     <% } %>
     data-confirm-label="Delete resource"
   >

@@ -157,3 +157,15 @@
     </button>
   </div>
 </div>
+
+<%/* The file this deployment ran, read-only; the route passes it only for a
+     stack. Escaped like every other value — the file is pasted text, and a
+     </pre> in it must stay text. The newline after <pre> is dropped by the
+     HTML parser, so a file that starts with one keeps it. */%>
+<% if (it.composeFile) { %>
+<details class="card">
+  <summary>Compose file this deployment ran</summary>
+  <pre class="logs">
+<%= it.composeFile %></pre>
+</details>
+<% } %>

@@ -29,6 +29,12 @@ import { stopLogStream } from "../logs/stream.ts"
 import { type DeployPayload, runDeploy } from "./deploy.ts"
 import { syncResourceRoutes } from "./routes.ts"
 import { installSourceFetcher } from "../github/tarball.ts"
+import { VolumeRefusedError } from "../volumes/index.ts"
+import {
+  isStackVolumeName,
+  removableKeptVolume,
+  stackVolumesToRemove,
+} from "../volumes/select.ts"
 
 export interface StopPayload {
   resourceId: string
@@ -37,6 +43,18 @@ export interface StopPayload {
 export interface RemovePayload {
   resourceId: string
   deleteRow: boolean
+  /**
+   * A stack's named volumes go too. Only the boolean `true` deletes: a
+   * payload without it — every one queued before S4 — or with any other
+   * value keeps every volume, because the safe reading of an unclear choice
+   * about data is "keep". Carried in the payload, not read from anywhere
+   * else, so a crash and re-run makes the same choice.
+   */
+  deleteVolumes?: boolean
+}
+
+export interface RemoveVolumePayload {
+  name: string
 }
 
 export interface PrunePayload {
@@ -70,16 +88,29 @@ async function runComposeStop(resource: Resource): Promise<void> {
 }
 
 /**
- * Deletes a stack, in the order plan §3.7 gives minus the volume step, which
- * is S4's: routes, then `compose down` (containers and the stack's network),
- * then logs, then the row. Volumes are never removed here — a stack's named
- * volumes hold its data, and deleting them will be an explicit choice. A
- * crash before the row goes re-runs this job, and every step repeats safely.
+ * Deletes a stack, in the order plan §3.7 gives: routes, then `compose down`
+ * (containers and the stack's network), then — only when the user ticked the
+ * box — its named volumes, then logs, then the row.
+ *
+ * `down` never gets `--volumes`: Compose would remove whatever volumes the
+ * CURRENT file declares, which is neither the user's choice nor every volume
+ * the stack ever had. Volumes go one at a time through the Engine instead,
+ * each only after select.ts's label and name rules. Every step repeats safely
+ * and the row goes last, so a crash anywhere re-runs this job with the same
+ * payload — the same choice about volumes — and finishes what is left. A
+ * volume that cannot be removed (one still attached to a container) fails
+ * the job with the row still there, so nothing is half-forgotten.
  */
 async function runComposeRemove(
   resource: Resource,
   payload: RemovePayload,
 ): Promise<void> {
+  // The delete route already wrote 'stopped', but a deploy that ran ahead of
+  // this job writes 'running' when it succeeds. Written again here, so a
+  // removal that then fails (a volume in use) never leaves a row the
+  // reconciler would redeploy.
+  if (payload.deleteRow)
+    updateResource(resource.id, { desiredState: "stopped" })
   stopLogStream(resource.id)
   await deleteResourceRoutes(resource.id)
   try {
@@ -97,10 +128,35 @@ async function runComposeRemove(
       "compose down failed with no containers left; deleting anyway",
     )
   }
+  if (payload.deleteVolumes === true) await removeStackVolumes(resource.id)
   dropBuffer(resource.id)
   removeLogFiles(resource.id)
   if (payload.deleteRow) deleteResource(resource.id)
   publishStatus({ resourceId: resource.id, state: "stopped" })
+}
+
+/**
+ * Removes the stack's named volumes, after `down` has taken its containers.
+ * A list that cannot be read throws, failing the job: it is never taken as
+ * "nothing to delete", which would let the row go and orphan the data
+ * silently. The first removal that fails throws too, for the same reason.
+ */
+async function removeStackVolumes(resourceId: string): Promise<void> {
+  const list = await docker.listVolumes({
+    labelKey: LABEL_RESOURCE,
+    labelValue: resourceId,
+  })
+  const { remove, skipped } = stackVolumesToRemove(list, resourceId)
+  for (const v of skipped) {
+    logger.warn(
+      { resourceId, volume: v.name },
+      "volume carries this resource's id but fails the stack-volume rules; left in place",
+    )
+  }
+  for (const v of remove) {
+    await docker.removeVolume(v.name)
+    logger.info({ resourceId, volume: v.name }, "removed stack volume")
+  }
 }
 
 /**
@@ -157,6 +213,9 @@ async function runRemove(payload: RemovePayload): Promise<void> {
   if (!resource) return
   if (resource.kind === "compose") return runComposeRemove(resource, payload)
 
+  // As for a stack: a deploy ahead of this job may have written 'running'.
+  if (payload.deleteRow)
+    updateResource(resource.id, { desiredState: "stopped" })
   stopLogStream(resource.id)
 
   if (resource.containerId) {
@@ -207,6 +266,45 @@ async function runRemove(payload: RemovePayload): Promise<void> {
   publishStatus({ resourceId: resource.id, state: "stopped" })
 }
 
+/**
+ * Deletes one volume left behind by a deleted stack (the Settings list).
+ *
+ * The route checked the name already, but the job checks everything again
+ * against the daemon's labels as they are NOW: a job waits in the queue, and
+ * a payload is only as trustworthy as whatever inserted it. The volume must
+ * be a stack volume by name and labels, and its resource must be gone — a
+ * live stack's data is never removed from here. A refusal fails the job with
+ * the reason in last_error; a volume already gone is success.
+ */
+async function runRemoveVolume(payload: RemoveVolumePayload): Promise<void> {
+  const name: unknown = payload.name
+  if (typeof name !== "string" || !isStackVolumeName(name)) {
+    throw new VolumeRefusedError("refused: not a stack volume name")
+  }
+  // A list that cannot be read throws and fails the job; it must never read
+  // as "gone".
+  const list = await docker.listVolumes({ labelKey: LABEL_RESOURCE })
+  const volume = list.find((v) => v.name === name)
+  if (!volume) {
+    logger.info(
+      { volume: name },
+      "no musdash stack volume by that name; nothing to remove",
+    )
+    return
+  }
+  const hasRow = (id: string): boolean => getResource(id) !== undefined
+  if (!removableKeptVolume(list, name, hasRow)) {
+    const owner = volume.labels[LABEL_RESOURCE]
+    throw new VolumeRefusedError(
+      typeof owner === "string" && hasRow(owner)
+        ? `refused to remove ${name}: its resource still exists`
+        : `refused to remove ${name}: its labels do not mark it as a musdash stack volume`,
+    )
+  }
+  await docker.removeVolume(name)
+  logger.info({ volume: name }, "removed a kept stack volume")
+}
+
 async function runPrune(payload: PrunePayload): Promise<void> {
   const hours = payload.olderThanHours ?? 168
   const keep = listProtectedImages()
@@ -249,6 +347,7 @@ export const handlers: Record<string, JobHandler> = {
   deploy: (p) => runDeploy(p as unknown as DeployPayload),
   stop: (p) => runStop(p as unknown as StopPayload),
   remove: (p) => runRemove(p as unknown as RemovePayload),
+  remove_volume: (p) => runRemoveVolume(p as unknown as RemoveVolumePayload),
   prune_images: (p) => runPrune(p as unknown as PrunePayload),
   // No payload: the cap comes from config, so a job queued before an operator
   // changed it must not run against the value that was current when it was.

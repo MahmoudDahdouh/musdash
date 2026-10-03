@@ -4256,3 +4256,69 @@ port)` judges only the change's target.
 14. **Known, accepted:** a routed service that loses its last domain and then
     gains one on a different port has its route written by the sync at the
     new port, without a health gate, because it is already on the network.
+
+### D67 — stack volumes: sizes are fetched after the page, deletion is checked label by label
+
+S4 (PHASE-3-PLAN §3.7, §3.8). How a stack's named volumes are shown, kept and
+deleted, and how a stack rolls back:
+
+1. **Sizes never hold a page.** `GET /system/df?type=volume` measures every
+   volume on the host (9.8 s in D65), so the resource page and `/settings`
+   render the volume list from a bounded 2 s `GET /volumes` and fetch sizes
+   afterwards from `/r/:id/volumes/sizes` and `/settings/volumes/sizes`. Those
+   answer within 10 s; a df still running (30 s timeout) keeps filling the
+   cache for the next load. The answer is JSON numbers that `stack.js` writes
+   with `textContent`; every word stays in the templates.
+2. **One cached snapshot** (`src/volumes/sizes.ts`): one shared in-flight df,
+   kept 10 minutes, holding only names, resource ids and sizes of volumes that
+   carry a ULID `musdash.resource_id`, for at most 64 resource ids — the 64
+   using the most disk, since finding big disk users is why the list exists.
+   A failed or timed-out df is remembered as "unknown" for 60 s, so page loads
+   cannot start back-to-back host-wide scans. No timers.
+3. **Amends D66 item 1:** `stack.css`/`stack.js` are also linked on
+   `/settings`, only when the kept-volumes list was read and is non-empty.
+4. **Deleting a stack's volumes is opt-in and checked per volume.** The delete
+   card offers an unchecked box naming the N volumes the job would remove,
+   and only when the list could be read; unreadable means no box, and
+   deleting keeps them. Overview's Volumes list is that same set. The choice
+   rides in the `remove` payload (`deleteVolumes`; only the boolean `true`
+   counts, so older queued jobs keep everything). After `compose down`, the
+   job lists volumes by the exact label `musdash.resource_id=<id>` and removes
+   one only if all of these hold: the label equals the id exactly (checked
+   again client-side), the id is a ULID, `musdash.managed` is `true`, its
+   Compose project is the stack's, its name matches
+   `^musdash-[0-9a-hjkmnp-tv-z]{26}_[a-zA-Z0-9._-]{1,200}$`, and the name's key
+   equals its `musdash.volume` label. Removal is without `force`, so a driver
+   failure is an error rather than a forgotten volume still on disk. An
+   unreadable list or a failed removal fails the job with the row still
+   there; the row goes last, so a crash re-runs the same choice.
+   `compose down` still never gets `--volumes`.
+5. **Delete stops the resource first, twice.** `POST /r/:id/delete` writes
+   `desiredState: stopped` before queueing the remove, and the remove job
+   writes it again before tearing down, because a deploy that ran ahead of it
+   writes `running` on success. Either way the reconciler cannot redeploy a
+   resource whose removal is waiting on a retry.
+6. **Kept volumes are listed, never swept.** `/settings` shows volumes whose
+   `musdash.resource_id` is a ULID with no row. Each can be deleted with a
+   `remove_volume` job; the route checks the name pattern and that no row has
+   that id, never calling Docker, and the job re-checks the pattern, the
+   labels and the missing row before removing. The sidecar volumes
+   (`musdash-caddy-data`, `musdash-caddy-config`, `musdash-buildkit-cache`)
+   carry no labels and fail the pattern, so they are never offered. A refusal
+   fails the job through the queue's normal retries; there is no no-retry
+   class yet.
+7. **Roll back skips an identical file.** `composeRollbackFile` returns the
+   newest earlier succeeded deployment whose file differs from the current
+   one, so a stack deployed twice with one file shows no Roll back button. Like
+   image rollback, rolling back twice toggles between two files.
+8. **The deployed file is shown read-only** on a stack's deployment page, and
+   that page is sent `no-store`, since a Compose file may hold secrets in its
+   text.
+9. **D37's inventory grows** (with S3's sites, which D66 did not count): five
+   keys from S3 (`compose-public-name`, `domain-service-unknown`,
+   `domain-service-name`, `domain-port-required`, `domain-port-conflict`);
+   not-found sites for a domain of another resource (delete, retarget) and
+   for `/r/:id/volumes/sizes` of an unknown or non-stack resource; bad-request
+   sites for retargeting an auto or non-stack row, a refused
+   `/settings/volumes/:name/delete`, and a stack Roll back with no earlier
+   file. `scripts/check-error-pages.ts` drives each.

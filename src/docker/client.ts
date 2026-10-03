@@ -156,6 +156,22 @@ export interface NetworkSummary {
   labels: Record<string, string>
 }
 
+/** A volume as the Engine lists it (`GET /volumes`). */
+export interface VolumeSummary {
+  name: string
+  labels: Record<string, string>
+}
+
+/** A volume with the disk it holds, as `GET /system/df` measures it. */
+export interface VolumeUsage {
+  name: string
+  labels: Record<string, string>
+  /** null when the Engine did not compute it (UsageData null, or Size -1). */
+  sizeBytes: number | null
+  /** null when the Engine did not compute it (UsageData null, or RefCount -1). */
+  refCount: number | null
+}
+
 export interface LogLine {
   stream: "stdout" | "stderr"
   timestamp: string
@@ -264,6 +280,29 @@ export interface DockerClient {
   createVolume(name: string): Promise<void>
   removeVolume(name: string): Promise<void>
   /**
+   * Read-only. Volumes carrying the label `labelKey`, or exactly
+   * `labelKey=labelValue` when a value is given — filtered by the Engine.
+   *
+   * Throws on any failure or a malformed body, and never returns [] for a
+   * list it could not read: the delete paths decide what to remove from this,
+   * and "unreadable" must never read as "nothing there". A `labelKey`
+   * containing "=" throws, since the Engine would split it into key and value.
+   */
+  listVolumes(filter: {
+    labelKey: string
+    labelValue?: string
+  }): Promise<VolumeSummary[]>
+  /**
+   * Read-only. Every volume carrying the label `labelKey`, with its size.
+   *
+   * The Engine measures EVERY volume on the host for this (`/system/df` has
+   * no filter), walking each one's files, so it can take many seconds on a
+   * large host: it is bounded, cached by the caller, and never awaited by a
+   * page render. Filtered to `labelKey` here, client-side. Throws on any
+   * failure, a timeout, or a malformed body.
+   */
+  volumeUsage(labelKey: string): Promise<VolumeUsage[]>
+  /**
    * Reclaims image disk. `keep` lists references that must survive — rollback
    * targets, which the Engine cannot be asked to exempt (its prune filters
    * reject `reference`), so the implementation removes selectively instead.
@@ -335,6 +374,8 @@ export const LABEL_ROLE = "musdash.role"
  * it — see isStackContainer.
  */
 export const LABEL_SERVICE = "musdash.service"
+/** The key a stack volume has in its Compose file (§3.7). */
+export const LABEL_VOLUME = "musdash.volume"
 /** Set by Compose itself on every container, network and volume it creates. */
 export const LABEL_COMPOSE_PROJECT = "com.docker.compose.project"
 

@@ -16,6 +16,8 @@ import {
   type LogOpts,
   type ManagedContainer,
   type NetworkSummary,
+  type VolumeSummary,
+  type VolumeUsage,
 } from "./client.ts"
 import { createDemuxer, createLineAssembler } from "./demux.ts"
 
@@ -809,7 +811,9 @@ export class DockerHttpClient implements DockerClient {
 
   async removeVolume(name: string): Promise<void> {
     const res = await this.request(
-      `/volumes/${encodeURIComponent(name)}?force=true`,
+      // No force: with it the Engine forgets a volume its driver failed to
+      // remove, reporting success while the data stays on disk unseen.
+      `/volumes/${encodeURIComponent(name)}`,
       { method: "DELETE" },
     )
     if (!res.ok && res.status !== 404) {
@@ -817,12 +821,128 @@ export class DockerHttpClient implements DockerClient {
     }
     await res.arrayBuffer().catch(() => undefined)
   }
+
+  async listVolumes(filter: {
+    labelKey: string
+    labelValue?: string
+  }): Promise<VolumeSummary[]> {
+    // The Engine splits a label filter on its first "=" into key and value
+    // (the v1.44 reference writes `<key>:<value>`, but the daemon and the CLI
+    // use "="). A key containing one would silently become a different,
+    // wider filter.
+    if (filter.labelKey.length === 0 || filter.labelKey.includes("=")) {
+      throw new DockerError(
+        `invalid volume label filter key: ${JSON.stringify(filter.labelKey)}`,
+      )
+    }
+    const term =
+      filter.labelValue === undefined
+        ? filter.labelKey
+        : `${filter.labelKey}=${filter.labelValue}`
+    const filters = encodeURIComponent(JSON.stringify({ label: [term] }))
+    const body = await this.json<unknown>(`/volumes?filters=${filters}`)
+    return volumeEntries(body, "/volumes").map((v) => ({
+      name: v.name,
+      labels: v.labels,
+    }))
+  }
+
+  async volumeUsage(labelKey: string): Promise<VolumeUsage[]> {
+    // type=volume makes the Engine measure volumes only (API ≥ 1.42); without
+    // it the call also sizes every image layer and container on the host.
+    // The signal bounds the body as well as the headers, so a daemon that
+    // answers and then stalls mid-walk is cut off too.
+    const signal = AbortSignal.timeout(DF_TIMEOUT_MS)
+    let body: unknown
+    try {
+      body = await this.json<unknown>("/system/df?type=volume", { signal })
+    } catch (err) {
+      if (signal.aborted) {
+        throw new DockerError(
+          `the Docker daemon did not measure volume sizes within ${DF_TIMEOUT_MS / 1000} s`,
+        )
+      }
+      throw err
+    }
+    return volumeEntries(body, "/system/df").flatMap((v) =>
+      Object.hasOwn(v.labels, labelKey)
+        ? [
+            {
+              name: v.name,
+              labels: v.labels,
+              sizeBytes: usageCount(v.usage, "Size"),
+              refCount: usageCount(v.usage, "RefCount"),
+            },
+          ]
+        : [],
+    )
+  }
 }
 
 // ------------------------------------------------------------------ helpers
 
 /** How long containerMemory waits for the Engine's one-shot stats. */
 const STATS_TIMEOUT_MS = 5_000
+
+/** How long volumeUsage waits for `/system/df`, which walks every volume. */
+const DF_TIMEOUT_MS = 30_000
+
+interface RawVolume {
+  name: string
+  labels: Record<string, string>
+  /** The `UsageData` object as sent; only `/system/df` fills it. */
+  usage: unknown
+}
+
+/**
+ * The `Volumes` array of a v1.44 `VolumeListResponse` or `SystemDataUsage`
+ * body, each entry a `Volume` whose `Name` is required and whose `Labels` the
+ * df example shows as null.
+ *
+ * Strict where `listNetworks` is lenient, on purpose: a delete decides what
+ * to remove from this list, so a body that is not the documented shape throws
+ * rather than reading as "no volumes".
+ */
+function volumeEntries(body: unknown, path: string): RawVolume[] {
+  const list: unknown =
+    typeof body === "object" && body !== null
+      ? Reflect.get(body, "Volumes")
+      : undefined
+  if (!Array.isArray(list)) {
+    throw new DockerError(`docker ${path} returned no volume list`)
+  }
+  return list.map((v: unknown) => {
+    const name: unknown =
+      typeof v === "object" && v !== null ? Reflect.get(v, "Name") : undefined
+    if (typeof v !== "object" || v === null || typeof name !== "string") {
+      throw new DockerError(`docker ${path} returned a volume without a name`)
+    }
+    const labels: unknown = Reflect.get(v, "Labels")
+    // fromEntries defines own properties, so a label named __proto__ cannot
+    // reach the prototype of the record every later check reads.
+    const out: Record<string, string> = Object.fromEntries(
+      typeof labels === "object" && labels !== null
+        ? Object.entries(labels).filter(
+            (e): e is [string, string] => typeof e[1] === "string",
+          )
+        : [],
+    )
+    return { name, labels: out, usage: Reflect.get(v, "UsageData") }
+  })
+}
+
+/**
+ * `UsageData.Size` or `.RefCount`: an int64 the Engine sets to -1 when it did
+ * not compute it, and the whole object may be null. Display-only figures, so
+ * anything other than a non-negative integer reads as "not known".
+ */
+function usageCount(usage: unknown, field: "Size" | "RefCount"): number | null {
+  if (typeof usage !== "object" || usage === null) return null
+  const value: unknown = Reflect.get(usage, field)
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : null
+}
 
 /**
  * The part of `GET /containers/{id}/stats` read here. On cgroup v2 `stats` is

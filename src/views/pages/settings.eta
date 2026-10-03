@@ -218,6 +218,85 @@ ufw deny 8000/tcp</code></pre>
   </details>
 </div>
 
+<%
+  /* Volumes a stack deleted without them left behind. Drawn only when there
+     is something to say: some to list, a list Docker could not give, or a
+     delete just queued — so a server with none sees the page as before.
+     Sizes are filled in by stack.js after load; the words it writes come
+     from data-* here. */
+  var kv = it.keptVolumes
+%>
+<% if (!kv.known || kv.items.length > 0 || it.volumeQueued) { %>
+<div class="card card-prose stack" id="kept-volumes">
+  <h2 class="card-title">Volumes left by deleted resources</h2>
+
+  <% if (it.volumeQueued) { %>
+  <div class="notice notice-info" role="status">
+    <svg class="icon" aria-hidden="true"><use href="#i-info" /></svg>
+    <div>
+      The volume is queued for deletion, and leaves this list once that has
+      run — reload in a moment. If it is still listed after that, it could not
+      be deleted, for example because a container still uses it; the musdash
+      log says why.
+    </div>
+  </div>
+  <% } %>
+
+  <% if (!kv.known) { %>
+  <p class="muted">
+    Docker's volumes could not be listed just now, so the volumes deleted
+    stacks left behind cannot be shown. Reload the page to try again.
+  </p>
+  <% } else if (kv.items.length === 0) { %>
+  <p class="muted">No volumes are left by deleted resources.</p>
+  <% } else { %>
+  <p class="muted">
+    A stack deleted without its volumes leaves them here, with their data.
+    Nothing deletes them automatically.
+  </p>
+  <div class="table-scroll" data-volume-sizes="/settings/volumes/sizes" data-unknown="unknown">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Volume</th>
+          <th>Docker name</th>
+          <th>Size</th>
+          <th><span class="vh">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <% kv.items.forEach(function (v) { %>
+        <tr>
+          <td class="mono"><%= v.key %></td>
+          <td class="mono"><%= v.name %></td>
+          <td data-volume-size="<%= v.name %>">Measuring…</td>
+          <td>
+            <form
+              method="post"
+              action="/settings/volumes/<%= encodeURIComponent(v.name) %>/delete"
+              class="inline"
+              data-confirm
+              data-confirm-danger
+              data-confirm-title="Delete this volume?"
+              data-confirm-body="<%= v.name %> and all the data in it are deleted. This cannot be undone."
+              data-confirm-label="Delete volume"
+            >
+              <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+              <button class="btn btn-danger btn-sm" type="submit">
+                <svg class="icon" aria-hidden="true"><use href="#i-trash" /></svg>
+                Delete
+              </button>
+            </form>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+  <% } %>
+</div>
+<% } %>
+
 <div class="card card-prose stack">
   <h2 class="card-title">GitHub</h2>
   <p class="muted">
