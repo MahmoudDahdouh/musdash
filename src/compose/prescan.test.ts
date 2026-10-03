@@ -114,8 +114,8 @@ describe("prescanCompose: host-file reads and file shape", () => {
     ])
   })
 
-  test("too large: one byte over 128 KiB, counted in bytes", () => {
-    expect(MAX_COMPOSE_BYTES).toBe(128 * 1024)
+  test("too large: one byte over 64 KiB, counted in bytes", () => {
+    expect(MAX_COMPOSE_BYTES).toBe(64 * 1024)
     const base = "services: {a: {image: nginx}}\n#"
     const exact = base + "x".repeat(MAX_COMPOSE_BYTES - base.length)
     expect(codes(exact)).toEqual([])

@@ -19,12 +19,15 @@ import resourceSrc from "./pages/resource.eta" with { type: "text" }
 import settingsSrc from "./pages/settings.eta" with { type: "text" }
 import setupSrc from "./pages/setup.eta" with { type: "text" }
 import statusSrc from "./pages/status.eta" with { type: "text" }
+import composeRefusalPartialSrc from "./partials/compose-refusal.eta" with { type: "text" }
 import deployImagePartialSrc from "./partials/deploy-image.eta" with { type: "text" }
 import errorsPartialSrc from "./partials/errors.eta" with { type: "text" }
 import statusPartialSrc from "./partials/status.eta" with { type: "text" }
 import appCss from "../../public/app.css" with { type: "text" }
 import appJs from "../../public/app.js" with { type: "text" }
 import alpineJs from "../../public/alpine.js" with { type: "text" }
+import stackCss from "../../public/stack.css" with { type: "text" }
+import stackJs from "../../public/stack.js" with { type: "text" }
 // Inlined by `bun build --compile` like the imports above, so the binary
 // reports the version it was built from, not whatever package.json says later.
 import { version as musdashVersion } from "../../package.json"
@@ -35,6 +38,7 @@ const eta = new Eta({ autoEscape: true, cache: true })
 eta.loadTemplate("@status", statusPartialSrc)
 eta.loadTemplate("@errors", errorsPartialSrc)
 eta.loadTemplate("@deploy-image", deployImagePartialSrc)
+eta.loadTemplate("@compose-refusal", composeRefusalPartialSrc)
 
 const PAGES = {
   setup: setupSrc,
@@ -57,6 +61,10 @@ export const assets = {
     body: `${alpineJs}\n;${appJs}`,
     type: "text/javascript; charset=utf-8",
   },
+  // Page-scoped: only pages that render Compose content link these (see
+  // rendersCompose), so they cost an image-only dashboard nothing.
+  "stack.css": { body: stackCss, type: "text/css; charset=utf-8" },
+  "stack.js": { body: stackJs, type: "text/javascript; charset=utf-8" },
 } as const
 
 export interface NavEnvironment {
@@ -94,6 +102,23 @@ export interface LayoutData {
   rssMb?: number
 }
 
+/**
+ * Whether a page draws a Compose form or a stack, and so links stack.css and
+ * stack.js. Decided here from the view data the page already gets, not by each
+ * handler: the project page's resources tab always carries the paste dialog,
+ * and a resource page only belongs to a stack.
+ */
+function rendersCompose(
+  page: PageName,
+  data: Record<string, unknown>,
+): boolean {
+  if (page === "project") return data.tab === "resources"
+  if (page === "resource") {
+    return data.compose !== undefined || data.composeDraft !== undefined
+  }
+  return false
+}
+
 export function renderPage(
   page: PageName,
   data: Record<string, unknown>,
@@ -120,6 +145,7 @@ export function renderPage(
     activeSettings: layout.activeSettings ?? false,
     version: musdashVersion,
     assetUrl,
+    stackAssets: rendersCompose(page, data),
     body,
   })
 }

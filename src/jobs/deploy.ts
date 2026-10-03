@@ -2,7 +2,6 @@ import { isIP } from "node:net"
 import { caddy, routeIdFor } from "../caddy/client.ts"
 import { CADDY_CONTAINER } from "../caddy/bootstrap.ts"
 import { MIGRATE_LABEL } from "../caddy/kernel.ts"
-import { CERT_WAIT_MS, waitForCertificate } from "../caddy/tls-probe.ts"
 import { BUILD_PLACEHOLDER, isBuiltImageTag } from "../build/images.ts"
 import {
   type BuildOptions,
@@ -11,7 +10,7 @@ import {
 } from "./build.ts"
 import { config } from "../config.ts"
 import {
-  type ContainerState,
+  isStackContainer,
   isValidImageRef,
   LABEL_RESOURCE,
   LABEL_ROLE,
@@ -52,6 +51,8 @@ import {
 } from "../queue/index.ts"
 import { resourceState } from "../resource-state.ts"
 import { startLogStream, stopLogStream } from "../logs/stream.ts"
+import { runComposeDeploy } from "./deploy-compose.ts"
+import { awaitCertificates, healthGate } from "./health-gate.ts"
 import { routeHosts } from "./routes.ts"
 
 export interface DeployPayload {
@@ -142,6 +143,9 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
   let image = payload.image
   const ctx = getResourceContext(resourceId)
   if (!ctx) throw new Error(`resource ${resourceId} no longer exists`)
+  // A stack is deployed by Compose, not by the one-container swap below, and
+  // shares none of it past this line (deploy-compose.ts).
+  if (ctx.resource.kind === "compose") return runComposeDeploy(payload)
   const { resource, environment, project } = ctx
 
   // Filled by resolveEnvVars inside the try below, but declared here so that
@@ -535,9 +539,15 @@ export async function runDeploy(payload: DeployPayload): Promise<void> {
       // rollback or a reconcile of a git resource deploys an existing tag
       // without building, and keying on that clobbered sourceJson on exactly
       // those paths. Found by rolling back a git resource and reading the row.
+      //
+      // Only "image" rewrites it: a compose resource never reaches this line
+      // (runDeploy dispatches it away at the top), and if it ever did, a
+      // `{image}` here would erase its Compose file (§2 item 4).
       ...(resource.kind === "git"
         ? { builtImage: image }
-        : { sourceJson: JSON.stringify({ image }) }),
+        : resource.kind === "image"
+          ? { sourceJson: JSON.stringify({ image }) }
+          : {}),
       // Only remember a genuinely different previous image, so rollback never
       // points at the image already running.
       previousImage:
@@ -726,6 +736,9 @@ async function reclaimStrays(
     // Never a sidecar — see the identical guard in the reconciler's orphan
     // sweep. A resource deploy must not be able to remove the shared proxy.
     if (c.labels[LABEL_ROLE]) continue
+    // Never a stack service: Compose owns those, and every one but the
+    // resource's containerId would read as a stray here.
+    if (isStackContainer(c.labels)) continue
     if (c.labels[LABEL_RESOURCE] !== resourceId) continue
     if (c.id === keepContainerId) continue
 
@@ -742,159 +755,6 @@ async function currentImageOf(
   if (!containerId) return null
   const containers = await docker.listManagedContainers().catch(() => [])
   return containers.find((c) => c.id === containerId)?.image ?? null
-}
-
-/**
- * Waits, under one shared deadline, for the proxy to present a certificate for
- * each of `hosts`, and says per host in the deploy log whether it did.
- *
- * Must never throw. It runs after the route switch, and the outer catch in
- * runDeploy treats any throw past routeSwitchAttempted as a FAILED switch: it
- * would mark a deploy failed whose traffic already moved to a healthy
- * container, and leave the resource row pointing at the old one. So the whole
- * body is caught here and logged, and the deploy carries on.
- *
- * Socket and TLS error text goes to pino only; the deploy log gets the fixed
- * sentences below, through emit, like every other line.
- */
-async function awaitCertificates(
-  resourceId: string,
-  hosts: string[],
-  emit: (s: string) => void,
-): Promise<void> {
-  try {
-    emit(`Waiting for a certificate for ${hosts.join(", ")}...`)
-    const deadline = Date.now() + CERT_WAIT_MS
-    await Promise.all(
-      hosts.map((host) =>
-        waitForCertificate(host, deadline).then((result) => {
-          if (result.ready) {
-            emit(
-              `Certificate ready for ${host} (${Math.ceil(result.elapsedMs / 1000)}s)`,
-            )
-            return
-          }
-          const { reason, detail } = result.last.ok
-            ? { reason: undefined, detail: undefined }
-            : result.last
-          logger.warn(
-            { resourceId, host, reason, detail },
-            "no certificate for a new host before the deadline",
-          )
-          emit(
-            `No certificate for ${host} after ${CERT_WAIT_MS / 1000}s. Caddy keeps retrying; ` +
-              `check that ${host} points at this server and ports 80 and 443 are open.`,
-          )
-        }),
-      ),
-    )
-  } catch (err) {
-    // The name only: this path skips the deploy's redaction, so no message.
-    logger.warn(
-      { resourceId, errorName: err instanceof Error ? err.name : typeof err },
-      "certificate wait failed; continuing the deploy",
-    )
-  }
-}
-
-/**
- * Waits for the new container to be usable, in the precedence §9 defines.
- *
- * musdash runs on the host, so it dials the container's IP rather than its name
- * — Docker's embedded DNS only resolves from inside the network (DECISIONS D2).
- */
-async function healthGate(
-  containerId: string,
-  containerPort: number | null,
-  healthPath: string | null,
-  emit: (s: string) => void,
-): Promise<void> {
-  const deadline = Date.now() + config.healthTimeoutSec * 1000
-
-  // (a) explicit HTTP check
-  if (healthPath && containerPort) {
-    emit(`Polling http://<container>:${containerPort}${healthPath}`)
-    for (;;) {
-      if (Date.now() > deadline) {
-        throw new Error(
-          `health check did not pass within ${config.healthTimeoutSec}s`,
-        )
-      }
-      const state = await docker.inspectContainer(containerId)
-      assertNotRestarted(state)
-      if (!state.running) {
-        throw new Error(
-          `container exited during the health check (code ${state.exitCode})`,
-        )
-      }
-      if (state.ipAddress) {
-        try {
-          const res = await fetch(
-            `http://${state.ipAddress}:${containerPort}${healthPath}`,
-            { signal: AbortSignal.timeout(5000) },
-          )
-          if (res.ok) return
-          emit(`Health check returned ${res.status}, retrying...`)
-        } catch {
-          // Not up yet; keep polling until the deadline.
-        }
-      }
-      await Bun.sleep(1000)
-    }
-  }
-
-  // (b) the image declares its own HEALTHCHECK
-  const initial = await docker.inspectContainer(containerId)
-  if (initial.health !== "none") {
-    emit("Image declares a HEALTHCHECK, polling docker health...")
-    for (;;) {
-      if (Date.now() > deadline) {
-        throw new Error(
-          `container did not report healthy within ${config.healthTimeoutSec}s`,
-        )
-      }
-      const state = await docker.inspectContainer(containerId)
-      assertNotRestarted(state)
-      if (state.health === "healthy") return
-      if (state.health === "unhealthy") {
-        throw new Error("container reported unhealthy")
-      }
-      if (!state.running) {
-        throw new Error(`container exited (code ${state.exitCode})`)
-      }
-      await Bun.sleep(1000)
-    }
-  }
-
-  // (c) fallback: still running after 5 seconds
-  emit("No health check configured; requiring 5s of uptime")
-  await Bun.sleep(5000)
-  const state = await docker.inspectContainer(containerId)
-  assertNotRestarted(state)
-  if (!state.running) {
-    throw new Error(
-      `container exited within 5s (code ${state.exitCode}) — check the logs above`,
-    )
-  }
-}
-
-/**
- * Fails the gate for a container Docker has already restarted.
- *
- * The container was created by this deploy moments ago, so any restart means it
- * crashed. `running` alone cannot see that: the Engine reports State.Running as
- * true while it restarts a container under `unless-stopped`, so a crash loop
- * read as up and "succeeded" — and the reconciler, whose container list does
- * report the restarting state, then redeployed it every 30 seconds (L-2).
- */
-function assertNotRestarted(state: ContainerState): void {
-  if (state.restartCount > 0) {
-    throw new Error(
-      `container crashed and Docker restarted it (${state.restartCount} ${
-        state.restartCount === 1 ? "restart" : "restarts"
-      }) — check the logs above`,
-    )
-  }
 }
 
 export type DeployTrigger =
@@ -1132,6 +992,9 @@ export function redeployable(
   resource: Resource,
 ): boolean {
   if (!FINISHED.has(deployment.status)) return false
+  // A stack repeats the file the row recorded (§3.8); a row without one
+  // predates it, or was never a compose deploy.
+  if (resource.kind === "compose") return deployment.composeFile !== null
   if (resource.kind === "git") {
     return (
       (deployment.commitSha !== null &&
@@ -1164,6 +1027,12 @@ export function enqueueRedeploy(
   // job step 3 would have to reject.
   if (!redeployable(source, resource)) {
     throw new Error(`deployment ${source.id} cannot be deployed again`)
+  }
+  // A stack's redeploy is enqueueComposeDeploy's; this writes an image job.
+  if (resource.kind === "compose") {
+    throw new Error(
+      `deployment ${source.id} is a stack; use enqueueComposeDeploy`,
+    )
   }
   const git = resource.kind === "git"
   const image =

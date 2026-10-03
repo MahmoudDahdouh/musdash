@@ -73,7 +73,7 @@ export interface Refusal {
 
 /** `resources.source_json` for a compose resource (§3.1). */
 export interface ComposeSource {
-  /** The user's YAML exactly as pasted or templated; at most 128 KiB. */
+  /** The user's YAML exactly as pasted or templated; at most 64 KiB. */
   composeFile: string
   origin: "paste" | "template"
   templateId?: string

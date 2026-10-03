@@ -1,5 +1,10 @@
 import { config } from "../config.ts"
 import { logger } from "../log.ts"
+import {
+  SpawnError,
+  spawnStreaming,
+  type StreamingResult,
+} from "../proc/stream.ts"
 import { BuildError, type BuildContext } from "./types.ts"
 
 /**
@@ -62,20 +67,6 @@ const WEBPACK_FLAG_AUTO_ADVICE =
 /** The longest a silent build waits between starvation checks. */
 const STALL_POLL_MAX_MS = 15_000
 
-/**
- * How long a stopped builder gets to exit after SIGTERM before SIGKILL. Both
- * railpack and buildctl cancel their solve on SIGTERM, which is the polite way
- * to ask the daemon to stop; one that cannot even do that is killed.
- */
-const KILL_GRACE_MS = 10_000
-
-/**
- * How long the output pipes get to drain once the builder has exited. A
- * process the builder started can inherit them and outlive it; waiting for
- * that one to close them would hold the single worker indefinitely.
- */
-const DRAIN_MS = 2_000
-
 /** "30 minutes", "1 minute", "12 seconds". */
 function duration(ms: number): string {
   const [n, unit] =
@@ -88,10 +79,10 @@ function duration(ms: number): string {
 /**
  * Runs a build subprocess, streaming both streams through the redactor.
  *
- * stdout and stderr are read concurrently and merged: BuildKit writes progress
- * to stderr and results to stdout, so consuming them in sequence would block on
- * one while the other's pipe filled, and the build would deadlock at the buffer
- * size rather than finish.
+ * The pump itself — concurrent stdout/stderr, partial-line holdback, the
+ * timeout, SIGTERM then SIGKILL, the drain — is spawnStreaming's
+ * (src/proc/stream.ts). What stays here is what is specific to a build: the
+ * starvation watchdog and reading the output for the reason a build failed.
  */
 export async function runBuilder(
   bin: string,
@@ -100,40 +91,11 @@ export async function runBuilder(
   env: Record<string, string>,
   cwd: string = config.buildsDir,
 ): Promise<void> {
-  let proc: ReturnType<typeof Bun.spawn>
-  try {
-    proc = Bun.spawn([bin, ...args], {
-      // The build context is passed as an argument, never as the working
-      // directory, so nothing here depends on where musdash was started.
-      cwd,
-      env: { ...process.env, ...env },
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-  } catch (cause) {
-    throw new BuildError(
-      `could not run ${bin}: ${(cause as Error).message}. Is it installed and on PATH?`,
-    )
-  }
-
-  // Why the build was stopped, if it was. Decided before the process exits, so
-  // the error names the cause rather than the builder's exit code: a stopped
-  // railpack exits 1 with "context canceled", which reads as a code failure.
-  let stopped: "timeout" | "starved" | null = null
-  let killTimer: Timer | null = null
-  // Set the moment the process exits, ahead of the code below. The stall
-  // verdict is a stats round-trip that can land after the build has finished,
-  // and must then change nothing — no kill, no verdict.
-  let exited = false
-  void proc.exited.then(() => {
-    exited = true
-  })
-  const stop = (why: "timeout" | "starved") => {
-    if (stopped !== null || exited) return
-    stopped = why
-    proc.kill()
-    killTimer = setTimeout(() => proc.kill("SIGKILL"), KILL_GRACE_MS)
-  }
+  // A starved build is stopped through this; the timeout is spawnStreaming's.
+  // Whichever stop lands first is the one the result names, so the error
+  // names the cause rather than the builder's exit code: a stopped railpack
+  // exits 1 with "context canceled", which reads as a code failure.
+  const starve = new AbortController()
 
   let lastOutputAt = Date.now()
   let sawMemoryKill = false
@@ -147,8 +109,6 @@ export async function runBuilder(
     ctx.onLog(line)
   }
 
-  const timer = setTimeout(() => stop("timeout"), ctx.timeoutMs)
-
   // A build starved at BuildKit's cap is not killed: the kernel reclaims the
   // step's file pages over and over instead of OOM-killing it, and the build
   // prints nothing until the timeout ends it 30 minutes later (P-9). Silence alone is not enough to stop a
@@ -161,7 +121,7 @@ export async function runBuilder(
     let checking = false
     watchdog = setInterval(
       () => {
-        if (checking || stopped !== null) return
+        if (checking || starve.signal.aborted) return
         if (Date.now() - lastOutputAt < stall.afterMs) return
         checking = true
         stall
@@ -171,7 +131,7 @@ export async function runBuilder(
               // Still silent: a line printed during the round-trip means the
               // build is moving and the verdict is stale.
               const silent = Date.now() - lastOutputAt >= stall.afterMs
-              if (starved && silent) stop("starved")
+              if (starved && silent) starve.abort()
             },
             (err: unknown) => {
               logger.warn(
@@ -196,27 +156,26 @@ export async function runBuilder(
       .map((a) => ` ${a}`)
       .join("")
   try {
-    const readers: { cancel(): Promise<void> }[] = []
-    // Observed from the start: the process can run for the whole timeout
-    // before anything awaits these, and a pipe error in that time must not be
-    // an unhandled rejection. It still surfaces through `finished` below if it
-    // lands before the drain window ends; after that, it is about output
-    // nobody is waiting for any more.
-    const finished = Promise.all([
-      pump(proc.stdout, onLog, readers),
-      pump(proc.stderr, onLog, readers),
-    ]).then(() => true)
-    finished.catch(() => {})
-    const code = await proc.exited
-    // Normally the pipes close with the process and this returns at once.
-    const drained = await Promise.race([
-      finished,
-      Bun.sleep(DRAIN_MS).then(() => false),
-    ])
-    if (!drained) {
-      // Cancelling ends the pending reads; its own failure changes nothing.
-      for (const reader of readers) void reader.cancel().catch(() => {})
+    let result: StreamingResult
+    try {
+      result = await spawnStreaming({
+        argv: [bin, ...args],
+        // The build context is passed as an argument, never as the working
+        // directory, so nothing here depends on where musdash was started.
+        cwd,
+        env: { ...process.env, ...env },
+        timeoutMs: ctx.timeoutMs,
+        onLine: onLog,
+        signal: starve.signal,
+      })
+    } catch (cause) {
+      if (!(cause instanceof SpawnError)) throw cause
+      throw new BuildError(
+        `could not run ${bin}: ${cause.message}. Is it installed and on PATH?`,
+      )
     }
+    const code = result.exitCode
+    const stopped = result.stopped === "aborted" ? "starved" : result.stopped
     // A builder that exits 0 built the image, whatever was decided about it
     // while it ran: a stop that crossed its last line in flight changes nothing.
     if (code === 0) return
@@ -242,44 +201,6 @@ export async function runBuilder(
     }
     throw new BuildError(`${bin} exited with code ${code}`)
   } finally {
-    clearTimeout(timer)
-    if (killTimer) clearTimeout(killTimer)
     if (watchdog) clearInterval(watchdog)
   }
-}
-
-/**
- * Streams a pipe line by line into the log sink.
- *
- * Lines split across chunk boundaries exactly as Docker log frames do, so the
- * partial tail is held until the next chunk completes it. Emitting a partial
- * line would also defeat redaction: a secret bisected by a chunk boundary
- * matches nothing and reaches the log intact.
- */
-async function pump(
-  // Bun types a spawned pipe as a union with a file descriptor, because the
-  // same field carries either depending on the stdio mode requested. Both are
-  // "pipe" here, so the stream branch is the only reachable one — narrowed
-  // rather than cast, so a future stdio change fails loudly instead of at
-  // runtime.
-  stream: unknown,
-  onLog: (line: string) => void,
-  /** Collects the reader, so the caller can cancel one left open. */
-  readers: { cancel(): Promise<void> }[],
-): Promise<void> {
-  if (!(stream instanceof ReadableStream)) return
-  const reader = (stream as ReadableStream<Uint8Array>).getReader()
-  readers.push(reader)
-  const decoder = new TextDecoder()
-  let partial = ""
-
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    partial += decoder.decode(value, { stream: true })
-    const lines = partial.split("\n")
-    partial = lines.pop() ?? ""
-    for (const line of lines) onLog(line)
-  }
-  if (partial) onLog(partial)
 }

@@ -476,6 +476,25 @@ export function routeIdFor(resourceId: string): string {
   return `${ROUTE_ID_PREFIX}${resourceId}`
 }
 
+/**
+ * The route of one routed service of a stack (§3.6):
+ * `musdash-<resourceId>--<service>`. A double dash cannot end a ULID, so this
+ * never collides with another resource's routeIdFor, nor with the dashboard's
+ * tail routes.
+ */
+export function routeIdForService(resourceId: string, service: string): string {
+  return `${routeIdFor(resourceId)}--${service}`
+}
+
+/**
+ * Whether a route id belongs to a resource: its own route, or any of its
+ * services' routes. What a stop or a delete removes.
+ */
+export function isRouteOfResource(id: string, resourceId: string): boolean {
+  const own = routeIdFor(resourceId)
+  return id === own || id.startsWith(`${own}--`)
+}
+
 /** `<resource>-<environment>.<wildcard>` (§10). */
 export function autoDomainFor(
   resourceName: string,

@@ -34,7 +34,13 @@ import {
  * anchors and `<<` merges, so what is checked is what Compose will read.
  */
 
-export const MAX_COMPOSE_BYTES = 128 * 1024
+/**
+ * 64 KiB, not more, because the file arrives as a URL-encoded form field and
+ * forms are capped at 256 KiB before parsing (D35): percent-encoding can triple
+ * a byte, so 64 KiB is the largest file that always fits. Real Compose files,
+ * templates included, are a few KiB.
+ */
+export const MAX_COMPOSE_BYTES = 64 * 1024
 
 export interface PrescanResult {
   /** Empty when the file passes. */
@@ -129,7 +135,7 @@ function scanString(s: string, add: AddReference): void {
 /**
  * Every string VALUE in the document; keys are not interpolated. `Bun.YAML`
  * shares one object between an anchor and its aliases and can build cycles
- * (`&a [*a]`), so each object is visited once — without that, 128 KiB of
+ * (`&a [*a]`), so each object is visited once — without that, 64 KiB of
  * nested aliases expands exponentially.
  */
 function collectReferences(doc: unknown): Reference[] {

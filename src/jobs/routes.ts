@@ -5,12 +5,20 @@ import {
   ROUTE_ID_PREFIX,
   type RouteSpec,
   routeIdFor,
+  routeIdForService,
 } from "../caddy/client.ts"
-import { getEnvironment, listAllResources, listDomains } from "../db/queries.ts"
+import { config } from "../config.ts"
+import {
+  composeSource,
+  getEnvironment,
+  listAllResources,
+  listDomains,
+} from "../db/queries.ts"
 import type { Resource } from "../db/schema.ts"
 import { docker } from "../docker/impl.ts"
 import { logger } from "../log.ts"
 import { getDashboardHost } from "../settings.ts"
+import { serviceContainerName } from "./compose-plan.ts"
 
 /**
  * Every hostname a resource answers on: its attached domains plus the auto
@@ -35,12 +43,60 @@ export function routeHosts(
   return hosts.filter((h) => h !== dashboard)
 }
 
-/** The hosts a resource should be routed on, or [] when it should not be. */
-function wantedHosts(resource: Resource): string[] {
-  if (resource.desiredState !== "running" || !resource.containerPort) return []
+/**
+ * routeHosts for one service of a stack: the domains that name this service,
+ * or name none (a row from before service routing), plus the auto subdomain —
+ * which always belongs to the public service — minus the dashboard's.
+ */
+export function routeHostsForService(
+  resourceId: string,
+  resourceName: string,
+  environmentName: string,
+  service: string,
+): string[] {
+  const dashboard = getDashboardHost()
+  const hosts = listDomains(resourceId)
+    .filter((d) => d.serviceName === null || d.serviceName === service)
+    .map((d) => d.host)
+  const auto = autoDomainFor(resourceName, environmentName)
+  if (auto && !hosts.includes(auto)) hosts.push(auto)
+  return hosts.filter((h) => h !== dashboard)
+}
+
+/** What a wanted route is, and how to find its upstream when it has none. */
+interface WantedRoute {
+  resource: Resource
+  hosts: string[]
+  /** For a stack: the routed service and its port. Null for image and git. */
+  service: { name: string; port: number } | null
+}
+
+/** The route a resource should have, or null when it should have none. */
+function wantedRoute(resource: Resource): [string, WantedRoute] | null {
+  if (resource.desiredState !== "running") return null
   const environment = getEnvironment(resource.environmentId)
-  if (!environment) return []
-  return routeHosts(resource.id, resource.name, environment.name)
+  if (!environment) return null
+  if (resource.kind === "compose") {
+    const source = composeSource(resource)
+    const name = source?.publicService ?? null
+    const port = source?.publicPort ?? null
+    if (name === null || port === null) return null
+    const hosts = routeHostsForService(
+      resource.id,
+      resource.name,
+      environment.name,
+      name,
+    )
+    if (hosts.length === 0) return null
+    return [
+      routeIdForService(resource.id, name),
+      { resource, hosts, service: { name, port } },
+    ]
+  }
+  if (!resource.containerPort) return null
+  const hosts = routeHosts(resource.id, resource.name, environment.name)
+  if (hosts.length === 0) return null
+  return [routeIdFor(resource.id), { resource, hosts, service: null }]
 }
 
 /**
@@ -62,16 +118,31 @@ function wantedHosts(resource: Resource): string[] {
  * the container back without any deploy or sync to correct it (N-3). No route
  * and no container means nothing to point at; the next deploy writes it.
  */
-async function currentUpstream(resource: Resource): Promise<string | null> {
-  const existing = await caddy.getRouteUpstream(routeIdFor(resource.id))
+async function currentUpstream(
+  id: string,
+  route: WantedRoute,
+): Promise<string | null> {
+  const { resource, service } = route
+  const existing = await caddy.getRouteUpstream(id)
   const port = existing
     ? existing.slice(existing.lastIndexOf(":") + 1)
-    : resource.containerPort
-  if (resource.containerId && port) {
-    const state = await docker
-      .inspectContainer(resource.containerId)
-      .catch(() => null)
-    if (state?.running) return `${state.name}:${port}`
+    : (service?.port ?? resource.containerPort)
+  // A stack service is looked up by the name Compose gives it, and dialled
+  // only when it is on the shared network: the deploy joins a service to it
+  // only once it is routed (§3.4), so a public service chosen in Settings
+  // since the last deploy is not reachable until the next one.
+  const container =
+    service === null
+      ? resource.containerId
+      : serviceContainerName(resource.id, service.name)
+  if (container && port) {
+    const state = await docker.inspectContainer(container).catch(() => null)
+    if (
+      state?.running &&
+      (service === null || state.networks.includes(config.network))
+    ) {
+      return `${state.name}:${port}`
+    }
   }
   return existing
 }
@@ -106,18 +177,17 @@ async function currentUpstream(resource: Resource): Promise<string | null> {
  * stop the rest from being routed.
  */
 export async function syncResourceRoutes(): Promise<void> {
-  const wanted = new Map<string, { resource: Resource; hosts: string[] }>()
+  const wanted = new Map<string, WantedRoute>()
   for (const resource of listAllResources()) {
-    const hosts = wantedHosts(resource)
-    if (hosts.length > 0) {
-      wanted.set(routeIdFor(resource.id), { resource, hosts })
-    }
+    const route = wantedRoute(resource)
+    if (route !== null) wanted.set(route[0], route[1])
   }
 
   let written = 0
-  for (const [id, { resource, hosts }] of wanted) {
+  for (const [id, route] of wanted) {
+    const { resource, hosts } = route
     try {
-      const upstream = await currentUpstream(resource)
+      const upstream = await currentUpstream(id, route)
       if (upstream === null) continue
       const spec: RouteSpec = { id, hosts, upstream }
       if (await caddy.ensureRoute(spec)) written++

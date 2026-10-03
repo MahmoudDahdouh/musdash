@@ -55,6 +55,11 @@ const BOGUS = "00000000000000000000000000"
  * partial: the check is against the spec, so a typo in the template fails.
  */
 const SENTENCES: Record<ErrorKey, string> = {
+  "compose-refused":
+    "The Compose file was refused — see the details in the dialog.",
+  "compose-public-unknown":
+    "The public service is not a service in the Compose file.",
+  "compose-port-required": "Give the port the public service listens on.",
   "image-invalid":
     "That is not a valid image reference. Use a name like nginx:alpine or ghcr.io/owner/app:1.2.",
   "resource-name-taken":

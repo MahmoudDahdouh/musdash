@@ -1,9 +1,11 @@
-import { and, desc, eq, ne, sql } from "drizzle-orm"
+import { and, desc, eq, lt, ne, sql } from "drizzle-orm"
+import { z } from "zod"
 import {
   BUILD_PLACEHOLDER,
   computeKeepSet,
   isBuiltImageTag,
 } from "../build/images.ts"
+import type { ComposeSource } from "../compose/types.ts"
 import { decrypt, encrypt } from "../crypto.ts"
 import { interpolate } from "../env/interpolate.ts"
 import { formatEnvText } from "../env/parse.ts"
@@ -196,6 +198,95 @@ export function createGitResource(input: NewGitResource): Resource {
   return resource
 }
 
+export interface NewComposeResource {
+  environmentId: string
+  name: string
+  source: ComposeSource
+  healthPath?: string | null
+}
+
+/**
+ * A resource deployed from a Compose file (docs/PHASE-3-PLAN.md §3.1).
+ *
+ * No container port — each routed service's port lives on its domain row and
+ * in the source — and a memory limit of 0 until the first successful
+ * normalisation writes the sum of the stack's service limits. Nothing reads
+ * that 0 as a limit: a stack's containers get theirs from the transformed file.
+ */
+export function createComposeResource(input: NewComposeResource): Resource {
+  const resource: Resource = {
+    id: ulid(),
+    environmentId: input.environmentId,
+    name: input.name,
+    kind: "compose",
+    sourceJson: JSON.stringify(input.source),
+    desiredState: "stopped",
+    containerPort: null,
+    memoryLimitMb: 0,
+    healthPath: input.healthPath ?? null,
+    containerId: null,
+    currentDeploymentId: null,
+    previousImage: null,
+    ...NO_GIT_SOURCE,
+    createdAt: nowIso(),
+  }
+  orm.insert(resources).values(resource).run()
+  return resource
+}
+
+/**
+ * The stored shape of a ComposeSource. Parsed rather than cast: the column is
+ * TEXT, and a row written by an older or newer musdash, or edited by hand,
+ * must read as "no source" rather than as a half-filled object that a deploy
+ * would then act on.
+ */
+const composeSourceSchema = z.object({
+  composeFile: z.string(),
+  origin: z.enum(["paste", "template"]),
+  templateId: z.string().optional(),
+  templateVersion: z.string().optional(),
+  services: z.array(z.string()),
+  publicService: z.string().nullable(),
+  // Older rows cannot exist (the column arrived with it), but a missing key is
+  // read as "no port" rather than refusing the whole source.
+  publicPort: z.number().int().min(1).max(65535).nullable().default(null),
+})
+
+/** The Compose source of a compose resource; null for any other kind. */
+export function composeSource(resource: Resource): ComposeSource | null {
+  if (resource.kind !== "compose") return null
+  let raw: unknown
+  try {
+    raw = JSON.parse(resource.sourceJson)
+  } catch {
+    return null
+  }
+  const parsed = composeSourceSchema.safeParse(raw)
+  if (!parsed.success) return null
+  const { templateId, templateVersion, ...rest } = parsed.data
+  return {
+    ...rest,
+    ...(templateId === undefined ? {} : { templateId }),
+    ...(templateVersion === undefined ? {} : { templateVersion }),
+  }
+}
+
+/**
+ * Replaces a COMPOSE resource's source. Kind-guarded like setResourceImage and
+ * setGitSource: writing a Compose source over an image or a repository spec
+ * turns the resource into something it is not.
+ */
+export function setComposeSource(id: string, source: ComposeSource): void {
+  const resource = getResource(id)
+  if (!resource) return
+  if (resource.kind !== "compose") {
+    throw new Error(
+      `resource ${id} is a ${resource.kind} resource, not compose`,
+    )
+  }
+  updateResource(id, { sourceJson: JSON.stringify(source) })
+}
+
 export function getResource(id: string): Resource | undefined {
   return orm.select().from(resources).where(eq(resources.id, id)).get()
 }
@@ -379,7 +470,9 @@ export function gitSource(resource: Resource): GitSource | null {
  * reconciler treats as "nothing to deploy" — a resource that silently never
  * comes back after its container is removed.
  */
-export function resourceImage(resource: Resource): string {
+export function resourceImage(resource: Resource): string | null {
+  // A stack has no single image; its services name theirs in the file.
+  if (resource.kind === "compose") return null
   if (resource.kind === "git") return resource.builtImage ?? ""
   const src = JSON.parse(resource.sourceJson) as { image?: string }
   return src.image ?? ""
@@ -419,7 +512,8 @@ export function listProtectedImages(): string[] {
   return computeKeepSet({
     resources: listAllResources().map((resource) => ({
       id: resource.id,
-      current: resourceImage(resource),
+      // "" for a stack, which names its images in its file; never kept.
+      current: resourceImage(resource) ?? "",
       previous: resource.previousImage,
     })),
     succeeded,
@@ -518,6 +612,8 @@ export function createDeployment(args: {
   commitAuthor?: string | null
   gitRepo?: string | null
   buildFingerprint?: string | null
+  /** A compose deploy's file, exactly as it will be deployed. */
+  composeFile?: string | null
 }): Deployment {
   const deployment: Deployment = {
     id: ulid(),
@@ -536,10 +632,40 @@ export function createDeployment(args: {
     // Not an argument: only a build that switches sets it (onAutoWebpack), so
     // no copy of an earlier row can carry it over.
     autoWebpackCapMib: null,
+    composeFile: args.composeFile ?? null,
     createdAt: nowIso(),
   }
   orm.insert(deployments).values(deployment).run()
   return deployment
+}
+
+/**
+ * The file a compose Roll back deploys: that of the newest SUCCEEDED
+ * deployment created before the current one, or null when there is none.
+ * "Before the current one" by creation time, so a rollback of a rollback goes
+ * further back rather than bouncing between two files.
+ */
+export function composeRollbackFile(resource: Resource): string | null {
+  const current = resource.currentDeploymentId
+    ? getDeployment(resource.currentDeploymentId)
+    : undefined
+  if (!current) return null
+  return (
+    orm
+      .select({ composeFile: deployments.composeFile })
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.resourceId, resource.id),
+          eq(deployments.status, "succeeded"),
+          lt(deployments.createdAt, current.createdAt),
+          sql`${deployments.composeFile} IS NOT NULL`,
+        ),
+      )
+      .orderBy(desc(deployments.createdAt))
+      .limit(1)
+      .get()?.composeFile ?? null
+  )
 }
 
 export function getDeployment(id: string): Deployment | undefined {
@@ -770,6 +896,37 @@ export function setEnvVars(resourceId: string, vars: EnvVarInput[]): void {
           scope: v.scope,
           createdAt: now,
         })
+        .run()
+    }
+  })
+  tx()
+}
+
+/**
+ * Adds resource variables WITHOUT replacing the resource's others — for the
+ * Compose placeholders musdash generates (§3.5). A key the resource already
+ * has is left alone: a placeholder is generated once, and never overwrites a
+ * value the user set or edited. One transaction, like setEnvVars.
+ */
+export function addResourceEnvVars(
+  resourceId: string,
+  vars: EnvVarInput[],
+): void {
+  if (vars.length === 0) return
+  const tx = db.transaction(() => {
+    const now = nowIso()
+    for (const v of vars) {
+      orm
+        .insert(envVars)
+        .values({
+          id: ulid(),
+          resourceId,
+          key: v.key,
+          valueEncrypted: encrypt(v.value),
+          scope: v.scope,
+          createdAt: now,
+        })
+        .onConflictDoNothing({ target: [envVars.resourceId, envVars.key] })
         .run()
     }
   })
@@ -1049,12 +1206,16 @@ export function addDomain(
   resourceId: string,
   host: string,
   isAuto = false,
+  /** A compose resource's service and port; absent for image and git. */
+  target?: { serviceName: string; containerPort: number },
 ): Domain {
   const domain: Domain = {
     id: ulid(),
     resourceId,
     host: host.toLowerCase(),
     isAuto: isAuto ? 1 : 0,
+    serviceName: target?.serviceName ?? null,
+    containerPort: target?.containerPort ?? null,
     createdAt: nowIso(),
   }
   orm.insert(domains).values(domain).run()
@@ -1068,6 +1229,21 @@ export function listDomains(resourceId: string): Domain[] {
     .where(eq(domains.resourceId, resourceId))
     .orderBy(desc(domains.isAuto))
     .all()
+}
+
+/** Points a domain row at a stack service and port (null: neither). */
+export function setDomainTarget(
+  id: string,
+  target: { serviceName: string; containerPort: number } | null,
+): void {
+  orm
+    .update(domains)
+    .set({
+      serviceName: target?.serviceName ?? null,
+      containerPort: target?.containerPort ?? null,
+    })
+    .where(eq(domains.id, id))
+    .run()
 }
 
 export function deleteDomain(id: string): void {

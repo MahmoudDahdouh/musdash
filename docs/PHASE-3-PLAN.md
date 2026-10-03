@@ -110,7 +110,7 @@ when its slice lands, and the Validator checks slices against them.
 
   ```ts
   type ComposeSource = {
-    composeFile: string // the user's YAML exactly as pasted or templated; ≤ 128 KiB
+    composeFile: string // the user's YAML exactly as pasted or templated; ≤ 64 KiB
     origin: "paste" | "template"
     templateId?: string // e.g. "plausible"
     templateVersion?: string // meta.json version at install time
@@ -164,7 +164,7 @@ runs as root. So a cheap pre-scan of the raw YAML must refuse those before
 ```
 A  prescan   (pure; Bun.YAML.parse)    refuse include / extends.file / env_file /
                                        file-backed configs+secrets / build / top-level
-                                       name / services without image; size ≤ 128 KiB;
+                                       name / services without image; size ≤ 64 KiB;
                                        collect ${NAME} references
 B  env       (pure)                    resolved vars ∪ placeholders; a reference with no
                                        value and no default fails, naming the key (D13)
@@ -492,7 +492,7 @@ refCount, labels}`. `df` measures every volume on the host and took 9.8 s in
   - Each environment gets a third button, "Compose / template". It opens a
     small menu with "Paste a Compose file" (dialog) and "Browse templates"
     (link to `/templates?env=`).
-  - The paste dialog has the name, a textarea (monospace, 128 KiB max), the
+  - The paste dialog has the name, a textarea (monospace, 64 KiB max), the
     public service with its port, and an optional health path.
   - Refusals come back with the D37 notice pattern, and the textarea keeps its
     content, sent back through the redirect as a short-lived server-side draft
@@ -611,7 +611,7 @@ S0-b commit. **VPS.**
 **Criteria:**
 
 - [test] every §3.3 row refuses its fixture with the right code and service. Each fixture's allowed twin passes.
-- [test] prescan refuses `include`, `extends.file`, `env_file`, file-backed configs and secrets, `build`, and a service with no image; ≥ 128 KiB is refused.
+- [test] prescan refuses `include`, `extends.file`, `env_file`, file-backed configs and secrets, `build`, and a service with no image; ≥ 64 KiB is refused.
 - [test] the transform:
   - adds the labels
   - keeps `musdash.deployment_id` off services

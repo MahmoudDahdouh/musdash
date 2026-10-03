@@ -69,8 +69,10 @@ export const resources = sqliteTable(
     kind: text("kind").notNull().$type<ResourceKind>(),
     /**
      * What this resource is built or pulled FROM, by kind:
-     *   image -> { image: "nginx:alpine" }
-     *   git   -> { repo, branch, pack, dockerfilePath, buildContext }
+     *   image   -> { image: "nginx:alpine" }
+     *   git     -> { repo, branch, pack, dockerfilePath, buildContext }
+     *   compose -> ComposeSource (src/compose/types.ts); read it only through
+     *              composeSource(), which parses defensively
      *
      * For a git resource this describes the REPOSITORY and never the image a
      * build produced — see builtImage.
@@ -114,7 +116,7 @@ export const resources = sqliteTable(
   ],
 )
 
-export type ResourceKind = "image" | "git"
+export type ResourceKind = "image" | "git" | "compose"
 
 export type DeploymentStatus =
   "queued" | "running" | "succeeded" | "failed" | "cancelled"
@@ -152,6 +154,10 @@ export const deployments = sqliteTable(
     // Turbopack to webpack to fit it (0006); null when it did not, and for
     // every row that did not build.
     autoWebpackCapMib: integer("auto_webpack_cap_mib"),
+    // The Compose file exactly as this deploy used it (0007): what Roll back
+    // and "Deploy this again" repeat. Never interpolated, so never a secret.
+    // Null for image and git deployments.
+    composeFile: text("compose_file"),
 
     createdAt: text("created_at").notNull(),
   },
@@ -229,6 +235,10 @@ export const domains = sqliteTable("domains", {
     .references(() => resources.id, { onDelete: "cascade" }),
   host: text("host").notNull().unique(),
   isAuto: integer("is_auto").notNull().default(0),
+  // The stack service and container port this host routes to (0007). Null for
+  // image and git resources, whose port is resources.container_port.
+  serviceName: text("service_name"),
+  containerPort: integer("container_port"),
   createdAt: text("created_at").notNull(),
 })
 

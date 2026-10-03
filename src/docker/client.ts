@@ -125,6 +125,12 @@ export interface ContainerState {
    * gap otherwise gets misdiagnosed as an admin-API problem.
    */
   publishedPortCount: number
+  /**
+   * The networks the container is attached to, by name. A stack service is on
+   * the shared network only when it has a domain (§3.4), so a route may dial it
+   * by name only when this lists config.network.
+   */
+  networks: string[]
 }
 
 export interface ManagedContainer {
@@ -132,8 +138,22 @@ export interface ManagedContainer {
   name: string
   image: string
   running: boolean
+  /** The Engine's state word: running, exited, restarting, created, paused, dead. */
+  state: string
+  /**
+   * The exit code of an exited container, read from the list's status text
+   * (`Exited (0) 5 minutes ago`); null when it is not exited or the text has
+   * no code. From the list, so a status page needs no per-container inspect.
+   */
+  exitCode: number | null
   labels: Record<string, string>
   createdAt: number
+}
+
+/** A network as the Engine lists it. */
+export interface NetworkSummary {
+  name: string
+  labels: Record<string, string>
 }
 
 export interface LogLine {
@@ -228,6 +248,19 @@ export interface DockerClient {
    * operator's to change.
    */
   networkSubnets(name: string): Promise<string[]>
+  /**
+   * Networks carrying the label `labelKey` (any value). Read-only; for the
+   * reconciler's sweep of stack networks whose resource is gone.
+   */
+  listNetworks(labelKey: string): Promise<NetworkSummary[]>
+  /** Removes a network; one that is already gone is success. */
+  removeNetwork(name: string): Promise<void>
+  /**
+   * The daemon address the `docker compose` CLI is pointed at, as a
+   * DOCKER_HOST value. `unix://<socket>` for the local daemon; a remote
+   * implementation returns its own, and nothing that runs Compose changes.
+   */
+  composeHost(): string
   createVolume(name: string): Promise<void>
   removeVolume(name: string): Promise<void>
   /**
@@ -296,6 +329,28 @@ export const LABEL_DEPLOYMENT = "musdash.deployment_id"
 export const LABEL_PROJECT = "musdash.project_id"
 /** Marks infrastructure musdash runs for itself (the proxy), not a user resource. */
 export const LABEL_ROLE = "musdash.role"
+/**
+ * The Compose service a stack container runs (§3.8). Its presence means the
+ * container belongs to `docker compose`, which creates, recreates and removes
+ * it — see isStackContainer.
+ */
+export const LABEL_SERVICE = "musdash.service"
+/** Set by Compose itself on every container, network and volume it creates. */
+export const LABEL_COMPOSE_PROJECT = "com.docker.compose.project"
+
+/**
+ * Whether a managed container is a stack service, owned by `docker compose`.
+ *
+ * The one-container-per-resource paths — reclaimStrays, runRemove's stray
+ * loop, the reconciler's per-resource map — must skip these: each of them
+ * treats "a container of this resource that is not resource.containerId" as
+ * a leftover, and on a stack that is every service but one (§2 items 1, 2).
+ */
+export function isStackContainer(
+  labels: Readonly<Record<string, string>>,
+): boolean {
+  return Object.hasOwn(labels, LABEL_SERVICE)
+}
 
 export function managedLabels(args: {
   resourceId: string
