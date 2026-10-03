@@ -1,0 +1,24 @@
+/* Compose stacks: the paste dialog, the Settings form and the services table.
+   Page-scoped — linked only by pages that render Compose content (render.ts
+   decides), so a dashboard of image resources never downloads it and app.css
+   keeps its budget. */
+
+/* YAML is indentation. A soft-wrapped line reads as a different structure, so
+   the file keeps its lines and scrolls sideways instead. */
+textarea.compose-file {
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+  tab-size: 2;
+  min-height: 16rem;
+}
+
+/* The file is the point of this dialog: room for a line of YAML. */
+.dialog-compose {
+  width: min(720px, 94vw);
+}
+
+/* The refusal sits inside the dialog, above the fields it is about. */
+.dialog-compose .notice {
+  margin-bottom: 0;
+}

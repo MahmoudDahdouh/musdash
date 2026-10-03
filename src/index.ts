@@ -2,6 +2,7 @@ import { Elysia } from "elysia"
 import { config } from "./config.ts"
 import { migrate } from "./db/migrate.ts"
 import { guardRequest, handleError, serveOptions } from "./http.ts"
+import { prepareComposeDirs } from "./jobs/stack.ts"
 import { logger } from "./log.ts"
 import {
   queueSidecarBootstraps,
@@ -17,6 +18,8 @@ import { startWorker } from "./queue/worker.ts"
 import { assetResponse } from "./views/render.ts"
 
 migrate()
+// Before the worker can start a deploy: a crash may have left secrets on disk.
+prepareComposeDirs()
 
 // Heal before serving, so a rebooted box comes back without anyone asking.
 await reconcileOnce().catch((e: unknown) => {

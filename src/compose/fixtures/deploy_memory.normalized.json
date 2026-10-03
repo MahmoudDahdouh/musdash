@@ -1,0 +1,27 @@
+{
+  "name": "musdash-01jfixture",
+  "networks": {
+    "default": {
+      "name": "musdash-01jfixture_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "app": {
+      "command": null,
+      "deploy": {
+        "resources": {
+          "limits": {
+            "memory": "314572800"
+          }
+        },
+        "placement": {}
+      },
+      "entrypoint": null,
+      "image": "nginx",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

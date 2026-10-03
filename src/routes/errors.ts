@@ -26,6 +26,9 @@ export const ERROR_KEYS = [
   "source-repo-required",
   "repo-invalid",
   "deploy-already-started",
+  "compose-refused",
+  "compose-public-unknown",
+  "compose-port-required",
 ] as const
 
 export type ErrorKey = (typeof ERROR_KEYS)[number]

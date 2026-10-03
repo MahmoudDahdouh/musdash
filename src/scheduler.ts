@@ -1,5 +1,6 @@
 import { purgeExpiredSessions } from "./auth.ts"
 import { sweepBuildDirs } from "./build/workdir.ts"
+import { sweepComposeTmp } from "./jobs/stack.ts"
 import { logger } from "./log.ts"
 import { enqueue, pruneFinishedJobs } from "./queue/index.ts"
 
@@ -10,6 +11,7 @@ import { enqueue, pruneFinishedJobs } from "./queue/index.ts"
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000
+const COMPOSE_TMP_MAX_AGE_MS = 60 * 60 * 1000
 let timer: Timer | null = null
 
 function runDaily(): void {
@@ -28,8 +30,17 @@ function runDaily(): void {
   // here rather than on the queue. The backstop for a build that was SIGKILLed
   // before its own cleanup could run.
   const buildDirs = sweepBuildDirs(24)
+  // The same backstop for a stack deploy's temporary directory, which holds
+  // interpolated secrets: an hour is far past any deploy that is still using
+  // one, and boot has already removed every one a crash left.
+  const composeDirs = sweepComposeTmp(COMPOSE_TMP_MAX_AGE_MS)
   logger.info(
-    { prunedJobs: jobs, prunedSessions: sessions, sweptBuildDirs: buildDirs },
+    {
+      prunedJobs: jobs,
+      prunedSessions: sessions,
+      sweptBuildDirs: buildDirs,
+      sweptComposeDirs: composeDirs,
+    },
     "daily housekeeping",
   )
 }

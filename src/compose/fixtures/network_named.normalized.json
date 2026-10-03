@@ -1,0 +1,19 @@
+{
+  "name": "musdash-01jfixture",
+  "networks": {
+    "other": {
+      "name": "musdash",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "app": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx",
+      "networks": {
+        "other": null
+      }
+    }
+  }
+}

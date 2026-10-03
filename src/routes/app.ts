@@ -1,5 +1,10 @@
 import { Elysia, t } from "elysia"
-import { resolveSession, SESSION_COOKIE, verifyCsrf } from "../auth.ts"
+import {
+  resolveSession,
+  SESSION_COOKIE,
+  type SessionUser,
+  verifyCsrf,
+} from "../auth.ts"
 import { autoDomainFor, isValidHostname } from "../caddy/client.ts"
 import { config } from "../config.ts"
 import { randomToken, safeEqual } from "../crypto.ts"
@@ -7,6 +12,9 @@ import { isValidImageRef, isValidResourceName } from "../docker/client.ts"
 import {
   addDomain,
   clearGitLinkage,
+  composeRollbackFile,
+  composeSource,
+  createComposeResource,
   createEnvironment,
   createProject,
   createGitResource,
@@ -35,6 +43,8 @@ import {
   resolveEnvKeys,
   resourceImage,
   setAutoDeploy,
+  setComposeSource,
+  setDomainTarget,
   setEnvVars,
   setGitSource,
   setResourceImage,
@@ -43,6 +53,13 @@ import {
   updateResource,
   type EnvVarInput,
 } from "../db/queries.ts"
+import type { Environment, Resource } from "../db/schema.ts"
+import { docker } from "../docker/impl.ts"
+import type { ComposeSource } from "../compose/types.ts"
+import { composeDescriptor } from "../jobs/compose-plan.ts"
+import { enqueueComposeDeploy } from "../jobs/deploy-compose.ts"
+import { routeHostsForService } from "../jobs/routes.ts"
+import { stackContainersOf } from "../jobs/stack.ts"
 import { parseEnvText } from "../env/parse.ts"
 import { deployLogTail } from "../events.ts"
 import { isFullCommitSha } from "../github/api.ts"
@@ -79,6 +96,8 @@ import {
   setDashboardHost,
 } from "../settings.ts"
 import { renderPage } from "../views/render.ts"
+import { saveComposeDraft, takeComposeDraft } from "./compose-draft.ts"
+import { checkComposeForm, generatePlaceholders } from "./compose-form.ts"
 import { parseContainerPort } from "./container-port.ts"
 import { errorKeyFromQuery, withError } from "./errors.ts"
 import { checkGitSource } from "./git-source.ts"
@@ -293,6 +312,29 @@ export const appRoutes = new Elysia()
       })),
     }))
 
+    // A refused paste dialog's text, for the environment it was aimed at.
+    // Read once: this render removes it.
+    const environmentIds = new Set(environments.map((e) => e.environment.id))
+    const draft = session
+      ? takeComposeDraft(
+          session.sessionId,
+          (target) =>
+            target.kind === "create" &&
+            environmentIds.has(target.environmentId),
+        )
+      : undefined
+    const composeDraft =
+      draft?.target.kind === "create"
+        ? {
+            environmentId: draft.target.environmentId,
+            name: draft.name,
+            text: draft.text,
+            publicService: draft.publicService,
+            publicPort: draft.publicPort,
+            refusal: draft.refusal,
+          }
+        : undefined
+
     return html(
       renderPage(
         "project",
@@ -300,6 +342,7 @@ export const appRoutes = new Elysia()
           project,
           environments,
           tab,
+          composeDraft,
           projectEnv: listSharedEnvKeys({ projectId: project.id }),
           envText: showEnv
             ? getSharedEnvText({ projectId: project.id })
@@ -319,7 +362,8 @@ export const appRoutes = new Elysia()
           errorKey: errorKeyFromQuery(query.error),
         }),
       ),
-      showEnv ? NO_STORE : undefined,
+      // A drafted Compose file may hold secrets, like the env boxes.
+      showEnv || composeDraft ? NO_STORE : undefined,
     )
   })
 
@@ -477,7 +521,98 @@ export const appRoutes = new Elysia()
     },
   )
 
-  .get("/r/:resourceId", ({ params, query, session }) => {
+  /**
+   * A resource deployed from a pasted Compose file (docs/PHASE-3-PLAN.md
+   * §3.11). Only the prescan runs here — pure, no subprocess — so a refused
+   * file comes back to the form; the deploy job runs the rest, and its
+   * validation of Compose's normalised output is the authority.
+   *
+   * A refusal keeps the pasted text in a session-keyed draft, never the URL.
+   */
+  .post(
+    "/e/:environmentId/resources/compose",
+    ({ params, body, redirect, session }) => {
+      const environment = getEnvironment(params.environmentId)
+      if (!environment) return statusFor(session, 404)
+      if (!isValidResourceName(body.name)) return statusFor(session, 400)
+      const back = `/p/${environment.projectId}`
+      if (findResourceByNameInEnv(environment.id, body.name)) {
+        return redirect(withError(back, "resource-name-taken"), 303)
+      }
+
+      const check = checkComposeForm(body)
+      if (!check.ok) {
+        if (check.error === "bad-port") return statusFor(session, 400)
+        if (check.error === "compose-refused" && session) {
+          saveComposeDraft(session.sessionId, {
+            target: { kind: "create", environmentId: environment.id },
+            name: body.name,
+            text: body.composeFile,
+            publicService: body.publicService ?? "",
+            publicPort: body.publicPort ?? "",
+            refusal: check.refusal,
+          })
+        }
+        return redirect(withError(back, check.error), 303)
+      }
+
+      const { publicService, publicPort } = check
+      const source: ComposeSource = {
+        composeFile: body.composeFile,
+        origin: "paste",
+        // The prescan's names until the first deploy records Compose's own.
+        services: check.scan.services,
+        publicService,
+        publicPort,
+      }
+      const resource = createComposeResource({
+        environmentId: environment.id,
+        name: body.name,
+        source,
+        healthPath: check.healthPath,
+      })
+
+      // The auto subdomain goes to the public service; with none there is
+      // nothing for it to route to.
+      const auto = autoDomainFor(resource.name, environment.name)
+      let autoHost: string | null = null
+      if (auto && publicService !== null && publicPort !== null) {
+        if (!domainExists(auto)) {
+          addDomain(resource.id, auto, true, {
+            serviceName: publicService,
+            containerPort: publicPort,
+          })
+          autoHost = auto
+        }
+      }
+      generatePlaceholders(resource.id, check.scan, {
+        publicService,
+        publicPort,
+        autoHost,
+      })
+
+      // Enqueue and redirect — the handler never waits on Docker.
+      const deploymentId = enqueueComposeDeploy(
+        resource.id,
+        "manual",
+        body.composeFile,
+      )
+      return redirect(`/d/${deploymentId}`, 303)
+    },
+    {
+      body: t.Object({
+        name: t.String(),
+        composeFile: t.String(),
+        publicService: t.Optional(t.String()),
+        // A string, like containerPort: an empty number input submits "".
+        publicPort: t.Optional(t.String()),
+        healthPath: t.Optional(t.String()),
+        csrf: t.String(),
+      }),
+    },
+  )
+
+  .get("/r/:resourceId", async ({ params, query, session }) => {
     const ctx = getResourceContext(params.resourceId)
     if (!ctx) return statusFor(session, 404)
     const { resource, environment, project } = ctx
@@ -500,6 +635,27 @@ export const appRoutes = new Elysia()
       installationId: i.installationId,
       accountLogin: i.accountLogin,
     }))
+
+    const compose =
+      resource.kind === "compose"
+        ? await composeView(resource, environment)
+        : undefined
+    const draft =
+      resource.kind === "compose" && session
+        ? takeComposeDraft(
+            session.sessionId,
+            (target) =>
+              target.kind === "settings" && target.resourceId === resource.id,
+          )
+        : undefined
+    const composeDraft = draft
+      ? {
+          text: draft.text,
+          publicService: draft.publicService,
+          publicPort: draft.publicPort,
+          refusal: draft.refusal,
+        }
+      : undefined
 
     return html(
       renderPage(
@@ -528,6 +684,8 @@ export const appRoutes = new Elysia()
           githubInstallations,
           gitLink: gitLinkFor(resource.gitInstallationId, githubInstallations),
           csrf: session?.csrfToken,
+          compose,
+          composeDraft,
         },
         layout(session, resource.name, {
           activeProjectId: project.id,
@@ -535,7 +693,12 @@ export const appRoutes = new Elysia()
           errorKey: errorKeyFromQuery(query.error),
         }),
       ),
-      tab === "env" ? NO_STORE : undefined,
+      // A Compose file — on Settings, or a draft — may hold pasted secrets.
+      tab === "env" ||
+        (compose !== undefined && tab === "settings") ||
+        composeDraft !== undefined
+        ? NO_STORE
+        : undefined,
     )
   })
 
@@ -544,6 +707,24 @@ export const appRoutes = new Elysia()
     ({ params, redirect, session }) => {
       const ctx = getResourceContext(params.resourceId)
       if (!ctx) return statusFor(session, 404)
+
+      // A stack deploys the file Settings holds. A second press while an
+      // identical deploy still waits goes to that one, as for image resources.
+      if (ctx.resource.kind === "compose") {
+        const source = composeSource(ctx.resource)
+        if (source === null) return statusFor(session, 400)
+        const pending = pendingDeploymentFor(
+          ctx.resource.id,
+          composeDescriptor(source.composeFile),
+        )
+        if (pending !== null) return redirect(`/d/${pending}`, 303)
+        const deploymentId = enqueueComposeDeploy(
+          ctx.resource.id,
+          "manual",
+          source.composeFile,
+        )
+        return redirect(`/d/${deploymentId}`, 303)
+      }
 
       // A git resource's deploy always builds, so its row carries the
       // placeholder until the job resolves the new tag — never the image that
@@ -578,6 +759,18 @@ export const appRoutes = new Elysia()
     ({ params, redirect, session }) => {
       const ctx = getResourceContext(params.resourceId)
       if (!ctx) return statusFor(session, 404)
+      // A stack rolls back to the file of its previous successful deploy,
+      // with today's variables — the same as an image resource (§3.8).
+      if (ctx.resource.kind === "compose") {
+        const file = composeRollbackFile(ctx.resource)
+        if (file === null) return statusFor(session, 400)
+        const deploymentId = enqueueComposeDeploy(
+          ctx.resource.id,
+          "rollback",
+          file,
+        )
+        return redirect(`/d/${deploymentId}`, 303)
+      }
       const previous = ctx.resource.previousImage
       if (!previous) return statusFor(session, 400)
 
@@ -704,6 +897,15 @@ export const appRoutes = new Elysia()
       const ctx = getResourceContext(params.resourceId)
       if (!ctx) return statusFor(session, 404)
 
+      // A stack's settings are its file, public service and health path;
+      // the image, port and memory fields belong to other kinds.
+      if (ctx.resource.kind === "compose") {
+        return saveComposeSettings(ctx.resource, ctx.environment, body, {
+          session,
+          redirect: (to) => redirect(to, 303),
+        })
+      }
+
       // Parsed before any write, so a refused request stores nothing — not
       // even the image. Blank clears the port.
       const containerPort = parseContainerPort(body.containerPort)
@@ -714,13 +916,14 @@ export const appRoutes = new Elysia()
       // it rebuilding — setResourceImage refuses, and this turns that refusal
       // into a useful message rather than a 500.
       if (ctx.resource.kind === "image") {
-        if (!isValidImageRef(body.image)) {
+        const image = body.image ?? ""
+        if (!isValidImageRef(image)) {
           return redirect(
             withError(`/r/${ctx.resource.id}?tab=settings`, "image-invalid"),
             303,
           )
         }
-        setResourceImage(ctx.resource.id, body.image)
+        setResourceImage(ctx.resource.id, image)
       }
       updateResource(ctx.resource.id, {
         containerPort: containerPort.port,
@@ -735,10 +938,16 @@ export const appRoutes = new Elysia()
     },
     {
       body: t.Object({
-        image: t.String(),
+        // Optional since a stack's form has none; an image resource without
+        // one is refused above as an invalid image.
+        image: t.Optional(t.String()),
         containerPort: t.Optional(t.String()),
         healthPath: t.Optional(t.String()),
         memoryLimitMb: t.Optional(t.Numeric()),
+        // A compose resource's fields; ignored for the other kinds.
+        composeFile: t.Optional(t.String()),
+        publicService: t.Optional(t.String()),
+        publicPort: t.Optional(t.String()),
         csrf: t.String(),
       }),
     },
@@ -932,7 +1141,17 @@ export const appRoutes = new Elysia()
         return statusFor(session, 400)
       }
 
-      const deploymentId = enqueueRedeploy(deployment, ctx.resource)
+      // A stack repeats the file that row deployed, with today's variables.
+      // redeployable() already required the row to have one.
+      const deploymentId =
+        ctx.resource.kind === "compose" && deployment.composeFile !== null
+          ? enqueueComposeDeploy(
+              ctx.resource.id,
+              "redeploy",
+              deployment.composeFile,
+              { redeployOf: deployment.id },
+            )
+          : enqueueRedeploy(deployment, ctx.resource)
       logger.info(
         {
           resourceId: ctx.resource.id,
@@ -1239,6 +1458,154 @@ export const appRoutes = new Elysia()
   )
 
 // --------------------------------------------------------------- helpers
+
+/**
+ * Settings for a compose resource: the file, the public service and its port,
+ * and the health path, with the create form's checks. Saves and does not
+ * deploy — the next Deploy uses the new file. Placeholders the new file
+ * introduces are generated now, and the route sync applies the hosts.
+ */
+function saveComposeSettings(
+  resource: Resource,
+  environment: Environment,
+  body: {
+    composeFile?: string
+    publicService?: string
+    publicPort?: string
+    healthPath?: string
+  },
+  http: {
+    session: SessionUser | null
+    redirect: (to: string) => Response
+  },
+): Response {
+  const back = `/r/${resource.id}?tab=settings`
+  const current = composeSource(resource)
+  // The form always sends the file; without it this is a hand-made request.
+  if (body.composeFile === undefined || current === null) {
+    return statusFor(http.session, 400)
+  }
+  const composeFile = body.composeFile
+  const check = checkComposeForm({ ...body, composeFile })
+  if (!check.ok) {
+    if (check.error === "bad-port") return statusFor(http.session, 400)
+    if (check.error === "compose-refused" && http.session) {
+      saveComposeDraft(http.session.sessionId, {
+        target: { kind: "settings", resourceId: resource.id },
+        name: "",
+        text: composeFile,
+        publicService: body.publicService ?? "",
+        publicPort: body.publicPort ?? "",
+        refusal: check.refusal,
+      })
+    }
+    return http.redirect(withError(back, check.error))
+  }
+
+  const { publicService, publicPort } = check
+  setComposeSource(resource.id, {
+    ...current,
+    composeFile,
+    publicService,
+    publicPort,
+    // Kept: `services` records the last SUCCESSFUL normalisation, which a
+    // save has not done.
+    services: current.services,
+  })
+  updateResource(resource.id, { healthPath: check.healthPath })
+
+  // The auto subdomain follows the public service.
+  const auto = autoDomainFor(resource.name, environment.name)
+  if (auto && publicService !== null && publicPort !== null) {
+    const target = { serviceName: publicService, containerPort: publicPort }
+    const row = listDomains(resource.id).find((d) => d.host === auto)
+    if (row) setDomainTarget(row.id, target)
+    else if (!domainExists(auto)) addDomain(resource.id, auto, true, target)
+  }
+  generatePlaceholders(resource.id, check.scan, null)
+  enqueue("sync_routes", {})
+  return http.redirect(back)
+}
+
+/** How long the resource page waits for the container list. */
+const COMPOSE_VIEW_TIMEOUT_MS = 2_000
+
+type ServiceState = "running" | "exited" | "restarting" | "missing" | "created"
+
+function serviceState(engineState: string | undefined): ServiceState {
+  switch (engineState) {
+    case undefined:
+      return "missing"
+    case "running":
+    case "restarting":
+    case "created":
+      return engineState
+    // paused, dead, removing: not serving, which is what "exited" says.
+    default:
+      return "exited"
+  }
+}
+
+/**
+ * The services table of a compose resource's page: each service the last
+ * deploy recorded, joined with its container from ONE read-only container
+ * list — the one Docker call a page render may make — bounded so a slow
+ * daemon cannot hold the page. Unknown on a timeout or error: every service
+ * then reads "missing" rather than the page failing.
+ */
+async function composeView(
+  resource: Resource,
+  environment: Environment,
+): Promise<
+  | {
+      source: ComposeSource
+      services: {
+        name: string
+        image: string | null
+        state: ServiceState
+        exitCode: number | null
+        memoryMb: number | null
+        routedHost: string | null
+      }[]
+    }
+  | undefined
+> {
+  const source = composeSource(resource)
+  if (source === null) return undefined
+  let timer: Timer | undefined
+  const timeout = new Promise<[]>((done) => {
+    timer = setTimeout(() => done([]), COMPOSE_VIEW_TIMEOUT_MS)
+  })
+  const list = await Promise.race([
+    docker.listManagedContainers().catch(() => []),
+    timeout,
+  ]).finally(() => clearTimeout(timer))
+  const stack = stackContainersOf(list, resource.id)
+  const routedHost =
+    source.publicService === null || source.publicPort === null
+      ? null
+      : (routeHostsForService(
+          resource.id,
+          resource.name,
+          environment.name,
+          source.publicService,
+        )[0] ?? null)
+  return {
+    source,
+    services: source.services.map((name) => {
+      const c = stack.get(name)
+      return {
+        name,
+        image: c?.image ?? null,
+        state: serviceState(c?.state),
+        exitCode: c?.exitCode ?? null,
+        // The limit is in the transformed file, which is not kept (§3.2).
+        memoryMb: null,
+        routedHost: name === source.publicService ? routedHost : null,
+      }
+    }),
+  }
+}
 
 /** What the resource page says about a git resource's GitHub linkage. */
 type GitLink =

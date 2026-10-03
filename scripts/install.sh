@@ -161,6 +161,17 @@ else
 fi
 systemctl enable --now docker >/dev/null 2>&1 || true
 
+# Compose stacks shell out to `docker compose` (the v2+ plugin). get.docker.com
+# installs it, but a Docker from a distro package or an older script may not
+# have it. Not fatal: image and repository deploys do not need it, and a stack
+# deploy names the missing plugin in its log — this line just says it first.
+if docker compose version >/dev/null 2>&1; then
+  log "Docker Compose present: $(docker compose version --short 2>/dev/null)"
+else
+  log "WARNING: the Docker Compose plugin is missing, so Compose stacks and templates will not deploy." \
+    "Install the docker-compose-plugin package, then re-run this script."
+fi
+
 # ------------------------------------------------------------ build tools
 # Both are external binaries musdash shells out to (DECISIONS: shell out, never
 # reimplement). Installed here rather than at first build so a missing one is a

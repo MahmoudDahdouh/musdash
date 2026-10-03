@@ -1,5 +1,5 @@
 import { getDeployment, markDeploymentFailed } from "../db/queries.ts"
-import { publishDeployment } from "../events.ts"
+import { markDeployLogFinished, publishDeployment } from "../events.ts"
 import { handlers } from "../jobs/index.ts"
 import { logger } from "../log.ts"
 import {
@@ -122,6 +122,10 @@ async function runJob(job: JobRow): Promise<boolean> {
       const payload = safeParse(job.payload_json)
       const deploymentId = payload?.deploymentId
       if (typeof deploymentId === "string") {
+        // Unconditional, unlike the row update: runDeploy's catch normally
+        // marks it already (first call wins), but a throw inside that catch —
+        // a failed DB write — would otherwise leave the log live forever.
+        markDeployLogFinished(deploymentId)
         const deployment = getDeployment(deploymentId)
         if (deployment && deployment.status !== "failed") {
           markDeploymentFailed(deploymentId, message)

@@ -5,7 +5,11 @@ import { ensureCaddy } from "../caddy/bootstrap.ts"
 import { runApplyDashboardHost } from "./dashboard.ts"
 import { caddy, routeIdFor } from "../caddy/client.ts"
 import { config } from "../config.ts"
-import { LABEL_RESOURCE, LABEL_ROLE } from "../docker/client.ts"
+import {
+  isStackContainer,
+  LABEL_RESOURCE,
+  LABEL_ROLE,
+} from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
 import {
   deleteResource,
@@ -14,6 +18,9 @@ import {
   listProtectedImages,
   updateResource,
 } from "../db/queries.ts"
+import type { Resource } from "../db/schema.ts"
+import { composeProject } from "./compose-plan.ts"
+import { compose, deleteResourceRoutes } from "./stack.ts"
 import { publishStatus } from "../events.ts"
 import { logger } from "../log.ts"
 import { dropBuffer } from "../logs/buffer.ts"
@@ -36,9 +43,89 @@ export interface PrunePayload {
   olderThanHours?: number
 }
 
+/**
+ * Stops a stack: its routes first, so no visitor is sent to a service that is
+ * about to go, then `compose stop` from the labels alone (D65 item 10).
+ * Containers, networks and volumes stay, so Deploy brings it back as it was.
+ */
+async function runComposeStop(resource: Resource): Promise<void> {
+  stopLogStream(resource.id)
+  await deleteResourceRoutes(resource.id)
+  try {
+    await compose.stop(composeProject(resource.id), (line) => {
+      logger.debug({ resourceId: resource.id, line }, "compose stop")
+    })
+  } catch (err) {
+    // Nothing running means the stop's goal holds whatever Compose said —
+    // a stack that never started, or a server whose Compose is missing.
+    // Otherwise the job fails and the resource stays desired-running.
+    if (await stackRemains(resource.id, true)) throw err
+    logger.warn(
+      { resourceId: resource.id, err: (err as Error).message },
+      "compose stop failed with nothing running; marking stopped",
+    )
+  }
+  updateResource(resource.id, { desiredState: "stopped" })
+  publishStatus({ resourceId: resource.id, state: "stopped" })
+}
+
+/**
+ * Deletes a stack, in the order plan §3.7 gives minus the volume step, which
+ * is S4's: routes, then `compose down` (containers and the stack's network),
+ * then logs, then the row. Volumes are never removed here — a stack's named
+ * volumes hold its data, and deleting them will be an explicit choice. A
+ * crash before the row goes re-runs this job, and every step repeats safely.
+ */
+async function runComposeRemove(
+  resource: Resource,
+  payload: RemovePayload,
+): Promise<void> {
+  stopLogStream(resource.id)
+  await deleteResourceRoutes(resource.id)
+  try {
+    await compose.down(composeProject(resource.id), (line) => {
+      logger.debug({ resourceId: resource.id, line }, "compose down")
+    })
+  } catch (err) {
+    // A stack that never started — or a server whose Compose is missing —
+    // has nothing for `down` to do, and must still be deletable. Anything
+    // else fails the job, so the row stays and the delete can be retried.
+    // A network left behind is the reconciler's orphan sweep's.
+    if (await stackRemains(resource.id, false)) throw err
+    logger.warn(
+      { resourceId: resource.id, err: (err as Error).message },
+      "compose down failed with no containers left; deleting anyway",
+    )
+  }
+  dropBuffer(resource.id)
+  removeLogFiles(resource.id)
+  if (payload.deleteRow) deleteResource(resource.id)
+  publishStatus({ resourceId: resource.id, state: "stopped" })
+}
+
+/**
+ * Whether any of the stack's containers exist (or, with `runningOnly`, run).
+ * A list that cannot be read counts as "yes": the caller then fails the job
+ * rather than assume a stack is gone.
+ */
+async function stackRemains(
+  resourceId: string,
+  runningOnly: boolean,
+): Promise<boolean> {
+  const list = await docker.listManagedContainers().catch(() => null)
+  if (list === null) return true
+  return list.some(
+    (c) =>
+      isStackContainer(c.labels) &&
+      c.labels[LABEL_RESOURCE] === resourceId &&
+      (!runningOnly || c.running),
+  )
+}
+
 async function runStop(payload: StopPayload): Promise<void> {
   const resource = getResource(payload.resourceId)
   if (!resource) return
+  if (resource.kind === "compose") return runComposeStop(resource)
 
   stopLogStream(resource.id)
   if (resource.containerId) {
@@ -68,6 +155,7 @@ async function runStop(payload: StopPayload): Promise<void> {
 async function runRemove(payload: RemovePayload): Promise<void> {
   const resource = getResource(payload.resourceId)
   if (!resource) return
+  if (resource.kind === "compose") return runComposeRemove(resource, payload)
 
   stopLogStream(resource.id)
 
@@ -84,6 +172,8 @@ async function runRemove(payload: RemovePayload): Promise<void> {
     // below spares it by accident, but deleting a resource must never be able
     // to take down the shared proxy and every site with it.
     if (c.labels[LABEL_ROLE]) continue
+    // Never a stack service: those are `compose down`'s to remove.
+    if (isStackContainer(c.labels)) continue
     if (c.labels[LABEL_RESOURCE] === resource.id) {
       await docker.removeContainer(c.id, true).catch(() => {})
     }

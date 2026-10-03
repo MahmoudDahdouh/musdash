@@ -1,0 +1,27 @@
+{
+  "name": "musdash-01jfixture",
+  "networks": {
+    "default": {
+      "name": "musdash-01jfixture_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "app": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx",
+      "networks": {
+        "default": null
+      },
+      "ports": [
+        {
+          "mode": "ingress",
+          "target": 80,
+          "published": "8080",
+          "protocol": "tcp"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "musdash-01jfixture",
+  "networks": {
+    "default": {
+      "name": "musdash-01jfixture_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "app": {
+      "command": null,
+      "depends_on": {
+        "side": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "image": "nginx",
+      "network_mode": "service:side"
+    },
+    "side": {
+      "command": null,
+      "entrypoint": null,
+      "image": "busybox",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

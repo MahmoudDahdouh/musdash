@@ -1,0 +1,4 @@
+services:
+  app:
+    image: nginx
+    deploy: {resources: {limits: {memory: 300M}}}

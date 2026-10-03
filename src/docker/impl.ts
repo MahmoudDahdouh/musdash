@@ -15,6 +15,7 @@ import {
   type LogLine,
   type LogOpts,
   type ManagedContainer,
+  type NetworkSummary,
 } from "./client.ts"
 import { createDemuxer, createLineAssembler } from "./demux.ts"
 
@@ -626,6 +627,7 @@ export class DockerHttpClient implements DockerClient {
       publishedPortCount: Object.values(
         raw.NetworkSettings?.Ports ?? {},
       ).filter((bindings) => bindings !== null && bindings.length > 0).length,
+      networks: Object.keys(networks),
     }
   }
 
@@ -762,6 +764,45 @@ export class DockerHttpClient implements DockerClient {
     )
   }
 
+  async listNetworks(labelKey: string): Promise<NetworkSummary[]> {
+    // Filtered by label KEY server-side; the value is the caller's to judge.
+    const filters = encodeURIComponent(JSON.stringify({ label: [labelKey] }))
+    const list = await this.json<unknown>(`/networks?filters=${filters}`)
+    if (!Array.isArray(list)) return []
+    return list.flatMap((n: unknown) => {
+      if (typeof n !== "object" || n === null) return []
+      const name: unknown = Reflect.get(n, "Name")
+      const labels: unknown = Reflect.get(n, "Labels")
+      if (typeof name !== "string") return []
+      const out: Record<string, string> = {}
+      if (typeof labels === "object" && labels !== null) {
+        for (const [k, v] of Object.entries(labels)) {
+          if (typeof v === "string") out[k] = v
+        }
+      }
+      return [{ name, labels: out }]
+    })
+  }
+
+  async removeNetwork(name: string): Promise<void> {
+    const res = await this.request(`/networks/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    })
+    if (!res.ok && res.status !== 404) {
+      throw await this.toError(res, "/networks/remove")
+    }
+    await res.arrayBuffer().catch(() => undefined)
+  }
+
+  /**
+   * The same socket this client talks to, for the `docker compose` CLI. The
+   * CLI runs with a fixed environment (D65 item 14), so this is the only way
+   * it learns which daemon to use — never an inherited DOCKER_HOST.
+   */
+  composeHost(): string {
+    return `unix://${this.socketPath}`
+  }
+
   async createVolume(name: string): Promise<void> {
     await this.expectOk("/volumes/create", this.postJson({ Name: name }))
   }
@@ -821,16 +862,24 @@ interface ContainerListItem {
    *  container was created, so both are needed to decide "is this in use". */
   ImageID?: string
   State: string
+  /** Human text, e.g. `Exited (137) 2 minutes ago`, `Up 3 hours`. */
+  Status?: string
   Labels?: Record<string, string>
   Created: number
 }
 
+const EXITED_STATUS = /^Exited \((-?\d+)\)/
+
 function toManagedContainer(c: ContainerListItem): ManagedContainer {
+  const exited =
+    c.State === "exited" ? EXITED_STATUS.exec(c.Status ?? "") : null
   return {
     id: c.Id,
     name: (c.Names[0] ?? "").replace(/^\//, ""),
     image: c.Image,
     running: c.State === "running",
+    state: c.State,
+    exitCode: exited?.[1] === undefined ? null : Number(exited[1]),
     labels: c.Labels ?? {},
     createdAt: c.Created,
   }

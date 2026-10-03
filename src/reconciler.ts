@@ -1,21 +1,41 @@
 import { BUILDKIT_CONTAINER, probeDaemon } from "./build/bootstrap.ts"
 import { CADDY_CONTAINER } from "./caddy/bootstrap.ts"
 import { caddy } from "./caddy/client.ts"
-import { LABEL_MANAGED, LABEL_RESOURCE, LABEL_ROLE } from "./docker/client.ts"
+import {
+  isStackContainer,
+  LABEL_COMPOSE_PROJECT,
+  LABEL_MANAGED,
+  LABEL_RESOURCE,
+  LABEL_ROLE,
+  type ManagedContainer,
+} from "./docker/client.ts"
 import { docker } from "./docker/impl.ts"
 import {
+  composeSource,
+  getDeployment,
   getResource,
+  listAllResources,
   listDeployments,
   listRunningResources,
   resourceImage,
   updateResource,
 } from "./db/queries.ts"
-import type { Deployment } from "./db/schema.ts"
+import type { Deployment, Resource } from "./db/schema.ts"
 import { publishStatus, type ResourceState } from "./events.ts"
 import { refreshTrustedSubnets } from "./http.ts"
+import {
+  composeProject,
+  primaryService,
+  stackServicesDown,
+} from "./jobs/compose-plan.ts"
 import { enqueueDeploy } from "./jobs/deploy.ts"
+import {
+  enqueueComposeDeploy,
+  runningContainerIds,
+} from "./jobs/deploy-compose.ts"
+import { stackContainersOf } from "./jobs/stack.ts"
 import { logger } from "./log.ts"
-import { startLogStream } from "./logs/stream.ts"
+import { startLogStream, syncStackLogStreams } from "./logs/stream.ts"
 import { enqueue } from "./queue/index.ts"
 import { isWorkerBusy } from "./queue/worker.ts"
 
@@ -56,6 +76,10 @@ export async function reconcileOnce(): Promise<void> {
   for (const c of containers) {
     const rid = c.labels[LABEL_RESOURCE]
     if (!rid) continue
+    // A stack's services are its own pass's (reconcileStacks). Mapped here,
+    // one container per resource, they would move containerId between
+    // services and restart the log stream on every tick (§2 item 2).
+    if (isStackContainer(c.labels)) continue
     // Prefer a running container if several carry the same resource id.
     const existing = byResource.get(rid)
     if (!existing || (c.running && !existing.running)) byResource.set(rid, c)
@@ -63,6 +87,7 @@ export async function reconcileOnce(): Promise<void> {
 
   // 3. desired-running resources with no live container -> redeploy
   for (const resource of running) {
+    if (resource.kind === "compose") continue
     const container = byResource.get(resource.id)
     if (container?.running) continue
 
@@ -104,6 +129,9 @@ export async function reconcileOnce(): Promise<void> {
     enqueueDeploy(resource.id, image, "reconcile")
   }
 
+  // 3b. stacks, which have one container per service
+  reconcileStacks(running, containers, listedAt)
+
   // 4. managed containers with no matching resource row -> orphans
   //
   // This step deletes containers, so it is deliberately conservative: it acts
@@ -130,6 +158,8 @@ export async function reconcileOnce(): Promise<void> {
     await docker.stopContainer(container.id, 10).catch(() => {})
     await docker.removeContainer(container.id, true).catch(() => {})
   }
+  // After the containers: a network is removable only once nothing is on it.
+  await sweepOrphanStackNetworks()
 
   await ensureCaddyQueued()
   await ensureBuildkitQueued()
@@ -242,6 +272,109 @@ export function redeployPlan(
   return waited < backoffMs(streak + 1)
     ? { kind: "wait" }
     : { kind: "now", streak }
+}
+
+/**
+ * The stacks' pass (§3.9). A stack is healed when a service it had at its
+ * last successful deploy has no container, or one that is neither running nor
+ * finished cleanly — by redeploying the file that deploy used, under the same
+ * backoff as an image resource. `restart: unless-stopped` heals most crashes
+ * before this notices. Otherwise the resource row keeps pointing at the
+ * public (or first) service's container, and every running service's log is
+ * followed.
+ *
+ * Synchronous: it reads the container list the caller already took and
+ * queues work, and never waits on Docker itself.
+ */
+function reconcileStacks(
+  running: readonly Resource[],
+  containers: readonly ManagedContainer[],
+  listedAt: number,
+): void {
+  for (const resource of running) {
+    if (resource.kind !== "compose") continue
+    const source = composeSource(resource)
+    if (source === null) continue
+    const stack = stackContainersOf(containers, resource.id)
+
+    const down = stackServicesDown(source.services, stack)
+    if (down.length > 0) {
+      const plan = redeployPlan(
+        listDeployments(resource.id),
+        Date.now(),
+        listedAt,
+      )
+      if (plan.kind === "wait") continue
+      // The file the running stack came from — not Settings' copy, which
+      // may hold edits the user has not deployed yet.
+      const current = resource.currentDeploymentId
+        ? getDeployment(resource.currentDeploymentId)
+        : undefined
+      const file = current?.composeFile ?? source.composeFile
+      logger.warn(
+        {
+          resourceId: resource.id,
+          name: resource.name,
+          services: down,
+          attempt: plan.streak + 1,
+        },
+        "reconcile: stack services are down, redeploying",
+      )
+      enqueueComposeDeploy(resource.id, "reconcile", file)
+      continue
+    }
+
+    const primary = primaryService(source)
+    const primaryId = primary === null ? null : (stack.get(primary)?.id ?? null)
+    if (primaryId !== null && resource.containerId !== primaryId) {
+      updateResource(resource.id, { containerId: primaryId })
+    }
+    // Re-attaches after a restart; a no-op for streams already live.
+    syncStackLogStreams(resource.id, runningContainerIds(stack))
+    publishStatus({
+      resourceId: resource.id,
+      state: "healthy",
+      containerId: primaryId,
+    })
+  }
+}
+
+/**
+ * A stack's Compose project as musdash names it: `musdash-` and a lowercased
+ * ULID. Anything else carrying the label — a project someone runs by hand on
+ * the same host — is never touched.
+ */
+const STACK_PROJECT_RE = /^musdash-[0-9a-hjkmnp-tv-z]{26}$/
+
+/**
+ * Removes stack networks whose resource row is gone — what a delete that
+ * crashed between `compose down` and the row leaves, or a stack whose
+ * containers the orphan sweep above just removed. Volumes are never swept
+ * (§3.7): they hold data, and only the user deletes that.
+ */
+async function sweepOrphanStackNetworks(): Promise<void> {
+  const networks = await docker
+    .listNetworks(LABEL_COMPOSE_PROJECT)
+    .catch(() => null)
+  if (!networks) return
+  const known = new Set(listAllResources().map((r) => composeProject(r.id)))
+  for (const net of networks) {
+    const projectName = net.labels[LABEL_COMPOSE_PROJECT]
+    if (projectName === undefined || !STACK_PROJECT_RE.test(projectName)) {
+      continue
+    }
+    if (known.has(projectName)) continue
+    logger.warn(
+      { network: net.name, project: projectName },
+      "reconcile: removing orphaned stack network (no such resource)",
+    )
+    await docker.removeNetwork(net.name).catch((err: unknown) => {
+      logger.debug(
+        { network: net.name, err: (err as Error).message },
+        "could not remove an orphaned stack network yet",
+      )
+    })
+  }
 }
 
 /**

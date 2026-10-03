@@ -1,0 +1,110 @@
+{
+  "configs": {
+    "app_conf": {
+      "name": "musdash-01jfixture_app_conf",
+      "content": "key=value"
+    }
+  },
+  "name": "musdash-01jfixture",
+  "networks": {
+    "default": {
+      "name": "musdash-01jfixture_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "db": {
+      "command": null,
+      "entrypoint": null,
+      "environment": {
+        "POSTGRES_PASSWORD": "pw"
+      },
+      "extra_hosts": [
+        "host.example=10.0.0.1"
+      ],
+      "image": "postgres:16-alpine",
+      "init": true,
+      "networks": {
+        "default": null
+      },
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "sysctls": {
+        "net.core.somaxconn": "1024"
+      },
+      "ulimits": {
+        "nofile": 65536
+      },
+      "user": "999",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "db-data",
+          "target": "/var/lib/postgresql/data",
+          "volume": {}
+        },
+        {
+          "type": "tmpfs",
+          "target": "/run/scratch"
+        }
+      ]
+    },
+    "web": {
+      "command": null,
+      "configs": [
+        {
+          "source": "app_conf",
+          "target": "/etc/app.conf"
+        }
+      ],
+      "depends_on": {
+        "db": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "DATABASE_URL": "postgres://app:pw@db:5432/app",
+        "PUBLIC_URL": "https://web.example"
+      },
+      "expose": [
+        "3000"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "wget",
+          "-qO-",
+          "http://localhost:3000"
+        ],
+        "interval": "10s"
+      },
+      "image": "ghcr.io/example/web:1.2",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-size": "5m"
+        }
+      },
+      "mem_limit": "268435456",
+      "memswap_limit": "268435456",
+      "networks": {
+        "default": null
+      },
+      "restart": "unless-stopped",
+      "tmpfs": [
+        "/tmp"
+      ]
+    }
+  },
+  "volumes": {
+    "db-data": {
+      "name": "musdash-01jfixture_db-data"
+    }
+  },
+  "x-common": {
+    "restart": "unless-stopped"
+  }
+}

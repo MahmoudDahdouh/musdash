@@ -81,7 +81,7 @@
     queued: 'Queued. Deploys run one at a time, so this one may be behind another.',
     running: 'Waiting for the first line.',
     cancelled: 'Cancelled before it started, so nothing was deployed.',
-  }[d.status] || 'No log lines to show. Deploy logs are held in memory only, so a restart of musdash clears them.'
+  }[d.status] || 'No log lines to show. Deploy logs are held in memory only: they are cleared about ten minutes after a deploy finishes, once fifty newer deploys have run, or when musdash restarts.'
 %>
 <dl class="kv-strip">
   <div>

@@ -1,0 +1,20 @@
+{
+  "name": "musdash-01jfixture",
+  "networks": {
+    "default": {
+      "name": "musdash-01jfixture_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "app": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx",
+      "networks": {
+        "default": null
+      },
+      "runtime": "runc"
+    }
+  }
+}

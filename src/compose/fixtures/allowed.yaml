@@ -1,0 +1,44 @@
+x-common: &common
+  restart: unless-stopped
+services:
+  web:
+    <<: *common
+    image: ghcr.io/example/web:1.2
+    expose: ["3000"]
+    environment:
+      DATABASE_URL: postgres://app:${SERVICE_PASSWORD_DB}@db:5432/app
+      PUBLIC_URL: ${SERVICE_URL_WEB_3000}
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck: {test: ["CMD", "wget", "-qO-", "http://localhost:3000"], interval: 10s}
+    tmpfs: [/tmp]
+    configs:
+      - source: app_conf
+        target: /etc/app.conf
+    mem_limit: 256m
+    memswap_limit: 256m
+    logging: {driver: json-file, options: {max-size: 5m}}
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_DB}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - type: tmpfs
+        target: /run/scratch
+    ulimits: {nofile: 65536}
+    sysctls: {net.core.somaxconn: 1024}
+    extra_hosts: ["host.example:10.0.0.1"]
+    init: true
+    user: "999"
+    security_opt: ["no-new-privileges:true"]
+  migrate:
+    image: busybox
+    command: ["true"]
+    restart: "no"
+    profiles: [tools]
+volumes:
+  db-data: {}
+configs:
+  app_conf:
+    content: "key=value"

@@ -1,0 +1,68 @@
+<%
+  /*
+   * The form-time wording of a refused Compose file: one sentence per
+   * RefusalCode (src/compose/types.ts), saying what fired and what to do
+   * instead. The deploy log's wording of the same rules is
+   * src/compose/messages.ts; keep the two saying the same thing.
+   *
+   * Callers pass `refusal` ({ code, service, field }). Only the service and
+   * the field are shown — keys and indexes, both escaped — never a value,
+   * which may be a secret the user pasted. The key is `refusal` because an
+   * include inherits the page's own `it`; no page may carry that key itself.
+   *
+   * Each entry is [what the subject does, what to do instead]. Looked up with
+   * Object.hasOwn, so a code this table has not caught up with falls through
+   * to the generic line rather than to a prototype key.
+   */
+  var r = it.refusal
+  var lines = {
+    'too-large': ['is larger than 64 KiB', 'Remove unused services or long comments.'],
+    'yaml-invalid': ['is not valid YAML', 'Check the indentation (spaces, not tabs) and that every key ends with a colon.'],
+    'not-a-mapping': ['is not a single Compose document', 'Paste one YAML document with a top-level services: key.'],
+    'no-services': ['defines no services', 'Add at least one service under services:.'],
+    'service-not-a-mapping': ['is not a mapping of settings', 'Give it keys such as image: and environment:.'],
+    'include': ['uses include:', 'Paste the included services into this file instead — include reads other files on the server.'],
+    'extends-file': ['extends a service from another file', 'Extend a service of this file instead — other files on the server are not read.'],
+    'env-file': ['uses env_file:', 'Set those variables on the Variables tab and reference them as ${NAME} — env_file reads a file on the server.'],
+    'file-config': ['reads a config from a file', 'Use content: or environment: for the config instead.'],
+    'file-secret': ['reads a secret from a file', 'Set the value on the Variables tab and pass it with environment: instead.'],
+    'build': ['has a build: section', 'Build the image elsewhere, push it to a registry, and name it with image:.'],
+    'no-image': ['has no image', 'Give every service an image:, such as nginx:alpine.'],
+    'external-secret': ['uses an external secret', 'Set the value on the Variables tab and pass it with environment: instead.'],
+    'privileged': ['asks for privileged mode', 'Remove privileged: — it gives the container root on the server.'],
+    'network-mode': ['sets a network_mode that leaves the stack', 'Remove it; only none, or service: naming a service of this file, is allowed.'],
+    'namespace-host': ['shares a namespace with the host', 'Remove that host setting — it lets the container escape.'],
+    'bind-mount': ['mounts a host path', 'Use a named volume instead — host paths are refused because a container could read or change files on the server.'],
+    'docker-socket': ['mounts the Docker socket', 'Remove that mount — it gives the container control of the server.'],
+    'volume-external': ['uses an external volume', 'Declare the volume in this file without external: — it could attach another stack\'s data.'],
+    'volume-name': ['uses a volume this file does not declare, or gives one a custom name', 'Declare it under the top-level volumes: key, without name:.'],
+    'volume-driver': ['sets a volume driver or driver options', 'Remove driver: and driver_opts: — they can mount a host path.'],
+    'network-external': ['uses an external network', 'Remove external: — musdash connects the public service to its proxy itself.'],
+    'network-name': ['gives a network a custom name', 'Remove name: from the network.'],
+    'network-driver': ['uses a network driver other than bridge, or driver options', 'Remove driver: and driver_opts: from the network.'],
+    'network-reserved': ['declares a network called musdash', 'Rename it — that name belongs to musdash\'s own network.'],
+    'cap-add': ['adds capabilities', 'Remove cap_add:.'],
+    'devices': ['maps host devices', 'Remove devices: — host devices are refused.'],
+    'gpus': ['asks for a GPU', 'Remove the GPU request — GPUs are not supported.'],
+    'runtime': ['sets a custom runtime or provider', 'Remove it — it would run a program on the server.'],
+    'cgroup-parent': ['sets cgroup_parent', 'Remove cgroup_parent:.'],
+    'security-opt': ['turns off the container\'s confinement', 'Remove that security_opt: entry.'],
+    'oom': ['turns off or lowers the out-of-memory killer', 'Remove it — a leaking stack must not take down the server.'],
+    'memory-unlimited': ['has a memory limit that is not a positive size', 'Set mem_limit: to a size such as 256m, or remove it to get the default.'],
+    'memswap': ['sets memswap_limit to something other than its memory limit', 'Remove memswap_limit: — swap stays off.'],
+    'ports': ['publishes a port', 'Remove ports: — musdash routes traffic through its proxy; use expose: if other services need the port.'],
+    'container-name': ['sets container_name', 'Remove it — container names are global on the server, so musdash names them.'],
+    'replicas': ['asks for more than one replica', 'Set replicas to 1, or remove it.'],
+    'volumes-from-container': ['takes volumes from a container outside this file', 'Name a service of this file in volumes_from: instead.'],
+    'reserved-label': ['sets a label starting musdash. or com.docker.compose.', 'Rename the label — those prefixes are reserved.'],
+    'logging-driver': ['uses a logging driver other than json-file', 'Remove the logging driver — musdash caps json-file logs so they cannot fill the disk.'],
+    'image-invalid': ['names an image that is not a valid reference', 'Use a name like nginx:alpine or ghcr.io/owner/app:1.2.'],
+    'external-links': ['uses external_links', 'Remove it — it reaches containers outside the stack.'],
+    'routed-unknown': ['is the public service, but is not a service in this file', 'Check the spelling, or clear the public service.'],
+    'routed-network-mode': ['is the public service and sets network_mode', 'Remove network_mode: from it, or choose another public service — it must join musdash\'s network to be reachable.'],
+    'unsupported-key': ['uses a key musdash does not support yet', 'Remove it to deploy.'],
+    'network-ipam': ['chooses its own subnet, gateway or IPAM driver', 'Remove ipam: from the network — Docker assigns its addresses.'],
+  }
+  var line = Object.hasOwn(lines, r.code) ? lines[r.code] : ['was refused', 'Remove the setting named here.']
+%>
+<% if (r.service !== null) { %>Service <code><%= r.service %></code><% } else { %>The file<% } %> <%= line[0] %><% if (r.field !== null) { %> (<code><%= r.field %></code>)<% } %>. <%= line[1] %>

@@ -3,7 +3,8 @@
    * What a deployment names as its image. A build that has not produced one
    * carries a placeholder rather than a tag, and once the deploy has ended
    * "(building)" would read as still in progress, so it says so instead
-   * (P-11). Callers pass `pending` (the image is the placeholder), `status`
-   * and `image`.
+   * (P-11). A stack's row carries `compose@sha256:<12 hex>`, the digest of the
+   * file it deployed, which reads as a file rather than an image. Callers pass
+   * `pending` (the image is the placeholder), `status` and `image`.
    */
-%><% if (it.pending) { %><%= it.status === 'queued' || it.status === 'running' ? 'Building…' : 'Not built' %><% } else { %><%= it.image %><% } %>
+%><% if (it.pending) { %><%= it.status === 'queued' || it.status === 'running' ? 'Building…' : 'Not built' %><% } else if (it.image.indexOf('compose@sha256:') === 0) { %>Compose file <%= it.image.slice(15) %><% } else { %><%= it.image %><% } %>

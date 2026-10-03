@@ -1,0 +1,11 @@
+{
+  "name": "musdash-01jfixture",
+  "services": {
+    "app": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx",
+      "network_mode": "host"
+    }
+  }
+}
