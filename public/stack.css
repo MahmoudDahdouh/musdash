@@ -22,3 +22,9 @@ textarea.compose-file {
 .dialog-compose .notice {
   margin-bottom: 0;
 }
+
+/* The services table sits above the Details/Deployments columns. app.css
+   spaces only card-after-card, and a grid is not a card. */
+.stack-services {
+  margin-bottom: var(--s-4);
+}

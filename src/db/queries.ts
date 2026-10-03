@@ -250,6 +250,7 @@ const composeSourceSchema = z.object({
   // Older rows cannot exist (the column arrived with it), but a missing key is
   // read as "no port" rather than refusing the whole source.
   publicPort: z.number().int().min(1).max(65535).nullable().default(null),
+  memoryMb: z.record(z.string(), z.number().int().positive()).optional(),
 })
 
 /** The Compose source of a compose resource; null for any other kind. */
@@ -263,11 +264,12 @@ export function composeSource(resource: Resource): ComposeSource | null {
   }
   const parsed = composeSourceSchema.safeParse(raw)
   if (!parsed.success) return null
-  const { templateId, templateVersion, ...rest } = parsed.data
+  const { templateId, templateVersion, memoryMb, ...rest } = parsed.data
   return {
     ...rest,
     ...(templateId === undefined ? {} : { templateId }),
     ...(templateVersion === undefined ? {} : { templateVersion }),
+    ...(memoryMb === undefined ? {} : { memoryMb }),
   }
 }
 

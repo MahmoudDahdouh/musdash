@@ -819,14 +819,14 @@ cheap to run and test). The real catalogue comes in S7.
 
 ## 9. Progress
 
-| Slice | Status     | Commit | Decisions |
-| ----- | ---------- | ------ | --------- |
-| S0    | spike done |        | D65       |
-| S1    | —          |        |           |
-| S2    | —          |        |           |
-| S3    | —          |        |           |
-| S4    | —          |        |           |
-| S5    | —          |        |           |
-| S6    | —          |        |           |
-| S7    | —          |        |           |
-| S8    | —          |        |           |
+| Slice | Status                    | Commit    | Decisions |
+| ----- | ------------------------- | --------- | --------- |
+| S0    | done                      | `fb3b9a6` | D65       |
+| S1    | done                      | `27de0a3` |           |
+| S2    | built, VPS checks pending | `ff4fa65` |           |
+| S3    | —                         |           |           |
+| S4    | —                         |           |           |
+| S5    | —                         |           |           |
+| S6    | —                         |           |           |
+| S7    | —                         |           |           |
+| S8    | —                         |           |           |

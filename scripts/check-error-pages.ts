@@ -56,7 +56,7 @@ const BOGUS = "00000000000000000000000000"
  */
 const SENTENCES: Record<ErrorKey, string> = {
   "compose-refused":
-    "The Compose file was refused — see the details in the dialog.",
+    "The Compose file was refused, and nothing was saved. The reason is shown above the file.",
   "compose-public-unknown":
     "The public service is not a service in the Compose file.",
   "compose-port-required": "Give the port the public service listens on.",
@@ -491,6 +491,53 @@ try {
       healthPath: SENTINEL,
     }),
     `${p}?error=repo-required`,
+  )
+  // The compose forms redraw the pasted text from a session draft by design,
+  // so these carry no sentinel: what is checked is the key and its sentence.
+  const stack = "services:\n  web:\n    image: nginx:alpine\n"
+  await keyed(
+    "compose file refused on create",
+    "compose-refused",
+    "POST",
+    `/e/${eid}/resources/compose`,
+    withCsrf({
+      name: "stacknew",
+      composeFile: `${stack}    privileged: true\n`,
+      publicService: "",
+      publicPort: "",
+      healthPath: "",
+    }),
+    `${p}?error=compose-refused`,
+    // The reopened dialog carries the refusal's own notice.
+    1,
+  )
+  await keyed(
+    "compose public service unknown on create",
+    "compose-public-unknown",
+    "POST",
+    `/e/${eid}/resources/compose`,
+    withCsrf({
+      name: "stacknew",
+      composeFile: stack,
+      publicService: "api",
+      publicPort: "80",
+      healthPath: "",
+    }),
+    `${p}?error=compose-public-unknown`,
+  )
+  await keyed(
+    "compose public port missing on create",
+    "compose-port-required",
+    "POST",
+    `/e/${eid}/resources/compose`,
+    withCsrf({
+      name: "stacknew",
+      composeFile: stack,
+      publicService: "web",
+      publicPort: "",
+      healthPath: "",
+    }),
+    `${p}?error=compose-port-required`,
   )
 
   // Criterion 4: the duplicate environment is a notice, not a 500.

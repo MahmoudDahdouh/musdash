@@ -84,6 +84,8 @@ export interface ComposeSource {
   publicService: string | null
   /** The container port of publicService that Caddy dials; null with it. */
   publicPort: number | null
+  /** Per-service limit in MiB from the last successful deploy; absent before it. */
+  memoryMb?: Record<string, number>
 }
 
 /** A `${NAME}` or `$NAME` the file interpolates. */

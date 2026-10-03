@@ -5,7 +5,11 @@ import { caddy, routeIdForService } from "../caddy/client.ts"
 import { refusalMessage } from "../compose/messages.ts"
 import { prescanCompose } from "../compose/prescan.ts"
 import { interpolationEnv } from "../compose/env.ts"
-import { stackMemoryBytes, transformModel } from "../compose/transform.ts"
+import {
+  serviceMemoryMib,
+  stackMemoryBytes,
+  transformModel,
+} from "../compose/transform.ts"
 import type { Refusal } from "../compose/types.ts"
 import { isRecord, validateModel } from "../compose/validate.ts"
 import { config } from "../config.ts"
@@ -295,7 +299,8 @@ export async function runComposeDeploy(payload: DeployPayload): Promise<void> {
     }
 
     // 12. record success. The source is read again: Settings may have saved a
-    // new file while this ran, and only `services` is this deploy's to write.
+    // new file while this ran, and only `services` and `memoryMb` are this
+    // deploy's to write.
     const primary = primaryService({
       publicService: source.publicService,
       services,
@@ -311,7 +316,13 @@ export async function runComposeDeploy(payload: DeployPayload): Promise<void> {
       memoryLimitMb: Math.ceil(stackMemoryBytes(transformed) / MIB),
       ...(freshSource === null
         ? {}
-        : { sourceJson: JSON.stringify({ ...freshSource, services }) }),
+        : {
+            sourceJson: JSON.stringify({
+              ...freshSource,
+              services,
+              memoryMb: serviceMemoryMib(transformed),
+            }),
+          }),
     })
     updateDeployment(deploymentId, {
       status: "succeeded",

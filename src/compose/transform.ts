@@ -202,3 +202,23 @@ export function stackMemoryBytes(model: unknown): number {
   }
   return total
 }
+
+const MIB = 1024 * 1024
+
+/**
+ * Each service's memory limit in MiB (ceil), as Docker will enforce it.
+ * Read from a TRANSFORMED model. Services with no positive limit are omitted;
+ * a non-mapping model or services → {}.
+ */
+export function serviceMemoryMib(model: unknown): Record<string, number> {
+  if (!isRecord(model) || !isRecord(model.services)) return {}
+  const out: [string, number][] = []
+  for (const [name, svc] of Object.entries(model.services)) {
+    if (!isRecord(svc)) continue
+    const bytes = effectiveMemory(svc)
+    if (bytes !== null && bytes > 0) out.push([name, Math.ceil(bytes / MIB)])
+  }
+  // fromEntries defines own properties, so a service named `__proto__` is
+  // kept rather than silently re-pointing the prototype.
+  return Object.fromEntries(out)
+}

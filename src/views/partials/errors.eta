@@ -45,7 +45,7 @@ GitHub was not disconnected, because the request was not confirmed. Press Discon
 <% } else if (it.key === "deploy-already-started") { %>
 This deploy was not cancelled, because it had already started. Only a deploy that is still queued can be cancelled.
 <% } else if (it.key === "compose-refused") { %>
-The Compose file was refused — see the details in the dialog.
+The Compose file was refused, and nothing was saved. The reason is shown above the file.
 <% } else if (it.key === "compose-public-unknown") { %>
 The public service is not a service in the Compose file.
 <% } else if (it.key === "compose-port-required") { %>

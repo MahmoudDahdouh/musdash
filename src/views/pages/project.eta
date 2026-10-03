@@ -461,7 +461,7 @@
       <h2 id="<%= cmp %>-title">Deploy a Compose stack into <%= env.environment.name %></h2>
     </header>
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />
-    <% if (draft) { %>
+    <% if (draft && draft.refusal) { %>
     <div class="notice notice-error" role="alert">
       <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
       <div><%~ include("@compose-refusal", { refusal: draft.refusal }) %></div>
@@ -495,7 +495,7 @@
     </div>
     <div class="field">
       <label class="label" for="<%= cmp %>-health">Health path <span class="opt">optional</span></label>
-      <input id="<%= cmp %>-health" name="healthPath" placeholder="/health" />
+      <input id="<%= cmp %>-health" name="healthPath" value="<%= draft ? draft.healthPath : '' %>" placeholder="/health" />
     </div>
     <div class="dialog-foot">
       <button type="button" class="btn" data-close commandfor="<%= cmp %>" command="close">Cancel</button>

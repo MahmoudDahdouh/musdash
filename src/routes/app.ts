@@ -331,6 +331,7 @@ export const appRoutes = new Elysia()
             text: draft.text,
             publicService: draft.publicService,
             publicPort: draft.publicPort,
+            healthPath: draft.healthPath,
             refusal: draft.refusal,
           }
         : undefined
@@ -550,6 +551,7 @@ export const appRoutes = new Elysia()
             text: body.composeFile,
             publicService: body.publicService ?? "",
             publicPort: body.publicPort ?? "",
+            healthPath: body.healthPath ?? "",
             refusal: check.refusal,
           })
         }
@@ -636,12 +638,18 @@ export const appRoutes = new Elysia()
       accountLogin: i.accountLogin,
     }))
 
-    const compose =
-      resource.kind === "compose"
-        ? await composeView(resource, environment)
-        : undefined
+    const isCompose = resource.kind === "compose"
+    // The container list is the one Docker call a render may make, and only
+    // Overview draws the services table — every other tab renders without it.
+    const compose = isCompose
+      ? await composeView(resource, environment, {
+          withContainers: tab === "overview",
+        })
+      : undefined
+    // Taken only where the form is: a draft is read once, so another tab
+    // rendering first must leave it for Settings.
     const draft =
-      resource.kind === "compose" && session
+      isCompose && tab === "settings" && session
         ? takeComposeDraft(
             session.sessionId,
             (target) =>
@@ -653,9 +661,20 @@ export const appRoutes = new Elysia()
           text: draft.text,
           publicService: draft.publicService,
           publicPort: draft.publicPort,
+          healthPath: draft.healthPath,
           refusal: draft.refusal,
         }
       : undefined
+    // A stack's Variables tab is one box holding every resource variable.
+    // Saving posts it all as runtime, which replaces the whole set — so the
+    // box must hold every key whatever its scope, or a save deletes some.
+    const envText = tab === "env" ? getEnvText(resource.id) : undefined
+    const composeEnvText =
+      isCompose && envText !== undefined
+        ? [envText.runtime, envText.both, envText.build]
+            .filter((s) => s !== "")
+            .join("\n")
+        : undefined
 
     return html(
       renderPage(
@@ -678,14 +697,18 @@ export const appRoutes = new Elysia()
           resolvedEnv: resolveEnvKeys(resource.id),
           // This level's own saved variables, decrypted for the edit boxes
           // (D45). Only on the env tab, so every other tab's HTML
-          // stays value-free and cacheable.
-          envText: tab === "env" ? getEnvText(resource.id) : undefined,
+          // stays value-free and cacheable. A stack gets the union instead.
+          envText: isCompose ? undefined : envText,
+          composeEnvText,
           logs: tail(resource.id, 300),
           githubInstallations,
           gitLink: gitLinkFor(resource.gitInstallationId, githubInstallations),
           csrf: session?.csrfToken,
           compose,
           composeDraft,
+          // What a stack's service without mem_limit gets, for the Settings
+          // copy; the same value the deploy's transform applies.
+          defaultMemoryMb: config.defaultMemoryMb,
         },
         layout(session, resource.name, {
           activeProjectId: project.id,
@@ -695,7 +718,7 @@ export const appRoutes = new Elysia()
       ),
       // A Compose file — on Settings, or a draft — may hold pasted secrets.
       tab === "env" ||
-        (compose !== undefined && tab === "settings") ||
+        (isCompose && tab === "settings") ||
         composeDraft !== undefined
         ? NO_STORE
         : undefined,
@@ -1489,14 +1512,18 @@ function saveComposeSettings(
   const check = checkComposeForm({ ...body, composeFile })
   if (!check.ok) {
     if (check.error === "bad-port") return statusFor(http.session, 400)
-    if (check.error === "compose-refused" && http.session) {
+    // Every refusal the user can fix keeps the form: the file may be long,
+    // and losing it to an unknown public service would be worse than the
+    // mistake. Only a refused FILE has a refusal to name.
+    if (http.session) {
       saveComposeDraft(http.session.sessionId, {
         target: { kind: "settings", resourceId: resource.id },
         name: "",
         text: composeFile,
         publicService: body.publicService ?? "",
         publicPort: body.publicPort ?? "",
-        refusal: check.refusal,
+        healthPath: body.healthPath ?? "",
+        refusal: check.error === "compose-refused" ? check.refusal : null,
       })
     }
     return http.redirect(withError(back, check.error))
@@ -1546,41 +1573,71 @@ function serviceState(engineState: string | undefined): ServiceState {
   }
 }
 
+interface ComposeServiceView {
+  name: string
+  image: string | null
+  state: ServiceState
+  exitCode: number | null
+  /** From the last successful deploy; null before one. */
+  memoryMb: number | null
+  /** The first host, on the public service only. */
+  routedHost: string | null
+}
+
+interface ComposeView {
+  source: ComposeSource
+  /** True only when the container list resolved in time without throwing. */
+  containersKnown: boolean
+  /** Null when withContainers is false: no Docker call was made. */
+  services: ComposeServiceView[] | null
+}
+
+type ContainerList = Awaited<ReturnType<typeof docker.listManagedContainers>>
+
 /**
- * The services table of a compose resource's page: each service the last
- * deploy recorded, joined with its container from ONE read-only container
- * list — the one Docker call a page render may make — bounded so a slow
- * daemon cannot hold the page. Unknown on a timeout or error: every service
- * then reads "missing" rather than the page failing.
+ * The container list for a stack's services table, or null when it could not
+ * be read: ONE read-only call — the one Docker call a page render may make —
+ * bounded so a slow daemon cannot hold the page.
+ */
+async function boundedContainerList(): Promise<ContainerList | null> {
+  let timer: Timer | undefined
+  const timeout = new Promise<null>((done) => {
+    timer = setTimeout(() => done(null), COMPOSE_VIEW_TIMEOUT_MS)
+  })
+  try {
+    return await Promise.race([
+      docker.listManagedContainers().catch((err: unknown) => {
+        logger.debug(
+          { err: err instanceof Error ? err.message : String(err) },
+          "container list for a stack page failed",
+        )
+        return null
+      }),
+      timeout,
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * A compose resource's page data: its source, and — on Overview only — each
+ * service the last deploy recorded joined with its container. When the list
+ * could not be read, containersKnown is false and the page says "Unknown"
+ * rather than "No container", which would be a claim it cannot make.
  */
 async function composeView(
   resource: Resource,
   environment: Environment,
-): Promise<
-  | {
-      source: ComposeSource
-      services: {
-        name: string
-        image: string | null
-        state: ServiceState
-        exitCode: number | null
-        memoryMb: number | null
-        routedHost: string | null
-      }[]
-    }
-  | undefined
-> {
+  opts: { withContainers: boolean },
+): Promise<ComposeView | undefined> {
   const source = composeSource(resource)
   if (source === null) return undefined
-  let timer: Timer | undefined
-  const timeout = new Promise<[]>((done) => {
-    timer = setTimeout(() => done([]), COMPOSE_VIEW_TIMEOUT_MS)
-  })
-  const list = await Promise.race([
-    docker.listManagedContainers().catch(() => []),
-    timeout,
-  ]).finally(() => clearTimeout(timer))
-  const stack = stackContainersOf(list, resource.id)
+  if (!opts.withContainers) {
+    return { source, containersKnown: false, services: null }
+  }
+  const list = await boundedContainerList()
+  const stack = stackContainersOf(list ?? [], resource.id)
   const routedHost =
     source.publicService === null || source.publicPort === null
       ? null
@@ -1592,6 +1649,7 @@ async function composeView(
         )[0] ?? null)
   return {
     source,
+    containersKnown: list !== null,
     services: source.services.map((name) => {
       const c = stack.get(name)
       return {
@@ -1599,8 +1657,12 @@ async function composeView(
         image: c?.image ?? null,
         state: serviceState(c?.state),
         exitCode: c?.exitCode ?? null,
-        // The limit is in the transformed file, which is not kept (§3.2).
-        memoryMb: null,
+        // Recorded by the last successful deploy; the transformed file that
+        // holds the limit is not kept (§3.2).
+        memoryMb:
+          source.memoryMb && Object.hasOwn(source.memoryMb, name)
+            ? (source.memoryMb[name] ?? null)
+            : null,
         routedHost: name === source.publicService ? routedHost : null,
       }
     }),

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   ComposeModelError,
+  serviceMemoryMib,
   stackMemoryBytes,
   type TransformContext,
   transformModel,
@@ -183,5 +184,15 @@ describe("transformModel: other shapes", () => {
   test("stackMemoryBytes of garbage is 0", () => {
     expect(stackMemoryBytes(null)).toBe(0)
     expect(stackMemoryBytes({ services: [] })).toBe(0)
+  })
+
+  test("serviceMemoryMib: mem_limit, the default, a deploy limit, garbage", () => {
+    expect(
+      serviceMemoryMib(transformModel(model("allowed"), ctx(["web"]))),
+    ).toEqual({ web: 256, db: 512 })
+    expect(
+      serviceMemoryMib(transformModel(model("deploy_memory"), ctx([]))),
+    ).toEqual({ app: 300 })
+    expect(serviceMemoryMib(null)).toEqual({})
   })
 })

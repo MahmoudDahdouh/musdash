@@ -1,3 +1,13 @@
+<%
+  /* A Compose stack shares this page with image and git resources; its
+     branches sit beside theirs. `it.compose` is undefined only when the
+     stack's saved source cannot be read, so every use of `cs` checks it.
+     A stack is routed by its public service and port — never containerPort,
+     which a stack does not have. */
+  var isCompose = it.resource.kind === 'compose'
+  var cs = it.compose ? it.compose.source : null
+  var routed = !!(cs && cs.publicService && cs.publicPort)
+%>
 <div class="page-head" x-data="resourceStatus('<%= it.resource.id %>', '<%= it.state %>')">
   <nav class="crumbs" aria-label="Breadcrumb">
     <ol>
@@ -18,7 +28,11 @@
       class="inline"
       data-confirm
       data-confirm-title="Deploy now?"
+      <% if (isCompose) { %>
+      data-confirm-body="Deploys the Compose file saved in Settings with the current variables. Services whose configuration changed are recreated in place, so they may be briefly unavailable."
+      <% } else { %>
       data-confirm-body="<%= it.resource.kind === 'git' ? 'Builds the latest commit on the branch' : 'Pulls the image' %> and starts a new container. Traffic only switches once it passes the health check."
+      <% } %>
       data-confirm-label="Deploy"
     >
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />
@@ -52,7 +66,11 @@
       data-confirm
       data-confirm-danger
       data-confirm-title="Stop this resource?"
+      <% if (isCompose) { %>
+      data-confirm-body="Every service in the stack is stopped, and its domains go offline until you deploy again."
+      <% } else { %>
       data-confirm-body="The container is stopped and the site goes offline until you deploy again."
+      <% } %>
       data-confirm-label="Stop"
     >
       <input type="hidden" name="csrf" value="<%= it.csrf %>" />
@@ -72,13 +90,91 @@
 </nav>
 
 <% if (it.tab === 'overview') { %>
+<% if (isCompose) { %>
+<div class="card stack stack-services">
+  <h2 class="card-title">Services</h2>
+  <% if (!cs || !it.compose.services) { %>
+  <p class="muted">This stack's saved settings could not be read, so its services cannot be listed.</p>
+  <% } else if (it.compose.services.length === 0) { %>
+  <p class="muted">No services recorded yet. They are listed once the Compose file has been read.</p>
+  <% } else { %>
+  <% if (!it.compose.containersKnown) { %>
+  <p class="muted">The service states could not be read from Docker just now. Reload the page to try again.</p>
+  <% } %>
+  <div class="table-scroll">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Service</th>
+          <th>Image</th>
+          <th>State</th>
+          <th>Memory limit</th>
+          <th>Routed host</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% it.compose.services.forEach(function (s) {
+          /* Chips, never @status: that maps a running DEPLOYMENT to
+             "Deploying", and here running means the container is up. When
+             the list could not be read no state is claimed at all. */
+          var chip
+          if (!it.compose.containersKnown) chip = ['chip chip-outline', 'Unknown']
+          else if (s.state === 'running') chip = ['chip chip-ok', 'Running']
+          else if (s.state === 'restarting') chip = ['chip chip-warn', 'Restarting']
+          else if (s.state === 'created') chip = ['chip chip-busy', 'Created']
+          else if (s.state === 'exited' && s.exitCode === 0) chip = ['chip', 'Exited (0)']
+          else if (s.state === 'exited') chip = ['chip chip-warn', s.exitCode === null ? 'Exited' : 'Exited (' + s.exitCode + ')']
+          else chip = ['chip chip-outline', 'No container']
+        %>
+        <tr>
+          <td class="mono"><%= s.name %></td>
+          <td class="mono"><%= s.image || '—' %></td>
+          <td><span class="<%= chip[0] %>"><%= chip[1] %></span></td>
+          <td><%= s.memoryMb ? s.memoryMb + ' MB' : '—' %></td>
+          <% if (s.routedHost) { %>
+          <td><a class="mono" href="https://<%= s.routedHost %>" target="_blank" rel="noopener"><%= s.routedHost %></a></td>
+          <% } else { %>
+          <td class="muted">—</td>
+          <% } %>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+  <% } %>
+</div>
+<% } %>
 <div class="cols">
   <div class="card stack">
     <h2 class="card-title">Details</h2>
     <dl class="kv">
       <dt>URL</dt>
       <dd>
-        <% if (it.domains.length === 0) { %>
+        <% if (isCompose) { %>
+        <% if (it.domains.length === 0 && routed) { %>
+        <span class="muted">No domain yet. Add one on the <a href="?tab=domains">Domains</a> tab.</span>
+        <% } else if (it.domains.length === 0) { %>
+        <span class="muted">No domain yet. Name a public service and its port in Settings to give the stack an address.</span>
+        <% } else if (!routed) { %>
+        <%/* With no public service and port, a deploy writes no route, so
+             these hosts do not reach the stack: listed, not linked. */%>
+        <ul class="plain">
+          <% it.domains.forEach(function (d) { %>
+          <li class="mono"><%= d.host %></li>
+          <% }) %>
+        </ul>
+        <p class="muted">
+          Not routed: this stack has no public service and port.
+          <a href="/r/<%= it.resource.id %>?tab=settings">Set them in Settings</a>, then deploy.
+        </p>
+        <% } else { %>
+        <ul class="plain">
+          <% it.domains.forEach(function (d) { %>
+          <li><a class="mono" href="https://<%= d.host %>" target="_blank" rel="noopener"><%= d.host %></a></li>
+          <% }) %>
+        </ul>
+        <% } %>
+        <% } else if (it.domains.length === 0) { %>
         <span class="muted">No domain yet. Set a container port and add a domain to expose it.</span>
         <% } else if (!it.resource.containerPort) { %>
         <%/* A deploy with no port writes no route (L-3), so these hosts do not
@@ -100,6 +196,18 @@
         </ul>
         <% } %>
       </dd>
+      <% if (isCompose) { %>
+      <dt>Public service</dt>
+      <% if (routed) { %>
+      <dd class="mono"><%= cs.publicService %>:<%= cs.publicPort %></dd>
+      <% } else { %>
+      <dd class="muted">None</dd>
+      <% } %>
+      <dt>Health path</dt>
+      <dd class="mono"><%= it.resource.healthPath || '—' %></dd>
+      <dt>Memory, all services</dt>
+      <dd><%= it.resource.memoryLimitMb ? it.resource.memoryLimitMb + ' MB' : '—' %></dd>
+      <% } else { %>
       <dt>Image</dt>
       <% if (it.image) { %>
       <dd class="mono"><%= it.image %></dd>
@@ -116,12 +224,40 @@
       <dd class="mono"><%= it.resource.healthPath || '—' %></dd>
       <dt>Memory</dt>
       <dd><%= it.resource.memoryLimitMb %> MB</dd>
+      <% } %>
     </dl>
   </div>
   <div class="card stack">
     <h2 class="card-title">Deployments</h2>
-    <% if (it.deployments.length === 0) { %>
+    <% if (it.deployments.length === 0 && isCompose) { %>
+    <p class="muted">Never deployed. Press Deploy to pull the stack's images and start it.</p>
+    <% } else if (it.deployments.length === 0) { %>
     <p class="muted">Never deployed. Press Deploy to <%= it.resource.kind === 'git' ? 'build the latest commit on the branch' : 'pull the image' %> and start it.</p>
+    <% } else if (isCompose) { %>
+    <%/* A stack's row names the file it deployed (@deploy-image reads the
+         descriptor as "Compose file <hash>"); it has no commit to show. */%>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>File</th>
+            <th>Trigger</th>
+            <th>Duration</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% it.deployments.forEach(function (d) { %>
+          <tr>
+            <td class="mono"><a href="/d/<%= d.id %>"><%~ include("@deploy-image", { pending: d.imagePending, status: d.status, image: d.image }) %></a></td>
+            <td><%= d.trigger %></td>
+            <td><%= d.duration %></td>
+            <td><%~ include("@status", { state: d.status, live: false }) %></td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
     <% } else { %>
     <div class="table-scroll">
       <table class="table">
@@ -163,11 +299,16 @@
 
 <% if (it.tab === 'logs') { %>
 <div class="card stack" x-data="logPanel('/r/<%= it.resource.id %>/logs')">
+  <% if (isCompose) { %>
+  <h2 class="card-title">Service logs</h2>
+  <p class="muted">Every service of the stack in one stream. Each line starts with the service it came from, such as <span class="mono">[web]</span>.</p>
+  <% } else { %>
   <h2 class="card-title">Container logs</h2>
+  <% } %>
   <%/* The empty-state message sits flush against <pre>: pre-wrap would show any
        template whitespace. CSS hides it once a line arrives. */%>
   <div class="logs-wrap">
-    <pre class="logs" x-ref="box" @scroll="onScroll()"><% if (it.logs.length === 0) { %><span class="logs-empty">No output yet. What the container writes to stdout and stderr appears here while it runs.</span><% } %><% it.logs.forEach(function (l) { %><span class="<%= l.stream %>"><%= l.text %></span>
+    <pre class="logs" x-ref="box" @scroll="onScroll()"><% if (it.logs.length === 0 && isCompose) { %><span class="logs-empty">No output yet. What the stack's services write to stdout and stderr appears here while they run, each line prefixed with its [service] name.</span><% } else if (it.logs.length === 0) { %><span class="logs-empty">No output yet. What the container writes to stdout and stderr appears here while it runs.</span><% } %><% it.logs.forEach(function (l) { %><span class="<%= l.stream %>"><%= l.text %></span>
 <% }) %></pre>
     <button class="btn btn-sm" x-show="paused" x-cloak @click="resume()">
       <svg class="icon" aria-hidden="true"><use href="#i-arrow-down" /></svg>
@@ -180,10 +321,18 @@
 <% if (it.tab === 'env') { %>
 <div class="card stack">
   <h2 class="card-title">Resolved environment</h2>
+  <% if (isCompose) { %>
+  <p class="muted">
+    What the Compose file can use. Project and environment variables are
+    inherited; anything set here wins. A stack reads runtime variables only,
+    so build-only ones are marked as not used.
+  </p>
+  <% } else { %>
   <p class="muted">
     What this resource actually gets. Project and environment variables are
     inherited; anything set here wins.
   </p>
+  <% } %>
   <% if (it.resolvedEnv.length === 0) { %>
   <p class="muted">No variables at any level yet.</p>
   <% } else { %>
@@ -201,7 +350,12 @@
         <% it.resolvedEnv.forEach(function (v) { %>
         <tr>
           <td class="mono"><%= v.key %></td>
+          <% if (isCompose && v.scope === 'build') { %>
+          <%/* A deploy interpolates the file with runtime and both only. */%>
+          <td><span class="chip chip-<%= scopeTone[v.scope] %>"><%= v.scope %></span> <span class="muted">not used by stacks</span></td>
+          <% } else { %>
           <td><span class="chip chip-<%= scopeTone[v.scope] %>"><%= v.scope %></span></td>
+          <% } %>
           <td><span class="<%= v.origin === 'resource' ? 'chip' : 'chip chip-outline' %>"><%= v.origin %></span></td>
           <!-- An em dash rather than an empty cell: a blank reads as a bug. -->
           <td class="muted"><%= v.overrides.length ? v.overrides.join(', ') : '—' %></td>
@@ -217,6 +371,46 @@
   <% } %>
 </div>
 
+<% if (isCompose) { %>
+<div class="card stack">
+  <h2 class="card-title">Resource variables</h2>
+  <p class="muted">
+    One <code>KEY=value</code> per line. Each is available to the Compose file
+    as <code>${NAME}</code>; a service gets a variable only where the file
+    passes it, for example under <code>environment:</code>. A reference with
+    no value and no default fails the deploy. Reference another variable with
+    <code>${OTHER}</code>, and write <code>$$</code> for a literal
+    <code>$</code>. Values are encrypted at rest and shown only here. The box
+    shows what is saved, and saving replaces it with what it holds.
+  </p>
+  <%/* One box, posted as `runtime`: a stack has no build, and the route fills
+       it with the resource's variables of every scope, so saving it unchanged
+       keeps every key (as runtime) rather than deleting the others. */%>
+  <form
+    method="post"
+    action="/r/<%= it.resource.id %>/env"
+    class="stack"
+    autocomplete="off"
+    data-env-form
+    data-confirm
+    data-confirm-title="Save these variables?"
+    data-confirm-body="A variable you removed from the box is deleted; if the project or environment also sets it, that value applies again. Changes take effect on the next deploy."
+    data-confirm-label="Save variables"
+  >
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <div class="field">
+      <label class="label" for="res-vars-stack">Variables</label>
+      <textarea id="res-vars-stack" name="runtime" rows="10" spellcheck="false" placeholder="POSTGRES_PASSWORD=..."><%= it.composeEnvText || '' %></textarea>
+    </div>
+    <div class="row end">
+      <button class="btn btn-primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Save variables
+      </button>
+    </div>
+  </form>
+</div>
+<% } else { %>
 <div class="card stack">
   <h2 class="card-title">Resource variables</h2>
   <p class="muted">
@@ -262,11 +456,24 @@
   </form>
 </div>
 <% } %>
+<% } %>
 
 <% if (it.tab === 'domains') { %>
 <div class="card stack">
   <h2 class="card-title">Domains</h2>
-  <% if (it.domains.length > 0 && !it.resource.containerPort) { %>
+  <% if (isCompose) { %>
+  <% if (it.domains.length > 0 && !routed) { %>
+  <div class="notice notice-warn">
+    <svg class="icon" aria-hidden="true"><use href="#i-alert" /></svg>
+    <div>
+      These domains are not routed: this stack has no public service and port,
+      so a deploy has nothing to send their traffic to.
+      <a href="/r/<%= it.resource.id %>?tab=settings">Set them in Settings</a>,
+      then deploy.
+    </div>
+  </div>
+  <% } %>
+  <% } else if (it.domains.length > 0 && !it.resource.containerPort) { %>
   <div class="notice notice-warn">
     <svg class="icon" aria-hidden="true"><use href="#i-alert" /></svg>
     <div>
@@ -433,6 +640,78 @@
 </div>
 <% } %>
 
+<% if (isCompose) { %>
+<%
+  /* A refused save comes back here from a session-keyed draft, never the
+     URL: the file can hold secrets. The draft wins over what is saved, since
+     nothing was saved. Every value below goes through the escaping tag,
+     never the raw one: the file is attacker-influenced text, and a
+     `</textarea>` in it must stay text. */
+  var draft = it.composeDraft || null
+  var fileText = draft ? draft.text : (cs ? cs.composeFile : '')
+  var serviceText = draft ? draft.publicService : (cs && cs.publicService ? cs.publicService : '')
+  var portText = draft ? draft.publicPort : (cs && cs.publicPort ? cs.publicPort : '')
+  var healthText = draft ? draft.healthPath : (it.resource.healthPath || '')
+%>
+<div class="card stack">
+  <h2 class="card-title">Settings</h2>
+  <% if (!cs && !draft) { %>
+  <%/* A save needs the stored source to merge into, so the server refuses
+       one here; offering an empty form would only lead to a 400. */%>
+  <div class="notice notice-warn" role="status">
+    <svg class="icon" aria-hidden="true"><use href="#i-alert" /></svg>
+    <div>This stack's saved settings could not be read, so they cannot be edited here. Delete the stack and create it again from its Compose file.</div>
+  </div>
+  <% } else { %>
+  <form method="post" action="/r/<%= it.resource.id %>/settings" class="stack" autocomplete="off" data-compose-form>
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <% if (draft && draft.refusal) { %>
+    <div class="notice notice-error" role="alert">
+      <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
+      <div><%~ include("@compose-refusal", { refusal: draft.refusal }) %></div>
+    </div>
+    <% } %>
+    <div class="field">
+      <label class="label" for="res-compose-file">Compose file</label>
+      <%/* The newline after the start tag is dropped by the HTML parser, so a
+           file that itself starts with a newline keeps it. */%>
+      <textarea id="res-compose-file" class="compose-file" name="composeFile" required spellcheck="false" autocomplete="off" autocapitalize="none" rows="18" maxlength="65536" aria-describedby="res-compose-file-hint">
+<%= fileText %></textarea>
+      <p class="hint" id="res-compose-file-hint">
+        Images only — build:, ports:, bind mounts and privileged are refused.
+        Named volumes keep their data across deploys. Saving does not deploy;
+        the next Deploy uses the file saved here.
+      </p>
+    </div>
+    <div class="field">
+      <label class="label" for="res-compose-service">Public service <span class="opt">optional</span></label>
+      <input id="res-compose-service" name="publicService" value="<%= serviceText %>" placeholder="web" autocapitalize="none" spellcheck="false" aria-describedby="res-compose-service-hint" />
+      <p class="hint" id="res-compose-service-hint">The service that gets this resource's address. Leave it empty for a stack with no website.</p>
+    </div>
+    <div class="field">
+      <label class="label" for="res-compose-port">Public port <span class="opt">optional</span></label>
+      <input id="res-compose-port" name="publicPort" type="number" min="1" max="65535" value="<%= portText %>" placeholder="80" aria-describedby="res-compose-port-hint" />
+      <p class="hint" id="res-compose-port-hint">The port that service listens on. Required with a public service.</p>
+    </div>
+    <div class="field">
+      <label class="label" for="res-compose-health">Health path <span class="opt">optional</span></label>
+      <input id="res-compose-health" name="healthPath" value="<%= healthText %>" placeholder="/health" />
+    </div>
+    <p class="hint">
+      Each service's memory limit comes from <code>mem_limit</code> in the file;
+      a service without one gets <%= it.defaultMemoryMb %> MB. Every container
+      has a limit. There is no unlimited option.
+    </p>
+    <div class="row end">
+      <button class="btn btn-primary" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        Save
+      </button>
+    </div>
+  </form>
+  <% } %>
+</div>
+<% } else { %>
 <div class="card stack">
   <h2 class="card-title">Settings</h2>
   <form method="post" action="/r/<%= it.resource.id %>/settings" class="stack">
@@ -477,20 +756,33 @@
     </div>
   </form>
 </div>
+<% } %>
 
 <div class="card card-danger stack">
   <h2 class="card-title">Delete resource</h2>
+  <% if (isCompose) { %>
+  <p class="muted">
+    Stops and removes every service's container, the stack's routes and its
+    deployment history. Named volumes are kept, with their data. This cannot
+    be undone.
+  </p>
+  <% } else { %>
   <p class="muted">
     Stops and removes the container, its route and its volumes. This cannot be
     undone.
   </p>
+  <% } %>
   <form
     method="post"
     action="/r/<%= it.resource.id %>/delete"
     data-confirm
     data-confirm-danger
     data-confirm-title="Delete this resource?"
+    <% if (isCompose) { %>
+    data-confirm-body="Every service's container, the stack's routes and its deployment history are removed. Named volumes are kept, with their data. This cannot be undone."
+    <% } else { %>
     data-confirm-body="The container, its route, its volumes and its deployment history are removed. This cannot be undone."
+    <% } %>
     data-confirm-label="Delete resource"
   >
     <input type="hidden" name="csrf" value="<%= it.csrf %>" />

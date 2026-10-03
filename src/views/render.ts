@@ -106,7 +106,8 @@ export interface LayoutData {
  * Whether a page draws a Compose form or a stack, and so links stack.css and
  * stack.js. Decided here from the view data the page already gets, not by each
  * handler: the project page's resources tab always carries the paste dialog,
- * and a resource page only belongs to a stack.
+ * and a resource page links them when the resource is a stack — on every tab,
+ * and even when its source row fails to parse, so the page never half-styles.
  */
 function rendersCompose(
   page: PageName,
@@ -114,7 +115,13 @@ function rendersCompose(
 ): boolean {
   if (page === "project") return data.tab === "resources"
   if (page === "resource") {
-    return data.compose !== undefined || data.composeDraft !== undefined
+    const resource = data.resource
+    return (
+      typeof resource === "object" &&
+      resource !== null &&
+      "kind" in resource &&
+      resource.kind === "compose"
+    )
   }
   return false
 }

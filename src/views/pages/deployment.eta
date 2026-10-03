@@ -43,7 +43,10 @@
     <% if (it.redeploy) {
       var rd = it.redeploy
       var rdTitle, rdBody
-      if (rd.kind === 'git' && rd.sha7) {
+      if (rd.kind === 'compose') {
+        rdTitle = 'Deploy this Compose file again?'
+        rdBody = 'Redeploys the Compose file this deployment used, with the resource\'s current variables. It does not change the file in Settings. Services whose configuration changed are recreated, so they may be briefly unavailable.'
+      } else if (rd.kind === 'git' && rd.sha7) {
         rdTitle = 'Deploy commit ' + rd.sha7 + ' again?'
         rdBody = 'If the image built for this commit is still on this server it is reused; otherwise commit ' + rd.sha7 + ' is built again. Either way it runs with the resource\'s current variables and settings, and traffic only switches once it passes the health check.'
       } else if (rd.kind === 'git') {
@@ -108,6 +111,19 @@
 <div class="notice notice-error" role="alert">
   <svg class="icon" aria-hidden="true"><use href="#i-x-circle" /></svg>
   <div><%= d.error %></div>
+</div>
+<% } %>
+
+<%/* A stack has no health-gated swap: Compose recreates a changed service in
+     place, so the zero-downtime promise of the other kinds does not hold. */%>
+<% if (it.resource.kind === 'compose') { %>
+<div class="notice notice-info" role="status">
+  <svg class="icon" aria-hidden="true"><use href="#i-info" /></svg>
+  <div>
+    Stacks may have brief downtime on redeploy: Compose recreates each service
+    whose configuration changed in place, so it is unavailable until its new
+    container starts.
+  </div>
 </div>
 <% } %>
 

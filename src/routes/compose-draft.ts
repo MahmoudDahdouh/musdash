@@ -27,8 +27,13 @@ export interface ComposeDraft {
   publicService: string
   /** As submitted, so the field shows exactly what was typed. */
   publicPort: string
-  /** The first refusal; the form names it. */
-  refusal: Refusal
+  /** As submitted; "" when absent. */
+  healthPath: string
+  /**
+   * The first refusal; the form names it. Null when the file passed and the
+   * public service or its port was the problem — the error key says which.
+   */
+  refusal: Refusal | null
   at: number
 }
 

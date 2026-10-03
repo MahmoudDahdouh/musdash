@@ -18,6 +18,10 @@
 const BUDGETS: ReadonlyArray<{ path: string; bytes: number }> = [
   { path: "public/app.css", bytes: 32 * 1024 },
   { path: "public/app.js", bytes: 16 * 1024 },
+  // Page-scoped: loaded only on compose pages, so they get their own budget
+  // rather than eating the global one (PHASE-3-PLAN §3.12).
+  { path: "public/stack.css", bytes: 8 * 1024 },
+  { path: "public/stack.js", bytes: 8 * 1024 },
 ]
 
 function rootDir(): string {
