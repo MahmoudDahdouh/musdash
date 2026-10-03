@@ -25,6 +25,7 @@ import {
   domainExists,
   findResourceByNameInEnv,
   getDeployment,
+  getDomainOfResource,
   getEnvironment,
   getGithubApp,
   getProject,
@@ -56,9 +57,15 @@ import {
 import type { Environment, Resource } from "../db/schema.ts"
 import { docker } from "../docker/impl.ts"
 import type { ComposeSource } from "../compose/types.ts"
-import { composeDescriptor } from "../jobs/compose-plan.ts"
+import { isRoutableServiceName } from "../compose/validate.ts"
+import {
+  composeDescriptor,
+  type RoutingPlan,
+  routingChangeNeedsDeploy,
+  servicePortFor,
+} from "../jobs/compose-plan.ts"
 import { enqueueComposeDeploy } from "../jobs/deploy-compose.ts"
-import { routeHostsForService } from "../jobs/routes.ts"
+import { routingPlanFor } from "../jobs/routes.ts"
 import { stackContainersOf } from "../jobs/stack.ts"
 import { parseEnvText } from "../env/parse.ts"
 import { deployLogTail } from "../events.ts"
@@ -99,7 +106,7 @@ import { renderPage } from "../views/render.ts"
 import { saveComposeDraft, takeComposeDraft } from "./compose-draft.ts"
 import { checkComposeForm, generatePlaceholders } from "./compose-form.ts"
 import { parseContainerPort } from "./container-port.ts"
-import { errorKeyFromQuery, withError } from "./errors.ts"
+import { type ErrorKey, errorKeyFromQuery, withError } from "./errors.ts"
 import { checkGitSource } from "./git-source.ts"
 import { layout, statusFor } from "./layout.ts"
 
@@ -566,6 +573,8 @@ export const appRoutes = new Elysia()
         services: check.scan.services,
         publicService,
         publicPort,
+        // Nothing is on the shared network until the first deploy.
+        routedServices: [],
       }
       const resource = createComposeResource({
         environmentId: environment.id,
@@ -895,21 +904,100 @@ export const appRoutes = new Elysia()
         return redirect(withError(back, "domain-dashboard"), 303)
       }
 
+      // A stack's domain names the service it sends traffic to, and its port.
+      if (ctx.resource.kind === "compose") {
+        const source = composeSource(ctx.resource)
+        if (source === null) return statusFor(session, 400)
+        const target = checkDomainTarget(ctx.resource.id, source, body)
+        if (!target.ok) {
+          if (target.error === "bad-port") return statusFor(session, 400)
+          return redirect(withError(back, target.error), 303)
+        }
+        const before = routingPlanFor(
+          ctx.resource,
+          ctx.environment.name,
+          source,
+        )
+        addDomain(ctx.resource.id, host, false, target.target)
+        return redirect(
+          applyStackRouting(ctx.resource, source, before, target.target),
+          303,
+        )
+      }
+
       addDomain(ctx.resource.id, host, false)
       // Applied now rather than at the next deploy: the route is the proxy's
       // business, so the queue does it and this handler only redirects.
       enqueue("sync_routes", {})
       return redirect(`/r/${ctx.resource.id}?tab=domains`, 303)
     },
-    { body: t.Object({ host: t.String(), csrf: t.String() }) },
+    {
+      body: t.Object({
+        host: t.String(),
+        // A stack's form only; ignored for image and git resources. Strings,
+        // like containerPort elsewhere: an empty number input submits "".
+        serviceName: t.Optional(t.String()),
+        containerPort: t.Optional(t.String()),
+        csrf: t.String(),
+      }),
+    },
+  )
+
+  /**
+   * Points one of a stack's domains at another service or port (D66). The
+   * auto subdomain is not moved here: it follows the public service, which
+   * Settings sets. The same checks as adding a domain, with the row itself
+   * left out of the one-port-per-service rule.
+   */
+  .post(
+    "/r/:resourceId/domains/:domainId/target",
+    ({ params, body, redirect, session }) => {
+      const ctx = getResourceContext(params.resourceId)
+      // Read through the resource: a domain id alone would let one
+      // resource's form move another's domain.
+      const domain =
+        ctx && getDomainOfResource(ctx.resource.id, params.domainId)
+      if (!ctx || !domain) return statusFor(session, 404)
+      // The page offers this form only for a stack's own rows, never the
+      // auto row, so reaching here otherwise is a hand-made request.
+      if (ctx.resource.kind !== "compose" || domain.isAuto !== 0) {
+        return statusFor(session, 400)
+      }
+      const source = composeSource(ctx.resource)
+      if (source === null) return statusFor(session, 400)
+
+      const back = `/r/${ctx.resource.id}?tab=domains`
+      const target = checkDomainTarget(ctx.resource.id, source, body, domain.id)
+      if (!target.ok) {
+        if (target.error === "bad-port") return statusFor(session, 400)
+        return redirect(withError(back, target.error), 303)
+      }
+      const before = routingPlanFor(ctx.resource, ctx.environment.name, source)
+      setDomainTarget(domain.id, target.target)
+      return redirect(
+        applyStackRouting(ctx.resource, source, before, target.target),
+        303,
+      )
+    },
+    {
+      body: t.Object({
+        serviceName: t.Optional(t.String()),
+        containerPort: t.Optional(t.String()),
+        csrf: t.String(),
+      }),
+    },
   )
 
   .post(
     "/r/:resourceId/domains/:domainId/delete",
-    ({ params, redirect }) => {
-      deleteDomain(params.domainId)
+    ({ params, redirect, session }) => {
+      // Read through the resource, so a form for one resource cannot delete
+      // another's domain by its id.
+      const domain = getDomainOfResource(params.resourceId, params.domainId)
+      if (!domain) return statusFor(session, 404)
+      deleteDomain(domain.id)
       enqueue("sync_routes", {})
-      return redirect(`/r/${params.resourceId}?tab=domains`, 303)
+      return redirect(`/r/${domain.resourceId}?tab=domains`, 303)
     },
     { body: t.Object({ csrf: t.String() }) },
   )
@@ -1543,15 +1631,144 @@ function saveComposeSettings(
 
   // The auto subdomain follows the public service.
   const auto = autoDomainFor(resource.name, environment.name)
-  if (auto && publicService !== null && publicPort !== null) {
+  const domains = listDomains(resource.id)
+  if (publicService !== null && publicPort !== null) {
     const target = { serviceName: publicService, containerPort: publicPort }
-    const row = listDomains(resource.id).find((d) => d.host === auto)
-    if (row) setDomainTarget(row.id, target)
-    else if (!domainExists(auto)) addDomain(resource.id, auto, true, target)
+    // A service has one port, and the public service's is the public port:
+    // rows already pointing at it follow, or the routing plan would drop
+    // each of them as a conflict (D66, Q2).
+    for (const d of domains) {
+      if (d.serviceName === publicService && d.containerPort !== publicPort) {
+        setDomainTarget(d.id, target)
+      }
+    }
+    if (auto) {
+      const row = domains.find((d) => d.host === auto)
+      if (row) setDomainTarget(row.id, target)
+      else if (!domainExists(auto)) addDomain(resource.id, auto, true, target)
+    }
+  } else {
+    // No public service: the auto row's target was the old one's, and left
+    // in place it would keep routing the auto subdomain there.
+    for (const d of domains) {
+      if (d.isAuto !== 0 && d.serviceName !== null) setDomainTarget(d.id, null)
+    }
   }
   generatePlaceholders(resource.id, check.scan, null)
+  // Saves, never deploys (Q3): a public service the last deploy did not join
+  // to the proxy's network answers once the next Deploy does.
   enqueue("sync_routes", {})
   return http.redirect(back)
+}
+
+type DomainTargetCheck =
+  | { ok: true; target: { serviceName: string; containerPort: number } }
+  | {
+      ok: false
+      error: Extract<
+        ErrorKey,
+        | "domain-service-unknown"
+        | "domain-service-name"
+        | "domain-port-required"
+        | "domain-port-conflict"
+      >
+    }
+  /** A port the form's own min/max refuses: a hand-made request. */
+  | { ok: false; error: "bad-port" }
+
+/**
+ * The service and port a stack's domain form names, checked against the
+ * stack: a service of its file, with a name that can be part of a hostname,
+ * and the one port that service is routed on — `excludeDomainId` being the
+ * row that is moving, whose own port does not count (servicePortFor).
+ */
+function checkDomainTarget(
+  resourceId: string,
+  source: ComposeSource,
+  body: { serviceName?: string; containerPort?: string },
+  excludeDomainId?: string,
+): DomainTargetCheck {
+  const service = body.serviceName?.trim() ?? ""
+  if (!source.services.includes(service)) {
+    return { ok: false, error: "domain-service-unknown" }
+  }
+  if (!isRoutableServiceName(service)) {
+    return { ok: false, error: "domain-service-name" }
+  }
+  const port = parseContainerPort(body.containerPort)
+  if (!port.ok) return { ok: false, error: "bad-port" }
+  if (port.port === null) return { ok: false, error: "domain-port-required" }
+  const fixed = servicePortFor(
+    listDomains(resourceId),
+    source,
+    service,
+    excludeDomainId,
+  )
+  if (fixed !== null && fixed !== port.port) {
+    return { ok: false, error: "domain-port-conflict" }
+  }
+  return {
+    ok: true,
+    target: { serviceName: service, containerPort: port.port },
+  }
+}
+
+/**
+ * Applies a change to a stack's domain rows, already written, and returns
+ * where the browser goes next.
+ *
+ * A route sync is always queued: it moves every host it can, and a host whose
+ * new service cannot be dialled yet stays on the route it is on (pending, see
+ * syncResource), so the sync never drops it. Only a deploy joins a service to
+ * the network Caddy dials it on, and only a deploy moves a live route's port
+ * after its health gate — so when the change's TARGET needs either
+ * (routingChangeNeedsDeploy), a running stack is ALSO redeployed from the file
+ * it is running (Q1), and the browser follows that deploy. A stopped stack's
+ * routes wait for its next deploy.
+ */
+function applyStackRouting(
+  resource: Resource,
+  source: ComposeSource,
+  before: RoutingPlan,
+  target: { serviceName: string; containerPort: number },
+): string {
+  enqueue("sync_routes", {})
+  const running =
+    resource.desiredState === "running" && resource.currentDeploymentId !== null
+  if (
+    running &&
+    routingChangeNeedsDeploy(
+      before,
+      source.routedServices,
+      target.serviceName,
+      target.containerPort,
+    )
+  ) {
+    // A deploy still waiting reads the rows when it runs, so it already does
+    // what this change needs. Queuing the running file behind it would also
+    // undo a newer file that deploy is about to apply.
+    const latest = listDeployments(resource.id, 1)[0]
+    if (latest?.status === "queued") return `/d/${latest.id}`
+    // A deploy in progress may be past reading the rows, so one more is
+    // queued — with ITS file, the newest the user chose to deploy, so the
+    // follow-up never puts an older file back over it. Otherwise the file the
+    // running stack came from — not Settings' copy, which may hold edits the
+    // user has not deployed yet (as the reconciler does).
+    const from =
+      latest?.status === "running"
+        ? latest
+        : resource.currentDeploymentId
+          ? getDeployment(resource.currentDeploymentId)
+          : undefined
+    const file = from?.composeFile ?? source.composeFile
+    const deploymentId = enqueueComposeDeploy(resource.id, "manual", file)
+    logger.info(
+      { resourceId: resource.id, deploymentId },
+      "a domain change needs a stack deploy, queued",
+    )
+    return `/d/${deploymentId}`
+  }
+  return `/r/${resource.id}?tab=domains`
 }
 
 /** How long the resource page waits for the container list. */
@@ -1580,7 +1797,7 @@ interface ComposeServiceView {
   exitCode: number | null
   /** From the last successful deploy; null before one. */
   memoryMb: number | null
-  /** The first host, on the public service only. */
+  /** The first host the routing plan gives this service; null with none. */
   routedHost: string | null
 }
 
@@ -1590,6 +1807,19 @@ interface ComposeView {
   containersKnown: boolean
   /** Null when withContainers is false: no Docker call was made. */
   services: ComposeServiceView[] | null
+  /**
+   * The port each service's domains must use (servicePortFor), for the
+   * Domains forms to fill in. Absent for a service nothing fixes a port for
+   * yet. Built with fromEntries, so a service named `__proto__` is an own key.
+   */
+  servicePorts: Record<string, number>
+  /** The services whose names can carry a domain (isRoutableServiceName). */
+  routableServices: string[]
+  /**
+   * Every host the routing plan routes, lower-cased — so the page links only
+   * a host something actually answers on, not a conflicting or unrouted row.
+   */
+  routedHosts: string[]
 }
 
 type ContainerList = Awaited<ReturnType<typeof docker.listManagedContainers>>
@@ -1633,23 +1863,38 @@ async function composeView(
 ): Promise<ComposeView | undefined> {
   const source = composeSource(resource)
   if (source === null) return undefined
+  // SQLite only, and cheap: every tab gets these, so the Domains forms and
+  // the services table read the same rules the deploy and the sync apply.
+  const domains = listDomains(resource.id)
+  const servicePorts = Object.fromEntries(
+    source.services.flatMap((name) => {
+      const port = servicePortFor(domains, source, name)
+      return port === null ? [] : [[name, port] as const]
+    }),
+  )
+  const routableServices = source.services.filter(isRoutableServiceName)
+  const plan = routingPlanFor(resource, environment.name, source)
+  const routedHosts = [...plan.routes.values()].flatMap((r) =>
+    r.hosts.map((h) => h.toLowerCase()),
+  )
   if (!opts.withContainers) {
-    return { source, containersKnown: false, services: null }
+    return {
+      source,
+      containersKnown: false,
+      services: null,
+      servicePorts,
+      routableServices,
+      routedHosts,
+    }
   }
   const list = await boundedContainerList()
   const stack = stackContainersOf(list ?? [], resource.id)
-  const routedHost =
-    source.publicService === null || source.publicPort === null
-      ? null
-      : (routeHostsForService(
-          resource.id,
-          resource.name,
-          environment.name,
-          source.publicService,
-        )[0] ?? null)
   return {
     source,
     containersKnown: list !== null,
+    servicePorts,
+    routableServices,
+    routedHosts,
     services: source.services.map((name) => {
       const c = stack.get(name)
       return {
@@ -1663,7 +1908,7 @@ async function composeView(
           source.memoryMb && Object.hasOwn(source.memoryMb, name)
             ? (source.memoryMb[name] ?? null)
             : null,
-        routedHost: name === source.publicService ? routedHost : null,
+        routedHost: plan.routes.get(name)?.hosts[0] ?? null,
       }
     }),
   }

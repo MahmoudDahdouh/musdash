@@ -141,6 +141,24 @@ function routeHostsOf(route: unknown): string[] {
   return host.filter((h): h is string => typeof h === "string")
 }
 
+/**
+ * The upstream a stored route dials, as routeBody writes it, or null when the
+ * route is not shaped that way. Narrowed from `unknown`, never throws.
+ */
+function routeUpstreamOf(route: unknown): string | null {
+  if (route === null || typeof route !== "object") return null
+  const handle = (route as { handle?: unknown }).handle
+  if (!Array.isArray(handle)) return null
+  const first: unknown = handle[0]
+  if (first === null || typeof first !== "object") return null
+  const upstreams = (first as { upstreams?: unknown }).upstreams
+  if (!Array.isArray(upstreams)) return null
+  const up: unknown = upstreams[0]
+  if (up === null || typeof up !== "object") return null
+  const dial = (up as { dial?: unknown }).dial
+  return typeof dial === "string" ? dial : null
+}
+
 /** A route as sent to the admin API. The `@id` is what every write addresses. */
 export type RouteJson = { "@id": string } & Record<string, unknown>
 
@@ -355,11 +373,36 @@ export class CaddyClient {
    * it is not shaped the way routeBody writes one).
    */
   async getRouteUpstream(id: string): Promise<string | null> {
-    const route = (await this.getRoute(id)) as {
-      handle?: { upstreams?: { dial?: unknown }[] }[]
-    } | null
-    const dial = route?.handle?.[0]?.upstreams?.[0]?.dial
-    return typeof dial === "string" ? dial : null
+    return routeUpstreamOf(await this.getRoute(id))
+  }
+
+  /**
+   * The hosts and upstream of the route stored under `id`, or null when there
+   * is no such route. Read-only: the route-writing callers use it to see what
+   * a resource's routes hold BEFORE they write, so a host moving between two
+   * of them is added to its new route before it leaves the old (applyStackRoutes,
+   * syncResourceRoutes). Hosts are lower-cased, as the routing plan's are.
+   */
+  async readRoute(
+    id: string,
+  ): Promise<{ hosts: string[]; upstream: string | null } | null> {
+    // Only a 404 means "no such route". Any other failure throws: read as
+    // empty, a held host would be written off its route (callers keep every
+    // route of a resource they could not read).
+    const res = await this.request(`/id/${encodeURIComponent(id)}`)
+    if (res.status === 404) {
+      await res.arrayBuffer().catch(() => undefined)
+      return null
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => "")
+      throw new CaddyError(`caddy read ${id} -> ${res.status} ${body}`.trim())
+    }
+    const route: unknown = await res.json()
+    return {
+      hosts: routeHostsOf(route).map((h) => h.toLowerCase()),
+      upstream: routeUpstreamOf(route),
+    }
   }
 
   /**

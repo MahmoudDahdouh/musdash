@@ -58,8 +58,9 @@
     'logging-driver': ['uses a logging driver other than json-file', 'Remove the logging driver — musdash caps json-file logs so they cannot fill the disk.'],
     'image-invalid': ['names an image that is not a valid reference', 'Use a name like nginx:alpine or ghcr.io/owner/app:1.2.'],
     'external-links': ['uses external_links', 'Remove it — it reaches containers outside the stack.'],
-    'routed-unknown': ['is the public service, but is not a service in this file', 'Check the spelling, or clear the public service.'],
-    'routed-network-mode': ['is the public service and sets network_mode', 'Remove network_mode: from it, or choose another public service — it must join musdash\'s network to be reachable.'],
+    'routed-unknown': ['has a domain, but is not a service in this file', 'Check the spelling, or point its domains at another service on the Domains tab.'],
+    'routed-network-mode': ['has a domain and sets network_mode', 'Remove network_mode: from it, or point its domains at another service — a service with a domain must join musdash\'s network to be reachable.'],
+    'routed-name': ['has a domain, but its name cannot be part of a hostname', 'Rename it to at most 26 lowercase letters, digits and dashes — the proxy reaches it by a hostname built from that name.'],
     'unsupported-key': ['uses a key musdash does not support yet', 'Remove it to deploy.'],
     'network-ipam': ['chooses its own subnet, gateway or IPAM driver', 'Remove ipam: from the network — Docker assigns its addresses.'],
   }

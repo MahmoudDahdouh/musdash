@@ -6,7 +6,10 @@ import {
   isOneShot,
   placeholderVars,
   primaryService,
-  routedServicesFor,
+  type RoutingDomain,
+  type RoutingPlan,
+  routingChangeNeedsDeploy,
+  routingPlan,
   type StackContainerView,
   serviceVerdict,
   stackServicesDown,
@@ -207,17 +210,139 @@ describe("names", () => {
     ).toBe("db")
     expect(primaryService({ publicService: null, services: [] })).toBeNull()
   })
+})
 
-  test("only a public service with a port and a host is routed", () => {
-    expect(
-      routedServicesFor({ publicService: "web", publicPort: 80 }, 1),
-    ).toEqual(["web"])
-    expect(
-      routedServicesFor({ publicService: "web", publicPort: 80 }, 0),
-    ).toEqual([])
-    expect(
-      routedServicesFor({ publicService: null, publicPort: null }, 2),
-    ).toEqual([])
+describe("routingPlan", () => {
+  let n = 0
+  const row = (
+    host: string,
+    serviceName: string | null,
+    containerPort: number | null,
+  ): RoutingDomain => ({ id: `d${++n}`, host, serviceName, containerPort })
+  const plan = (
+    domains: RoutingDomain[],
+    over: Partial<Parameters<typeof routingPlan>[0]> = {},
+  ) =>
+    routingPlan({
+      domains,
+      publicService: "web",
+      publicPort: 3000,
+      autoHost: "app-prod.example.com",
+      dashboardHost: "dash.example.com",
+      ...over,
+    })
+  const entries = (p: RoutingPlan) => Object.fromEntries(p.routes)
+
+  test("(a) a row with no service and the auto host go to the public service", () => {
+    const p = plan([row("legacy.example.com", null, null)])
+    expect(entries(p)).toEqual({
+      web: {
+        port: 3000,
+        hosts: ["legacy.example.com", "app-prod.example.com"],
+      },
+    })
+    expect(p.conflicts).toEqual([])
+  })
+
+  test("(b) web and api rows give two routes, each on its own port", () => {
+    const p = plan(
+      [
+        row("web.example.com", "web", 3000),
+        row("api.example.com", "api", 8080),
+      ],
+      { autoHost: null },
+    )
+    expect(entries(p)).toEqual({
+      web: { port: 3000, hosts: ["web.example.com"] },
+      api: { port: 8080, hosts: ["api.example.com"] },
+    })
+  })
+
+  test("(c) the dashboard host is never routed, in any case", () => {
+    const p = plan(
+      [
+        row("DASH.example.com", "api", 8080),
+        row("Dash.Example.Com", null, null),
+        row("api.example.com", "api", 8080),
+      ],
+      { autoHost: "dash.EXAMPLE.com", dashboardHost: "Dash.Example.COM" },
+    )
+    const all = [...p.routes.values()].flatMap((r) => r.hosts)
+    expect(all).toEqual(["api.example.com"])
+    expect(all.some((h) => h.toLowerCase() === "dash.example.com")).toBe(false)
+    expect(p.conflicts).toEqual([])
+  })
+
+  test("(d) with no public service, null rows and the auto host route nowhere", () => {
+    const p = plan(
+      [
+        row("legacy.example.com", null, null),
+        row("api.example.com", "api", 8080),
+      ],
+      { publicService: null, publicPort: null },
+    )
+    expect(entries(p)).toEqual({
+      api: { port: 8080, hosts: ["api.example.com"] },
+    })
+    // A port left behind without its service routes nothing either.
+    const stale = plan([row("legacy.example.com", null, null)], {
+      publicService: null,
+      publicPort: 3000,
+    })
+    expect(stale.routes.size).toBe(0)
+    expect(stale.conflicts).toEqual([])
+  })
+
+  test("(e) a second row on another port is a conflict, not a route", () => {
+    const p = plan(
+      [row("a.example.com", "api", 8080), row("b.example.com", "api", 9090)],
+      { autoHost: null },
+    )
+    expect(entries(p)).toEqual({
+      api: { port: 8080, hosts: ["a.example.com"] },
+    })
+    expect(p.conflicts).toEqual([
+      { host: "b.example.com", service: "api", port: 9090 },
+    ])
+  })
+
+  test("(f) a service with no rows has no route", () => {
+    const p = plan([row("api.example.com", "api", 8080)], {
+      publicService: "web",
+      publicPort: 3000,
+      autoHost: null,
+    })
+    expect(p.routes.has("web")).toBe(false)
+    expect(p.routes.has("db")).toBe(false)
+    expect([...p.routes.keys()]).toEqual(["api"])
+  })
+})
+
+describe("routingChangeNeedsDeploy (only the change's target counts)", () => {
+  const before: RoutingPlan = {
+    routes: new Map([["web", { port: 3000, hosts: ["a.example.com"] }]]),
+    conflicts: [],
+  }
+
+  test("a target already on the network needs no deploy", () => {
+    expect(routingChangeNeedsDeploy(before, ["web", "api"], "api", 8080)).toBe(
+      false,
+    )
+    expect(routingChangeNeedsDeploy(before, ["web"], "web", 3000)).toBe(false)
+  })
+
+  test("a target the last deploy did not join needs one", () => {
+    expect(routingChangeNeedsDeploy(before, ["web"], "api", 8080)).toBe(true)
+  })
+
+  test("a routed target on another port needs one", () => {
+    expect(routingChangeNeedsDeploy(before, ["web"], "web", 4000)).toBe(true)
+  })
+
+  // A stack saved before S3 has routedServices [] by default; its routed
+  // service is on the network all the same.
+  test("a stack with no recorded routedServices does not redeploy a routed target", () => {
+    expect(routingChangeNeedsDeploy(before, [], "web", 3000)).toBe(false)
   })
 })
 

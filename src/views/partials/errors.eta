@@ -50,4 +50,14 @@ The Compose file was refused, and nothing was saved. The reason is shown above t
 The public service is not a service in the Compose file.
 <% } else if (it.key === "compose-port-required") { %>
 Give the port the public service listens on.
+<% } else if (it.key === "compose-public-name") { %>
+The public service's name cannot carry an address. Rename it in the Compose file to at most 26 lowercase letters, digits and dashes, or choose another public service.
+<% } else if (it.key === "domain-service-unknown") { %>
+Choose the service this domain sends its traffic to. It must be a service of this stack.
+<% } else if (it.key === "domain-service-name") { %>
+That service's name cannot carry a domain. Rename it in the Compose file to at most 26 lowercase letters, digits and dashes, then deploy.
+<% } else if (it.key === "domain-port-required") { %>
+Give the port the service listens on.
+<% } else if (it.key === "domain-port-conflict") { %>
+That service already answers on another port, and a service has one port for all its domains. Use the port it already has. The public service's port is set in Settings.
 <% } %>

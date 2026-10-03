@@ -1,5 +1,6 @@
 import { prescanCompose, type PrescanResult } from "../compose/prescan.ts"
 import type { Refusal } from "../compose/types.ts"
+import { isRoutableServiceName } from "../compose/validate.ts"
 import { addResourceEnvVars, resolveEnvKeys } from "../db/queries.ts"
 import { placeholderVars } from "../jobs/compose-plan.ts"
 import { parseContainerPort } from "./container-port.ts"
@@ -28,7 +29,13 @@ export type ComposeFormCheck =
     }
   /** The file itself was refused; the draft carries the first refusal. */
   | { ok: false; error: "compose-refused"; refusal: Refusal }
-  | { ok: false; error: "compose-public-unknown" | "compose-port-required" }
+  | {
+      ok: false
+      error:
+        | "compose-public-unknown"
+        | "compose-public-name"
+        | "compose-port-required"
+    }
   /** A port the form's own min/max refuses: a hand-made request. */
   | { ok: false; error: "bad-port" }
 
@@ -52,6 +59,12 @@ export function checkComposeForm(body: ComposeFormBody): ComposeFormCheck {
   }
   if (!scan.services.includes(service)) {
     return { ok: false, error: "compose-public-unknown" }
+  }
+  // The public service gets the auto subdomain, so it is routed, and a routed
+  // service's name becomes part of the hostname Caddy dials (D66). Refused
+  // here rather than left to fail the deploy with routed-name.
+  if (!isRoutableServiceName(service)) {
+    return { ok: false, error: "compose-public-name" }
   }
   const port = parseContainerPort(body.publicPort)
   if (!port.ok) return { ok: false, error: "bad-port" }

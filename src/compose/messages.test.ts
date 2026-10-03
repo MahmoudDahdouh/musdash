@@ -52,6 +52,7 @@ const ALL = {
   "external-links": true,
   "routed-unknown": true,
   "routed-network-mode": true,
+  "routed-name": true,
   "unsupported-key": true,
   "network-ipam": true,
 } satisfies Record<RefusalCode, true>

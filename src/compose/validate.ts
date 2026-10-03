@@ -29,6 +29,19 @@ export interface ValidateContext {
   routedServices: readonly string[]
 }
 
+/**
+ * A service name that can carry a domain. Compose accepts `[a-zA-Z0-9._-]`,
+ * but a routed service's name becomes part of a hostname — Caddy dials
+ * `musdash-<resource>-<service>-1` by name on the shared network (D48) — and
+ * `_`, `.` and capitals do not survive as a DNS label (D66). The 26 cap
+ * keeps that name inside one 63-byte label: 8 + a 26-char id + 1 + 26 + 2.
+ */
+export const ROUTABLE_SERVICE_RE = /^[a-z0-9-]{1,26}$/
+
+export function isRoutableServiceName(name: string): boolean {
+  return ROUTABLE_SERVICE_RE.test(name)
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -676,7 +689,13 @@ export function validateModel(model: unknown, ctx: ValidateContext): Refusal[] {
     const svc = services[name]
     if (!(names.has(name) && isRecord(svc))) {
       push({ code: "routed-unknown", service: name, field: null })
-    } else if (present(svc.network_mode)) {
+      continue
+    }
+    // The forms refuse such a name; this is what stops one sent by hand.
+    if (!isRoutableServiceName(name)) {
+      push({ code: "routed-name", service: name, field: null })
+    }
+    if (present(svc.network_mode)) {
       // Caddy reaches a routed service over the shared network, which a
       // service in another's (or no) network namespace cannot join.
       push({

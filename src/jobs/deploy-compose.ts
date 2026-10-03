@@ -1,7 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs"
-import { isIP } from "node:net"
 import { resolve } from "node:path"
-import { caddy, routeIdForService } from "../caddy/client.ts"
 import { refusalMessage } from "../compose/messages.ts"
 import { prescanCompose } from "../compose/prescan.ts"
 import { interpolationEnv } from "../compose/env.ts"
@@ -19,11 +17,14 @@ import {
   getDeployment,
   getResource,
   getResourceContext,
+  listDomains,
   markDeploymentFailed,
   resolveEnvVars,
+  setComposeSource,
   updateDeployment,
   updateResource,
 } from "../db/queries.ts"
+import type { Domain } from "../db/schema.ts"
 import type { ManagedContainer } from "../docker/client.ts"
 import { docker } from "../docker/impl.ts"
 import {
@@ -40,18 +41,18 @@ import {
   composeDescriptor,
   composeProject,
   primaryService,
-  routedServicesFor,
+  type RoutingPlan,
   type ServiceBaseline,
-  serviceContainerName,
+  type ServiceRoute,
   serviceVerdict,
 } from "./compose-plan.ts"
 import type { DeployPayload } from "./deploy.ts"
 import { awaitCertificates, healthGate } from "./health-gate.ts"
-import { routeHostsForService } from "./routes.ts"
+import { routingPlanFor } from "./routes.ts"
 import {
+  applyStackRoutes,
   compose,
   composeTmpDir,
-  deleteResourceRoutes,
   removeComposeTmpDir,
   stackContainersOf,
 } from "./stack.ts"
@@ -210,16 +211,19 @@ export async function runComposeDeploy(payload: DeployPayload): Promise<void> {
       { project: stack, dir, file: inFile },
       interp.env,
     )
-    const hosts =
-      source.publicService === null
-        ? []
-        : routeHostsForService(
-            resourceId,
-            resource.name,
-            environment.name,
-            source.publicService,
-          )
-    const routed = routedServicesFor(source, hosts.length)
+
+    // The routing plan, read once: the same answer `sync_routes` and the
+    // resource page give (routingPlanFor). Only its services join the shared
+    // network; everything else stays on the stack's own (§3.4).
+    const rows = listDomains(resourceId)
+    const plan = routingPlanFor(resource, environment.name, source)
+    const routed = [...plan.routes.keys()]
+
+    // A domain still pointing at a service this file no longer has. Refused
+    // before `up`, so the running stack and its routes are left alone rather
+    // than half-replaced by a stack its domains cannot reach.
+    checkDroppedServices(model, rows, plan, source.publicService)
+
     const refusals = validateModel(model, {
       project: stack,
       routedServices: routed,
@@ -259,48 +263,51 @@ export async function runComposeDeploy(payload: DeployPayload): Promise<void> {
     await compose.up(target, emit)
     removeComposeTmpDir(deploymentId)
 
-    // 10. the gate, every service under one deadline.
+    // 10. what `up` joined to the shared network, recorded at once — before
+    // the gate, which may fail — because the services ARE joined from here
+    // on, whatever the gate says. A later domain change reads this to tell a
+    // route sync (service already reachable) from a deploy (it is not).
+    recordRoutedServices(resourceId, routed)
+
+    // 11. the gate, every service under one deadline.
     const containers = await gateStack({
       resourceId,
       services,
       transformed,
-      routed,
-      port: source.publicPort,
+      routes: plan.routes,
+      publicService: source.publicService,
       healthPath: resource.healthPath,
       baseline,
       emit,
     })
     emit("Health check passed")
 
-    // 11. the route: one per routed service, dialled by container name
-    // (D48), and every other route of this resource removed.
-    let newHosts: string[] = []
-    const keep = new Set<string>()
-    const service = routed[0]
-    if (service !== undefined && source.publicPort !== null) {
-      const id = routeIdForService(resourceId, service)
-      const upstream = `${serviceContainerName(resourceId, service)}:${source.publicPort}`
-      const previousHosts = await caddy.upsertRoute({ id, hosts, upstream })
-      keep.add(id)
-      newHosts = hosts.filter(
-        (h) =>
-          isIP(h) === 0 &&
-          !previousHosts.some((p) => p.toLowerCase() === h.toLowerCase()),
-      )
-      emit(`Route switched to ${upstream} for ${hosts.join(", ")}`)
-    } else if (hosts.length > 0 || source.publicService !== null) {
+    // 12. the routes: one per routed service, dialled by container name
+    // (D48), all written before any other route of this resource is removed.
+    for (const c of plan.conflicts) {
       emit(
-        "No public service with a port and a domain — skipping the route (set them in Settings to expose it)",
+        `Skipping ${c.host}: it asks for port ${c.port} of ${c.service}, which is routed on another port (a service has one port)`,
       )
     }
-    await deleteResourceRoutes(resourceId, keep)
+    if (
+      plan.routes.size === 0 &&
+      (rows.length > 0 || source.publicService !== null)
+    ) {
+      emit(
+        "No service has both a domain and a port — skipping the route (add a domain on the Domains tab to expose one)",
+      )
+    }
+    const newHosts = await applyStackRoutes(resourceId, plan, emit)
+    // One wait over every new host, under one deadline, whichever service it
+    // routes to.
     if (newHosts.length > 0) {
       await awaitCertificates(resourceId, newHosts, emit)
     }
 
-    // 12. record success. The source is read again: Settings may have saved a
+    // 13. record success. The source is read again: Settings may have saved a
     // new file while this ran, and only `services` and `memoryMb` are this
-    // deploy's to write.
+    // deploy's to write — `routedServices` it wrote after `up`, and the fresh
+    // read carries it.
     const primary = primaryService({
       publicService: source.publicService,
       services,
@@ -351,6 +358,57 @@ export async function runComposeDeploy(payload: DeployPayload): Promise<void> {
     // It holds the interpolated file, and so the secrets in it.
     removeComposeTmpDir(deploymentId)
   }
+}
+
+/**
+ * Refuses a file that dropped a service a domain points at: every service a
+ * domain row names, and the public service when the plan routes it, must be
+ * a service of the normalised model. The message names the services and
+ * their hosts only — never a value. A model with no services is left to
+ * validateModel, whose `no-services` says what is actually wrong.
+ */
+function checkDroppedServices(
+  model: unknown,
+  rows: readonly Domain[],
+  plan: RoutingPlan,
+  publicService: string | null,
+): void {
+  if (!(isRecord(model) && isRecord(model.services))) return
+  const present = new Set(Object.keys(model.services))
+  const dropped = new Map<string, string[]>()
+  const add = (service: string, host: string): void => {
+    if (present.has(service)) return
+    const hosts = dropped.get(service) ?? []
+    if (!hosts.includes(host)) hosts.push(host)
+    dropped.set(service, hosts)
+  }
+  for (const d of rows) {
+    if (d.serviceName !== null) add(d.serviceName, d.host)
+  }
+  if (publicService !== null) {
+    for (const host of plan.routes.get(publicService)?.hosts ?? []) {
+      add(publicService, host)
+    }
+  }
+  if (dropped.size === 0) return
+  const parts = [...dropped].map(
+    ([service, hosts]) => `${service} (domains: ${hosts.join(", ")})`,
+  )
+  throw new ComposeDeployError(
+    `The Compose file no longer has ${dropped.size === 1 ? "the service" : "the services"} ${parts.join("; ")}. ` +
+      "Move those domains to another service on the Domains tab, or put the service back in the file.",
+  )
+}
+
+/**
+ * Writes which services this deploy joined to the shared network into a
+ * freshly read source, so a Settings save made while the deploy ran is kept.
+ */
+function recordRoutedServices(resourceId: string, routed: string[]): void {
+  const fresh = getResource(resourceId)
+  const freshSource = fresh ? composeSource(fresh) : null
+  if (freshSource === null) return
+  setComposeSource(resourceId, { ...freshSource, routedServices: routed })
 }
 
 /** The peak-RSS line runDeploy logs, for the same reason (see logPeakRss). */
@@ -404,8 +462,10 @@ interface GateInput {
   resourceId: string
   services: readonly string[]
   transformed: Record<string, unknown>
-  routed: readonly string[]
-  port: number | null
+  /** The plan's routes: each routed service is gated on its own port. */
+  routes: ReadonlyMap<string, ServiceRoute>
+  /** The only service the resource's health path applies to. */
+  publicService: string | null
   healthPath: string | null
   baseline: ReadonlyMap<string, ServiceBaseline>
   emit: (s: string) => void
@@ -429,7 +489,7 @@ function restartOf(model: Record<string, unknown>, service: string): unknown {
 async function gateStack(
   input: GateInput,
 ): Promise<Map<string, ManagedContainer>> {
-  const { resourceId, services, routed, baseline, emit } = input
+  const { resourceId, services, routes, baseline, emit } = input
   const deadline = Date.now() + config.healthTimeoutSec * 1000
   const list = async () =>
     stackContainersOf(
@@ -437,7 +497,7 @@ async function gateStack(
       resourceId,
     )
 
-  for (const service of routed) {
+  for (const [service, route] of routes) {
     const c = (await list()).get(service)
     if (!c) {
       throw new ComposeDeployError(
@@ -446,17 +506,19 @@ async function gateStack(
     }
     emit(`Checking ${service}...`)
     const before = baseline.get(service)
+    // The health path is a setting of the public service; another routed
+    // service is gated on its own port by HEALTHCHECK or uptime instead.
     await healthGate(
       c.id,
-      input.port,
-      input.healthPath,
+      route.port,
+      service === input.publicService ? input.healthPath : null,
       emit,
       deadline,
       before?.containerId === c.id ? before.restartCount : 0,
     )
   }
 
-  const others = services.filter((s) => !routed.includes(s))
+  const others = services.filter((s) => !routes.has(s))
   if (others.length > 0) {
     emit(`Waiting for ${others.join(", ")} to stay up for 5s...`)
   }

@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, ne, sql } from "drizzle-orm"
+import { and, asc, desc, eq, lt, ne, sql } from "drizzle-orm"
 import { z } from "zod"
 import {
   BUILD_PLACEHOLDER,
@@ -250,6 +250,10 @@ const composeSourceSchema = z.object({
   // Older rows cannot exist (the column arrived with it), but a missing key is
   // read as "no port" rather than refusing the whole source.
   publicPort: z.number().int().min(1).max(65535).nullable().default(null),
+  // A source saved before per-service routing records none: the next deploy
+  // writes what it joined to the network, and until then any domain change
+  // that routes a service reads as needing a deploy, which is the safe side.
+  routedServices: z.array(z.string()).default([]),
   memoryMb: z.record(z.string(), z.number().int().positive()).optional(),
 })
 
@@ -1225,12 +1229,33 @@ export function addDomain(
 }
 
 export function listDomains(resourceId: string): Domain[] {
+  return (
+    orm
+      .select()
+      .from(domains)
+      .where(eq(domains.resourceId, resourceId))
+      // Creation order after the auto row: a service's port is the port of its
+      // first row (routingPlan), so the order must be stable. The id breaks a
+      // same-millisecond tie, and a ULID sorts by time too.
+      .orderBy(desc(domains.isAuto), asc(domains.createdAt), asc(domains.id))
+      .all()
+  )
+}
+
+/**
+ * A domain row, only when it belongs to `resourceId`. Every handler that
+ * takes a domain id from the URL reads it through this: the id alone would
+ * let a form for one resource edit or delete another's domain.
+ */
+export function getDomainOfResource(
+  resourceId: string,
+  domainId: string,
+): Domain | undefined {
   return orm
     .select()
     .from(domains)
-    .where(eq(domains.resourceId, resourceId))
-    .orderBy(desc(domains.isAuto))
-    .all()
+    .where(and(eq(domains.id, domainId), eq(domains.resourceId, resourceId)))
+    .get()
 }
 
 /** Points a domain row at a stack service and port (null: neither). */

@@ -2,7 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test"
+import type { Domain, Environment, Resource } from "../db/schema.ts"
 import {
+  autoDomainFor,
   CaddyClient,
   caddy,
   DASHBOARD_HOST_ROUTE_ID,
@@ -54,41 +56,60 @@ function sortKeys(v: unknown): unknown {
   return v
 }
 
+/** The routes' hosts after each write, for "never unrouted between writes". */
+let afterWrites: Map<string, string[]>[] = []
+
+/** The hosts of every route, by id. */
+function hostsById(): Map<string, string[]> {
+  return new Map(
+    routes.map((r) => {
+      const match = r.match as { host?: string[] }[] | undefined
+      return [r["@id"], match?.[0]?.host ?? []]
+    }),
+  )
+}
+
 const server = Bun.serve({
   unix: socket,
   async fetch(req) {
-    const path = new URL(req.url).pathname
-    const method = req.method
-    hosts.push(req.headers.get("host"))
-    if (method !== "GET") writes.push(`${method} ${path}`)
-    const body =
-      method === "GET" || method === "DELETE"
-        ? null
-        : ((await req.json()) as Route)
-
-    const byId = /^\/id\/(.+)$/.exec(path)
-    if (byId) {
-      const id = decodeURIComponent(byId[1] ?? "")
-      const i = routes.findIndex((r) => r["@id"] === id)
-      if (i < 0) return new Response("unknown id", { status: 404 })
-      if (method === "GET") return Response.json(sortKeys(routes[i]))
-      if (method === "PATCH" && body) routes[i] = body
-      if (method === "DELETE") routes.splice(i, 1)
-      return new Response("")
-    }
-    const list = "/config/apps/http/servers/srv0/routes"
-    if (path === list && method === "GET") return Response.json(routes)
-    if (path === `${list}/` && method === "POST" && body) {
-      routes.push(body)
-      return new Response("")
-    }
-    if (path === `${list}/0` && method === "PUT" && body) {
-      routes.unshift(body)
-      return new Response("")
-    }
-    return new Response(`unhandled ${method} ${path}`, { status: 400 })
+    const res = await handle(req)
+    if (req.method !== "GET") afterWrites.push(hostsById())
+    return res
   },
 })
+
+async function handle(req: Request): Promise<Response> {
+  const path = new URL(req.url).pathname
+  const method = req.method
+  hosts.push(req.headers.get("host"))
+  if (method !== "GET") writes.push(`${method} ${path}`)
+  const body =
+    method === "GET" || method === "DELETE"
+      ? null
+      : ((await req.json()) as Route)
+
+  const byId = /^\/id\/(.+)$/.exec(path)
+  if (byId) {
+    const id = decodeURIComponent(byId[1] ?? "")
+    const i = routes.findIndex((r) => r["@id"] === id)
+    if (i < 0) return new Response("unknown id", { status: 404 })
+    if (method === "GET") return Response.json(sortKeys(routes[i]))
+    if (method === "PATCH" && body) routes[i] = body
+    if (method === "DELETE") routes.splice(i, 1)
+    return new Response("")
+  }
+  const list = "/config/apps/http/servers/srv0/routes"
+  if (path === list && method === "GET") return Response.json(routes)
+  if (path === `${list}/` && method === "POST" && body) {
+    routes.push(body)
+    return new Response("")
+  }
+  if (path === `${list}/0` && method === "PUT" && body) {
+    routes.unshift(body)
+    return new Response("")
+  }
+  return new Response(`unhandled ${method} ${path}`, { status: 400 })
+}
 
 afterAll(() => {
   server.stop(true)
@@ -99,10 +120,15 @@ beforeEach(() => {
   routes = []
   writes = []
   hosts = []
+  afterWrites = []
 })
 
 const client = new CaddyClient(socket)
 const ids = () => routes.map((r) => r["@id"])
+
+/** ULID-shaped resource ids, as routeIdFor and routeIdForService see them. */
+const STACK_RID = "01J00000000000000000STACK1"
+const IMAGE_RID = "01J00000000000000000SITE01"
 
 /** The pattern as it must appear inside the CEL single-quoted string. */
 const celPattern = IP_LITERAL_HOST_PATTERN.replaceAll("\\", "\\\\")
@@ -354,6 +380,428 @@ describe("route order (C-1)", () => {
     })
     expect(writes).toEqual(["PATCH /id/musdash-a"])
     expect(ids()).toEqual(["musdash-a", DASHBOARD_ROUTE_ID, NOT_FOUND_ROUTE_ID])
+  })
+
+  // A stack's routes go through the same upsertRoute, one per routed service,
+  // and every write lands before any delete: a host moving from one service to
+  // another is never left without a route in between (S3).
+  test("a stack's service routes land at the front, and writes precede deletes", async () => {
+    const { applyStackRoutes } = await import("../jobs/stack.ts")
+    const plan = (entries: [string, { port: number; hosts: string[] }][]) => ({
+      routes: new Map(entries),
+      conflicts: [],
+    })
+    const writesBeforeDelete = () => {
+      const firstDelete = writes.findIndex((w) => w.startsWith("DELETE "))
+      const lastWrite = writes.findLastIndex(
+        (w) => w.startsWith("PUT ") || w.startsWith("PATCH "),
+      )
+      return firstDelete === -1 || lastWrite < firstDelete
+    }
+    const web = `musdash-${STACK_RID}--web`
+    const api = `musdash-${STACK_RID}--api`
+    const tail = [
+      DASHBOARD_HOST_ROUTE_ID,
+      DASHBOARD_ROUTE_ID,
+      NOT_FOUND_ROUTE_ID,
+    ]
+
+    await ensureDashboardRoutes("dash.example.com", client)
+    writes = []
+    const emitted: string[] = []
+    await applyStackRoutes(
+      STACK_RID,
+      plan([
+        ["web", { port: 3000, hosts: ["a.example.com"] }],
+        ["api", { port: 8080, hosts: ["b.example.com"] }],
+      ]),
+      (line) => emitted.push(line),
+      client,
+    )
+    expect(ids().slice(0, 2).sort()).toEqual([api, web].sort())
+    expect(ids().slice(2)).toEqual(tail)
+    expect(ids().at(-1)).toBe(NOT_FOUND_ROUTE_ID)
+    expect(writesBeforeDelete()).toBe(true)
+    // Dialled by container name (D48), each on its own port.
+    const dial = (id: string) =>
+      (
+        routes.find((r) => r["@id"] === id) as Route & {
+          handle: { upstreams: { dial: string }[] }[]
+        }
+      ).handle[0]?.upstreams[0]?.dial
+    const project = `musdash-${STACK_RID.toLowerCase()}`
+    expect(dial(web)).toBe(`${project}-web-1:3000`)
+    expect(dial(api)).toBe(`${project}-api-1:8080`)
+
+    // api loses its domain to web: web is patched in place, then api goes.
+    writes = []
+    await applyStackRoutes(
+      STACK_RID,
+      plan([
+        ["web", { port: 3000, hosts: ["a.example.com", "b.example.com"] }],
+      ]),
+      (line) => emitted.push(line),
+      client,
+    )
+    expect(writes).toEqual([`PATCH /id/${web}`, `DELETE /id/${api}`])
+    expect(writesBeforeDelete()).toBe(true)
+    expect(ids()).toEqual([web, ...tail])
+
+    // Both hosts move to a service with no route yet: the new route is PUT at
+    // the front before the old one is deleted, never the other way round.
+    writes = []
+    await applyStackRoutes(
+      STACK_RID,
+      plan([
+        ["api", { port: 8080, hosts: ["a.example.com", "b.example.com"] }],
+      ]),
+      (line) => emitted.push(line),
+      client,
+    )
+    expect(writes).toEqual([
+      "PUT /config/apps/http/servers/srv0/routes/0",
+      `DELETE /id/${web}`,
+    ])
+    expect(writesBeforeDelete()).toBe(true)
+    expect(ids()).toEqual([api, ...tail])
+  })
+
+  // Both routes survive, so no delete orders the move: b leaves `--web`, which
+  // keeps a, for `--api`. It must be on a route after EVERY write — the gain
+  // pass puts it on `--api` before the final pass takes it off `--web`.
+  test("a host moving between two surviving service routes is never unrouted", async () => {
+    const { applyStackRoutes } = await import("../jobs/stack.ts")
+    const plan = (entries: [string, { port: number; hosts: string[] }][]) => ({
+      routes: new Map(entries),
+      conflicts: [],
+    })
+    const web = `musdash-${STACK_RID}--web`
+    const api = `musdash-${STACK_RID}--api`
+    await ensureDashboardRoutes(undefined, client)
+    await applyStackRoutes(
+      STACK_RID,
+      plan([
+        ["web", { port: 3000, hosts: ["a.example.com", "b.example.com"] }],
+        ["api", { port: 8080, hosts: ["c.example.com"] }],
+      ]),
+      () => undefined,
+      client,
+    )
+    writes = []
+    afterWrites = []
+
+    await applyStackRoutes(
+      STACK_RID,
+      plan([
+        ["web", { port: 3000, hosts: ["a.example.com"] }],
+        ["api", { port: 8080, hosts: ["c.example.com", "b.example.com"] }],
+      ]),
+      () => undefined,
+      client,
+    )
+
+    expect(writes).toEqual([`PATCH /id/${api}`, `PATCH /id/${web}`])
+    expect(afterWrites.length).toBe(writes.length)
+    for (const state of afterWrites) {
+      expect([...state.values()].some((h) => h.includes("b.example.com"))).toBe(
+        true,
+      )
+    }
+    const final = hostsById()
+    expect(final.get(web)).toEqual(["a.example.com"])
+    expect(final.get(api)).toEqual(["c.example.com", "b.example.com"])
+  })
+})
+
+/** A resource row; only what the route sync reads differs between tests. */
+function resourceRow(over: Partial<Resource> & Pick<Resource, "id">): Resource {
+  return {
+    environmentId: "env1",
+    name: "app",
+    kind: "image",
+    sourceJson: "{}",
+    desiredState: "running",
+    containerPort: null,
+    memoryLimitMb: 512,
+    healthPath: null,
+    containerId: null,
+    currentDeploymentId: null,
+    previousImage: null,
+    gitInstallationId: null,
+    gitRepo: null,
+    gitBranch: null,
+    buildPack: null,
+    dockerfilePath: null,
+    buildContext: null,
+    autoDeploy: 1,
+    registryCredentialId: null,
+    builtImage: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...over,
+  }
+}
+
+function domainRow(
+  resourceId: string,
+  host: string,
+  target: { serviceName: string; containerPort: number } | null,
+): Domain {
+  return {
+    id: `dom-${host}`,
+    resourceId,
+    host,
+    isAuto: 0,
+    serviceName: target?.serviceName ?? null,
+    containerPort: target?.containerPort ?? null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+describe("sync_routes with a stack (S3)", () => {
+  // The real syncResourceRoutes against the fake: a running stack whose only
+  // domain now targets web, beside a running image resource. The stale `--api`
+  // route is the one thing it may delete, and the neighbour's route must not
+  // be rewritten at all — every admin write reloads the whole proxy.
+  test("deletes only the service route no domain targets, and leaves a neighbour byte-identical", async () => {
+    const queries = await import("../db/queries.ts")
+    const settings = await import("../settings.ts")
+    const { docker } = await import("../docker/impl.ts")
+    const { syncResourceRoutes } = await import("../jobs/routes.ts")
+
+    const environment: Environment = {
+      id: "env1",
+      projectId: "proj1",
+      name: "prod",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }
+    const stack = resourceRow({
+      id: STACK_RID,
+      name: "stack",
+      kind: "compose",
+      sourceJson: JSON.stringify({
+        composeFile: "services: {}",
+        origin: "paste",
+        services: ["web", "api"],
+        publicService: null,
+        publicPort: null,
+        routedServices: ["web", "api"],
+      }),
+    })
+    const image = resourceRow({
+      id: IMAGE_RID,
+      name: "site",
+      containerPort: 80,
+      containerId: "c-image",
+    })
+    const domainsOf: Record<string, Domain[]> = {
+      [STACK_RID]: [
+        domainRow(STACK_RID, "web.example.com", {
+          serviceName: "web",
+          containerPort: 3000,
+        }),
+      ],
+      [IMAGE_RID]: [domainRow(IMAGE_RID, "site.example.com", null)],
+    }
+    // The image resource's hosts as routeHosts builds them, auto subdomain
+    // included when this environment has a wildcard configured.
+    const imageAuto = autoDomainFor(image.name, environment.name)
+    const imageHosts = [
+      "site.example.com",
+      ...(imageAuto === null ? [] : [imageAuto]),
+    ]
+    const project = `musdash-${STACK_RID.toLowerCase()}`
+    const webId = `musdash-${STACK_RID}--web`
+    const apiId = `musdash-${STACK_RID}--api`
+    const imageId = `musdash-${IMAGE_RID}`
+
+    const spies = [
+      spyOn(queries, "listAllResources").mockImplementation(() => [
+        stack,
+        image,
+      ]),
+      spyOn(queries, "getEnvironment").mockImplementation(() => environment),
+      spyOn(queries, "listDomains").mockImplementation(
+        (rid) => domainsOf[rid] ?? [],
+      ),
+      spyOn(settings, "getDashboardHost").mockImplementation(() => undefined),
+      // No daemon here: each route keeps the upstream it already dials, as
+      // currentUpstream does for a container it cannot inspect.
+      spyOn(docker, "inspectContainer").mockImplementation(() =>
+        Promise.reject(new Error("no daemon in this test")),
+      ),
+      spyOn(caddy, "getRouteUpstream").mockImplementation((id) =>
+        client.getRouteUpstream(id),
+      ),
+      spyOn(caddy, "readRoute").mockImplementation((id) =>
+        client.readRoute(id),
+      ),
+      spyOn(caddy, "ensureRoute").mockImplementation((spec) =>
+        client.ensureRoute(spec),
+      ),
+      spyOn(caddy, "listRouteIds").mockImplementation(() =>
+        client.listRouteIds(),
+      ),
+    ]
+    const deleteSpy = spyOn(caddy, "deleteRoute").mockImplementation((id) =>
+      client.deleteRoute(id),
+    )
+    try {
+      routes = [
+        resourceRoute(webId, "web.example.com", `${project}-web-1:3000`),
+        resourceRoute(apiId, "api.example.com", `${project}-api-1:8080`),
+        {
+          "@id": imageId,
+          match: [{ host: imageHosts }],
+          handle: [
+            {
+              handler: "reverse_proxy",
+              upstreams: [{ dial: `musdash-${IMAGE_RID}-abcd1234:80` }],
+            },
+          ],
+          terminal: true,
+        },
+      ]
+      await ensureDashboardRoutes("dash.example.com", client)
+      const imageBefore = JSON.stringify(
+        routes.find((r) => r["@id"] === imageId),
+      )
+      writes = []
+
+      await syncResourceRoutes()
+
+      expect(spies[0]).toHaveBeenCalledTimes(1)
+      expect(deleteSpy.mock.calls).toEqual([[apiId]])
+      expect(JSON.stringify(routes.find((r) => r["@id"] === imageId))).toBe(
+        imageBefore,
+      )
+      expect(writes).toEqual([`DELETE /id/${apiId}`])
+      expect(ids()).toEqual([
+        webId,
+        imageId,
+        DASHBOARD_HOST_ROUTE_ID,
+        DASHBOARD_ROUTE_ID,
+        NOT_FOUND_ROUTE_ID,
+      ])
+    } finally {
+      for (const s of spies) s.mockRestore()
+      deleteSpy.mockRestore()
+    }
+  })
+
+  // b has moved from web to api in the database, but api is on no route and
+  // not on the musdash network until a deploy joins it: the sync cannot route
+  // b there yet, so b must stay on `--web` — which no plan entry wants any
+  // more, and which must therefore survive the sweep for b's sake.
+  test("a host whose new service cannot be dialled yet stays on its current route", async () => {
+    const queries = await import("../db/queries.ts")
+    const settings = await import("../settings.ts")
+    const { docker } = await import("../docker/impl.ts")
+    const { syncResourceRoutes } = await import("../jobs/routes.ts")
+
+    const environment: Environment = {
+      id: "env1",
+      projectId: "proj1",
+      name: "prod",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }
+    const stack = resourceRow({
+      id: STACK_RID,
+      name: "stack",
+      kind: "compose",
+      sourceJson: JSON.stringify({
+        composeFile: "services: {}",
+        origin: "paste",
+        services: ["web", "api"],
+        publicService: null,
+        publicPort: null,
+        routedServices: ["web"],
+      }),
+    })
+    const image = resourceRow({
+      id: IMAGE_RID,
+      name: "site",
+      containerPort: 80,
+      containerId: "c-image",
+    })
+    const domainsOf: Record<string, Domain[]> = {
+      [STACK_RID]: [
+        domainRow(STACK_RID, "b.example.com", {
+          serviceName: "api",
+          containerPort: 8080,
+        }),
+      ],
+      [IMAGE_RID]: [domainRow(IMAGE_RID, "site.example.com", null)],
+    }
+    const imageAuto = autoDomainFor(image.name, environment.name)
+    const project = `musdash-${STACK_RID.toLowerCase()}`
+    const webId = `musdash-${STACK_RID}--web`
+    const imageId = `musdash-${IMAGE_RID}`
+
+    const spies = [
+      spyOn(queries, "listAllResources").mockImplementation(() => [
+        stack,
+        image,
+      ]),
+      spyOn(queries, "getEnvironment").mockImplementation(() => environment),
+      spyOn(queries, "listDomains").mockImplementation(
+        (rid) => domainsOf[rid] ?? [],
+      ),
+      spyOn(settings, "getDashboardHost").mockImplementation(() => undefined),
+      // No daemon: api's container cannot be found on the network.
+      spyOn(docker, "inspectContainer").mockImplementation(() =>
+        Promise.reject(new Error("no daemon in this test")),
+      ),
+      spyOn(caddy, "readRoute").mockImplementation((id) =>
+        client.readRoute(id),
+      ),
+      spyOn(caddy, "ensureRoute").mockImplementation((spec) =>
+        client.ensureRoute(spec),
+      ),
+      spyOn(caddy, "listRouteIds").mockImplementation(() =>
+        client.listRouteIds(),
+      ),
+    ]
+    const deleteSpy = spyOn(caddy, "deleteRoute").mockImplementation((id) =>
+      client.deleteRoute(id),
+    )
+    try {
+      routes = [
+        resourceRoute(webId, "b.example.com", `${project}-web-1:3000`),
+        {
+          "@id": imageId,
+          match: [
+            {
+              host: ["site.example.com", ...(imageAuto ? [imageAuto] : [])],
+            },
+          ],
+          handle: [
+            {
+              handler: "reverse_proxy",
+              upstreams: [{ dial: `musdash-${IMAGE_RID}-abcd1234:80` }],
+            },
+          ],
+          terminal: true,
+        },
+      ]
+      await ensureDashboardRoutes("dash.example.com", client)
+      const imageBefore = JSON.stringify(
+        routes.find((r) => r["@id"] === imageId),
+      )
+      writes = []
+
+      await syncResourceRoutes()
+
+      expect(spies[0]).toHaveBeenCalledTimes(1)
+      expect(deleteSpy).not.toHaveBeenCalled()
+      expect(writes).toEqual([])
+      expect(hostsById().get(webId)).toEqual(["b.example.com"])
+      expect(JSON.stringify(routes.find((r) => r["@id"] === imageId))).toBe(
+        imageBefore,
+      )
+    } finally {
+      for (const s of spies) s.mockRestore()
+      deleteSpy.mockRestore()
+    }
   })
 })
 

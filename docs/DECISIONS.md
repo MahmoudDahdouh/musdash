@@ -4170,3 +4170,89 @@ exited (0)`). musdash gates stacks itself and does not use `--wait`.
     keys starting `COMPOSE_`, `DOCKER_` or `BUILDKIT_` are left out of what the
     user can set there, with a log line naming each, so a variable cannot steer
     the CLI.
+
+### D66 — a stack routes each service on its own domains; stack assets have their own budget
+
+S2-UI and S3 (PHASE-3-PLAN §3.6, §3.11, §3.12). What was decided while
+finishing the stack resource page and routing several services:
+
+1. **Page-scoped assets.** `public/stack.css` and `public/stack.js` are
+   embedded like `app.*` (D51) but linked only on a compose resource page and
+   the project page's Compose form, decided by `resource.kind` in
+   `render.ts`, not by which view data happens to be present. Each has its own
+   8 KB line in `scripts/check-asset-size.ts`. The global 32/16 KB caps did not
+   move; the compose UI would not have fit under them.
+2. **One Caddy route per routed service**, id `musdash-<rid>--<service>`,
+   dialling `musdash-<rid>-<service>-1:<port>` by name (D48). Image and git
+   resources keep `musdash-<rid>`. A single pure `routingPlan`
+   (`src/jobs/compose-plan.ts`) decides host → service for the deploy, the
+   route sync and the resource page alike, so they cannot disagree.
+3. **A host is never unrouted while it moves between a resource's routes.**
+   The deploy and the sync both write gain-first: a route that gains a host
+   another of the resource's routes holds is first written with its current
+   and new hosts together, then every route with its final hosts, then the
+   emptied routes are deleted. A failed write leaves a host on two routes,
+   never on none. New routes still go in at index 0 (C-1). Only hosts on none
+   of the resource's routes beforehand wait for a certificate.
+4. **A host whose new service cannot be dialled yet stays where it is.** When
+   the sync cannot write a planned service route (no route yet, and the
+   service is not on `musdash`), that route's hosts are pending: any route of
+   the same resource that holds one keeps it, and is not deleted while it
+   does. The next deploy that joins the service moves them.
+5. **A domain row with no service, and the auto domain, belong to the public
+   service**, and to nothing when there is none. `ComposeSource.publicService`
+   and `publicPort` are authoritative for the auto row: it is not editable or
+   removable on the Domains tab (its host follows the public service whether
+   the row exists or not). Clearing the public service clears its target.
+   Changing `publicPort` moves every row on the public service to the new port.
+6. **One port per service.** A domain whose port differs from the port its
+   service is already routed on is refused (`domain-port-conflict`). The
+   alternative, a route per (service, port), would have changed the route id
+   §3.6 fixed for no use case anyone has asked for.
+7. **Every domain change queues `sync_routes`; it also queues a deploy when
+   the service it targets is not on `musdash` yet or changes port.** Only
+   `compose up` can join a container to the network (only routed services
+   join it, D65 item 6). A service counts as on the network if the last `up`
+   joined it (`ComposeSource.routedServices`) or the routing plan already
+   routes it, so stacks deployed before this field existed do not redeploy on
+   every change. The deploy runs the current deployment's file, never unsaved
+   Settings edits; it is not queued for a stopped or never-deployed stack. A
+   change made while a deploy is still queued joins that deploy; one made
+   while a deploy is running queues another with the running deploy's file,
+   so an older file is never put back over a newer one. Because of item 4 the
+   sync never drops a host the deploy has yet to move. A service that loses
+   its last domain loses its route at once, unless the route still holds a
+   pending host, and stays on `musdash` until the next deploy: it was a
+   trusted peer a moment earlier. That deploy's `compose up` takes it off the
+   network before the routes are rewritten, so a host still pending on its
+   route answers 502, not 404, for the length of the health gate.
+8. **Settings still saves without deploying.** Switching the public service
+   to one that is not yet on `musdash` leaves the auto domain on its current
+   route (item 4) until the next Deploy; the Settings form says a change of
+   public service takes effect on the next deploy.
+9. **Only DNS-safe names can be routed**: `^[a-z0-9-]{1,26}$`. Compose
+   accepts `.`, `_` and capitals, but the routed name becomes part of the
+   container name Caddy resolves, and `musdash-` + a 26-character id + `-` +
+   the service + `-1` must fit one 63-byte DNS label. Others are refused on
+   the forms (`compose-public-name`, `domain-service-name`) and in validation
+   (`routed-name`).
+10. **A file that drops a service a domain points at fails the deploy before
+    `compose up`**, naming the service and its hosts, rather than removing its
+    routes. One known gap remains from before this slice: a stack whose stored
+    source no longer parses wants no routes, so the sync deletes them all.
+11. **`ComposeSource` gained fields nobody recorded until now**: `publicPort`
+    (S2), `memoryMb` (each service's limit as the last successful deploy
+    enforced it, so Overview can show it without keeping the transformed
+    file), and `routedServices`. All are optional or defaulted in the zod
+    schema, so older rows still parse.
+12. **A domain id is only reachable through its own resource.** Delete and the
+    new retarget handler look the row up by `(resourceId, domainId)` and answer
+    404 otherwise (§2 item 9).
+13. **Interfaces that moved from the brief:** `CaddyClient.readRoute(id)`
+    (read-only; a 404 is "no route", any other failure throws so a caller
+    never mistakes an unreadable route for an empty one) feeds the gain-first
+    writes, and `routingChangeNeedsDeploy(before, routedServices, service,
+port)` judges only the change's target.
+14. **Known, accepted:** a routed service that loses its last domain and then
+    gains one on a different port has its route written by the sync at the
+    new port, without a health gate, because it is already on the network.

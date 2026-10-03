@@ -60,6 +60,15 @@ const SENTENCES: Record<ErrorKey, string> = {
   "compose-public-unknown":
     "The public service is not a service in the Compose file.",
   "compose-port-required": "Give the port the public service listens on.",
+  "compose-public-name":
+    "The public service's name cannot carry an address. Rename it in the Compose file to at most 26 lowercase letters, digits and dashes, or choose another public service.",
+  "domain-service-unknown":
+    "Choose the service this domain sends its traffic to. It must be a service of this stack.",
+  "domain-service-name":
+    "That service's name cannot carry a domain. Rename it in the Compose file to at most 26 lowercase letters, digits and dashes, then deploy.",
+  "domain-port-required": "Give the port the service listens on.",
+  "domain-port-conflict":
+    "That service already answers on another port, and a service has one port for all its domains. Use the port it already has. The public service's port is set in Settings.",
   "image-invalid":
     "That is not a valid image reference. Use a name like nginx:alpine or ghcr.io/owner/app:1.2.",
   "resource-name-taken":
@@ -538,6 +547,109 @@ try {
       healthPath: "",
     }),
     `${p}?error=compose-port-required`,
+  )
+
+  await keyed(
+    "compose public service cannot be routed on create",
+    "compose-public-name",
+    "POST",
+    `/e/${eid}/resources/compose`,
+    withCsrf({
+      name: "stacknew",
+      composeFile: "services:\n  my_api:\n    image: nginx:alpine\n",
+      publicService: "my_api",
+      publicPort: "80",
+      healthPath: "",
+    }),
+    `${p}?error=compose-public-name`,
+  )
+
+  // A real stack for the Domains refusals. Its deploy fails at once against
+  // the missing socket; wait for that so no row moves under a snapshot.
+  const made = await send(
+    "POST",
+    `/e/${eid}/resources/compose`,
+    withCsrf({
+      name: "stack",
+      composeFile:
+        "services:\n  web:\n    image: nginx:alpine\n  api:\n    image: nginx:alpine\n  my_api:\n    image: nginx:alpine\n",
+      publicService: "web",
+      publicPort: "80",
+      healthPath: "",
+    }),
+  )
+  const sid = readOne(
+    "SELECT id FROM resources WHERE name = ? AND environment_id = ?",
+    "stack",
+    eid,
+  )
+  report(
+    made.status === 303 && sid !== "",
+    "stack fixture created",
+    `${made.status} ${made.location}`,
+  )
+  for (let i = 0; i < 100; i++) {
+    const open = readOne(
+      "SELECT id FROM deployments WHERE resource_id = ? AND status IN ('queued', 'running')",
+      sid,
+    )
+    if (open === "") break
+    await Bun.sleep(100)
+  }
+  const s = `/r/${sid}`
+  const stackDomain = (serviceName: string, containerPort: string) =>
+    withCsrf({ host: "svc.example.test", serviceName, containerPort })
+  await keyed(
+    "domain for a service not in the stack",
+    "domain-service-unknown",
+    "POST",
+    `${s}/domains`,
+    stackDomain("nope", "80"),
+    `${s}?tab=domains&error=domain-service-unknown`,
+  )
+  await keyed(
+    "domain for a service that cannot be routed",
+    "domain-service-name",
+    "POST",
+    `${s}/domains`,
+    stackDomain("my_api", "80"),
+    `${s}?tab=domains&error=domain-service-name`,
+  )
+  await keyed(
+    "domain with no port",
+    "domain-port-required",
+    "POST",
+    `${s}/domains`,
+    stackDomain("api", ""),
+    `${s}?tab=domains&error=domain-port-required`,
+  )
+  await keyed(
+    "domain on a second port of a routed service",
+    "domain-port-conflict",
+    "POST",
+    `${s}/domains`,
+    stackDomain("web", "8080"),
+    `${s}?tab=domains&error=domain-port-conflict`,
+  )
+
+  // S3: a domain id is only reachable through the resource that owns it.
+  const imageDomainId = readOne(
+    "SELECT id FROM domains WHERE resource_id = ?",
+    rid,
+  )
+  await statusCase(
+    "delete another resource's domain",
+    404,
+    "POST",
+    `${s}/domains/${imageDomainId}/delete`,
+    {},
+  )
+  await statusCase(
+    "retarget an unknown domain",
+    404,
+    "POST",
+    `${s}/domains/${BOGUS}/target`,
+    { serviceName: "api", containerPort: "80" },
   )
 
   // Criterion 4: the duplicate environment is a notice, not a 500.

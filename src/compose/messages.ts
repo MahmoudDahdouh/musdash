@@ -100,9 +100,11 @@ function reason(code: RefusalCode): string {
     case "external-links":
       return "external_links is refused, because it reaches containers outside the stack"
     case "routed-unknown":
-      return "the public service is not a service in this file"
+      return "a service with a domain must be a service in this file"
     case "routed-network-mode":
-      return "the public service cannot set network_mode, because it must join musdash's network to be reachable"
+      return "a service with a domain cannot set network_mode, because it must join musdash's network to be reachable"
+    case "routed-name":
+      return "a service with a domain must be named with at most 26 lowercase letters, digits and dashes, because its name becomes part of the hostname the proxy dials"
     case "unsupported-key":
       return "this key is not supported by musdash yet"
     case "network-ipam":

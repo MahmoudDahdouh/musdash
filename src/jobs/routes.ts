@@ -2,6 +2,7 @@ import {
   autoDomainFor,
   caddy,
   DASHBOARD_TAIL_ROUTE_IDS,
+  isRouteOfResource,
   ROUTE_ID_PREFIX,
   type RouteSpec,
   routeIdFor,
@@ -14,11 +15,18 @@ import {
   listAllResources,
   listDomains,
 } from "../db/queries.ts"
+import type { ComposeSource } from "../compose/types.ts"
 import type { Resource } from "../db/schema.ts"
 import { docker } from "../docker/impl.ts"
 import { logger } from "../log.ts"
 import { getDashboardHost } from "../settings.ts"
-import { serviceContainerName } from "./compose-plan.ts"
+import {
+  gainFirstHosts,
+  type RoutingPlan,
+  routingPlan,
+  serviceContainerName,
+  unionHosts,
+} from "./compose-plan.ts"
 
 /**
  * Every hostname a resource answers on: its attached domains plus the auto
@@ -44,23 +52,24 @@ export function routeHosts(
 }
 
 /**
- * routeHosts for one service of a stack: the domains that name this service,
- * or name none (a row from before service routing), plus the auto subdomain —
- * which always belongs to the public service — minus the dashboard's.
+ * A stack's routing plan as the database has it now: its domain rows, the
+ * public service and port, the auto subdomain, and the dashboard host to keep
+ * out (routingPlan). The deploy, the sync and the resource page all read this
+ * one function, so a stack is never routed one way by a deploy and another by
+ * the next sync.
  */
-export function routeHostsForService(
-  resourceId: string,
-  resourceName: string,
+export function routingPlanFor(
+  resource: Resource,
   environmentName: string,
-  service: string,
-): string[] {
-  const dashboard = getDashboardHost()
-  const hosts = listDomains(resourceId)
-    .filter((d) => d.serviceName === null || d.serviceName === service)
-    .map((d) => d.host)
-  const auto = autoDomainFor(resourceName, environmentName)
-  if (auto && !hosts.includes(auto)) hosts.push(auto)
-  return hosts.filter((h) => h !== dashboard)
+  source: ComposeSource,
+): RoutingPlan {
+  return routingPlan({
+    domains: listDomains(resource.id),
+    publicService: source.publicService,
+    publicPort: source.publicPort,
+    autoHost: autoDomainFor(resource.name, environmentName),
+    dashboardHost: getDashboardHost(),
+  })
 }
 
 /** What a wanted route is, and how to find its upstream when it has none. */
@@ -71,32 +80,29 @@ interface WantedRoute {
   service: { name: string; port: number } | null
 }
 
-/** The route a resource should have, or null when it should have none. */
-function wantedRoute(resource: Resource): [string, WantedRoute] | null {
-  if (resource.desiredState !== "running") return null
+/**
+ * The routes a resource should have: none, one for an image or git resource,
+ * and one per routed service of a stack (each with at least one host — the
+ * plan holds no empty route, and an empty host matcher would answer on every
+ * address).
+ */
+function wantedRoutes(resource: Resource): [string, WantedRoute][] {
+  if (resource.desiredState !== "running") return []
   const environment = getEnvironment(resource.environmentId)
-  if (!environment) return null
+  if (!environment) return []
   if (resource.kind === "compose") {
     const source = composeSource(resource)
-    const name = source?.publicService ?? null
-    const port = source?.publicPort ?? null
-    if (name === null || port === null) return null
-    const hosts = routeHostsForService(
-      resource.id,
-      resource.name,
-      environment.name,
-      name,
-    )
-    if (hosts.length === 0) return null
-    return [
+    if (source === null) return []
+    const plan = routingPlanFor(resource, environment.name, source)
+    return [...plan.routes].map(([name, route]) => [
       routeIdForService(resource.id, name),
-      { resource, hosts, service: { name, port } },
-    ]
+      { resource, hosts: route.hosts, service: { name, port: route.port } },
+    ])
   }
-  if (!resource.containerPort) return null
+  if (!resource.containerPort) return []
   const hosts = routeHosts(resource.id, resource.name, environment.name)
-  if (hosts.length === 0) return null
-  return [routeIdFor(resource.id), { resource, hosts, service: null }]
+  if (hosts.length === 0) return []
+  return [[routeIdFor(resource.id), { resource, hosts, service: null }]]
 }
 
 /**
@@ -119,11 +125,10 @@ function wantedRoute(resource: Resource): [string, WantedRoute] | null {
  * and no container means nothing to point at; the next deploy writes it.
  */
 async function currentUpstream(
-  id: string,
   route: WantedRoute,
+  existing: string | null,
 ): Promise<string | null> {
   const { resource, service } = route
-  const existing = await caddy.getRouteUpstream(id)
   const port = existing
     ? existing.slice(existing.lastIndexOf(":") + 1)
     : (service?.port ?? resource.containerPort)
@@ -145,6 +150,96 @@ async function currentUpstream(
     }
   }
   return existing
+}
+
+/**
+ * Writes one resource's routes, and returns how many writes it made and which
+ * of its routes must survive the stale-route sweep.
+ *
+ * A stack can move a host between two of its routes, so the writes go in the
+ * passes applyStackRoutes uses: first every route that gains a host another
+ * of its routes holds now, written with its current hosts as well
+ * (gainFirstHosts); then every route with its final hosts; the sweep deletes
+ * the rest last. A host is therefore on two routes for a moment, never on
+ * none — and a write that fails leaves it where it was.
+ *
+ * A host is PENDING when its planned service route cannot be written yet: no
+ * route exists, and the service is not on the musdash network until a deploy
+ * joins it (currentUpstream returns null). Dropping it from the route it is on
+ * now would leave it on none until that deploy, so any route holding a
+ * pending host keeps it, and is not deleted while it does. A host whose
+ * first-pass write failed is pending for the same reason. Pending hosts come
+ * from the routing plan, so they are only hosts the database still gives this
+ * resource, and never the dashboard's.
+ *
+ * Image and git resources have one route, so no host can move between two:
+ * the first pass and pending hosts never apply, and their writes are exactly
+ * one ensureRoute, as before.
+ */
+async function syncResource(
+  resource: Resource,
+  ownIds: readonly string[],
+): Promise<{ written: number; keep: string[] }> {
+  const stored = new Map<string, { hosts: string[]; upstream: string | null }>()
+  for (const id of ownIds) {
+    const route = await caddy.readRoute(id)
+    if (route !== null) stored.set(id, route)
+  }
+  const current = new Map([...stored].map(([id, r]) => [id, r.hosts]))
+
+  const writable = new Map<string, RouteSpec>()
+  const pending = new Set<string>()
+  const keep: string[] = []
+  for (const [id, route] of wantedRoutes(resource)) {
+    keep.push(id)
+    const upstream = await currentUpstream(
+      route,
+      stored.get(id)?.upstream ?? null,
+    )
+    if (upstream !== null) {
+      writable.set(id, { id, hosts: route.hosts, upstream })
+    } else if (route.service !== null) {
+      for (const h of route.hosts) pending.add(h)
+    }
+  }
+
+  let written = 0
+  const write = async (spec: RouteSpec): Promise<boolean> => {
+    try {
+      if (await caddy.ensureRoute(spec)) written++
+      return true
+    } catch (err) {
+      logger.warn(
+        { resourceId: resource.id, err: (err as Error).message },
+        "could not re-assert the resource's route",
+      )
+      return false
+    }
+  }
+
+  const finalHosts = new Map([...writable].map(([id, s]) => [id, s.hosts]))
+  for (const [id, hosts] of gainFirstHosts(current, finalHosts)) {
+    const spec = writable.get(id)
+    if (spec === undefined || (await write({ ...spec, hosts }))) continue
+    for (const h of spec.hosts) pending.add(h)
+  }
+
+  for (const id of new Set([...writable.keys(), ...stored.keys()])) {
+    const held = (current.get(id) ?? []).filter((h) => pending.has(h))
+    const hosts = unionHosts(finalHosts.get(id) ?? [], held)
+    const spec = writable.get(id)
+    if (spec !== undefined) {
+      await write({ ...spec, hosts })
+      continue
+    }
+    // Not planned, or not writable: it survives only while it holds a
+    // pending host, rewritten without the hosts it should no longer carry.
+    if (hosts.length === 0) continue
+    keep.push(id)
+    const upstream = stored.get(id)?.upstream ?? null
+    if (upstream !== null) await write({ id, hosts, upstream })
+  }
+  return { written, keep }
 }
 
 /**
@@ -171,40 +266,43 @@ async function currentUpstream(
  * the final 404 alike, which is why "zero hosts" must mean "no route", not an
  * empty matcher.
  *
+ * A stack's routes are written so that no host is ever unrouted on the way —
+ * see syncResource.
+ *
  * Runs on the queue, so it never races a deploy: job concurrency is exactly 1.
  * ensureRoute writes only on a real difference, because every admin write
  * reloads the whole proxy. Best-effort per route: one broken container must not
  * stop the rest from being routed.
  */
 export async function syncResourceRoutes(): Promise<void> {
-  const wanted = new Map<string, WantedRoute>()
-  for (const resource of listAllResources()) {
-    const route = wantedRoute(resource)
-    if (route !== null) wanted.set(route[0], route[1])
-  }
-
+  // Listed once, before any write: a route this sync writes is wanted, so it
+  // can never be one of the stale ones deleted below.
+  const existing = await caddy.listRouteIds()
+  const keep = new Set<string>()
   let written = 0
-  for (const [id, route] of wanted) {
-    const { resource, hosts } = route
+  for (const resource of listAllResources()) {
+    const ownIds = existing.filter((id) => isRouteOfResource(id, resource.id))
     try {
-      const upstream = await currentUpstream(id, route)
-      if (upstream === null) continue
-      const spec: RouteSpec = { id, hosts, upstream }
-      if (await caddy.ensureRoute(spec)) written++
+      const result = await syncResource(resource, ownIds)
+      written += result.written
+      for (const id of result.keep) keep.add(id)
     } catch (err) {
+      // What its routes hold could not be read, so nothing safe can be
+      // removed: they stay as they are until the next sync.
+      for (const id of ownIds) keep.add(id)
       logger.warn(
         { resourceId: resource.id, err: (err as Error).message },
-        "could not re-assert the resource's route",
+        "could not sync the resource's routes; left them as they are",
       )
     }
   }
 
   let removed = 0
-  for (const id of await caddy.listRouteIds()) {
+  for (const id of existing) {
     if (
       !id.startsWith(ROUTE_ID_PREFIX) ||
       DASHBOARD_TAIL_ROUTE_IDS.has(id) ||
-      wanted.has(id)
+      keep.has(id)
     ) {
       continue
     }

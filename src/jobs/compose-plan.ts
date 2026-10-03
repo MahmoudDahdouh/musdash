@@ -52,17 +52,190 @@ export function primaryService(
   return source.publicService ?? source.services[0] ?? null
 }
 
+/** What the routing plan reads of a domain row; structural, so no db import. */
+export interface RoutingDomain {
+  id: string
+  host: string
+  serviceName: string | null
+  containerPort: number | null
+}
+
+/** One routed service: the port Caddy dials and the hosts it answers on. */
+export interface ServiceRoute {
+  port: number
+  hosts: string[]
+}
+
+export interface RoutingPlan {
+  /** Only services with at least one host; insertion order is row order. */
+  routes: Map<string, ServiceRoute>
+  /** Rows left out because their service is already routed on another port. */
+  conflicts: { host: string; service: string; port: number }[]
+}
+
 /**
- * The services that get a route and join the shared network: the public one,
- * when it has a port and at least one host to answer on. Everything else stays
- * on the stack's own network (§3.4).
+ * Which host goes to which service of a stack, on which port (D66). The one
+ * answer the deploy, `sync_routes` and the resource page all read, so a stack
+ * is never routed one way by a deploy and another by the next sync.
+ *
+ * - A row with no service (written before per-service routing), and the auto
+ *   subdomain, belong to the public service on the public port — and to
+ *   nothing when either is unset.
+ * - A row with a service and a port goes to that service.
+ * - A service has ONE port: the public port for the public service, else the
+ *   port of its first row. A later row asking for another port is a conflict,
+ *   left out of the routes rather than silently dialled on the wrong port.
+ * - Hosts are lower-cased and each is routed once, the first claim winning,
+ *   so an explicit row beats the implicit auto subdomain. The dashboard's own
+ *   host is never routed: resource routes sit ahead of the dashboard's in
+ *   Caddy, so a stack carrying it would take the dashboard login (N-3).
  */
-export function routedServicesFor(
+export function routingPlan(input: {
+  domains: readonly RoutingDomain[]
+  publicService: string | null
+  publicPort: number | null
+  autoHost: string | null
+  dashboardHost: string | null | undefined
+}): RoutingPlan {
+  const dashboard = input.dashboardHost?.toLowerCase() ?? null
+  const pub =
+    input.publicService !== null && input.publicPort !== null
+      ? { service: input.publicService, port: input.publicPort }
+      : null
+  const ports = new Map<string, number>()
+  if (pub !== null) ports.set(pub.service, pub.port)
+  const routes = new Map<string, ServiceRoute>()
+  const conflicts: RoutingPlan["conflicts"] = []
+  const claimed = new Set<string>()
+
+  const assign = (rawHost: string, service: string, port: number): void => {
+    const host = rawHost.toLowerCase()
+    // The port is fixed before the dashboard filter, so servicePortFor —
+    // which sees every row — agrees with this on which port a service has.
+    let servicePort = ports.get(service)
+    if (servicePort === undefined) {
+      servicePort = port
+      ports.set(service, port)
+    }
+    if (host === dashboard || claimed.has(host)) return
+    claimed.add(host)
+    if (port !== servicePort) {
+      conflicts.push({ host, service, port })
+      return
+    }
+    const route = routes.get(service)
+    if (route === undefined) {
+      routes.set(service, { port: servicePort, hosts: [host] })
+    } else {
+      route.hosts.push(host)
+    }
+  }
+
+  for (const d of input.domains) {
+    if (d.serviceName === null) {
+      if (pub !== null) assign(d.host, pub.service, pub.port)
+    } else if (d.containerPort !== null) {
+      assign(d.host, d.serviceName, d.containerPort)
+    }
+  }
+  if (input.autoHost !== null && pub !== null) {
+    assign(input.autoHost, pub.service, pub.port)
+  }
+  return { routes, conflicts }
+}
+
+/**
+ * The port `service` is already routed on, ignoring the row `excludeDomainId`
+ * (the one being moved); the public port for the public service; null when
+ * nothing fixes it yet. What the domain forms check a requested port against,
+ * by the same rule routingPlan applies.
+ */
+export function servicePortFor(
+  domains: readonly RoutingDomain[],
   source: Pick<ComposeSource, "publicService" | "publicPort">,
-  hostCount: number,
+  service: string,
+  excludeDomainId?: string,
+): number | null {
+  if (service === source.publicService && source.publicPort !== null) {
+    return source.publicPort
+  }
+  for (const d of domains) {
+    if (d.id === excludeDomainId) continue
+    if (d.serviceName === service && d.containerPort !== null) {
+      return d.containerPort
+    }
+  }
+  return null
+}
+
+/**
+ * Whether adding or moving a domain onto `service` at `port` needs a deploy
+ * rather than a route sync. Only what the change touches counts — the target —
+ * so an unrelated service's state never turns a sync into a redeploy.
+ *
+ * - The target is not on the musdash network: neither the last `compose up`
+ *   joined it (`routedServices`) nor was it routed before the change. Only a
+ *   deploy joins a service to the network Caddy dials it on. A service routed
+ *   before counts as joined, which also keeps a stack saved before S3 — whose
+ *   `routedServices` defaults to [] — from redeploying on every change.
+ * - The target was routed on another port: moving a live route's port is the
+ *   deploy's job, after its health gate — `sync_routes` keeps a live route's
+ *   port (see currentUpstream).
+ */
+export function routingChangeNeedsDeploy(
+  before: RoutingPlan,
+  routedServices: readonly string[],
+  service: string,
+  port: number,
+): boolean {
+  const prev = before.routes.get(service)
+  if (prev === undefined) return !routedServices.includes(service)
+  return prev.port !== port
+}
+
+/**
+ * `first`, then each host of `rest` it lacks. `first`'s order is kept, so a
+ * union that adds nothing is identical to `first` — and ensureRoute, which
+ * compares the whole route, then skips the write.
+ */
+export function unionHosts(
+  first: readonly string[],
+  rest: readonly string[],
 ): string[] {
-  if (source.publicService === null || source.publicPort === null) return []
-  return hostCount > 0 ? [source.publicService] : []
+  const out = [...first]
+  for (const h of rest) if (!out.includes(h)) out.push(h)
+  return out
+}
+
+/**
+ * The first pass of writing one resource's routes: every route that gains a
+ * host ANOTHER route of the same resource holds now, with the hosts it should
+ * end with plus the ones it holds now. Written before any route loses a host,
+ * so a host moving between two routes of a stack is on both for a moment and
+ * never on none — even if a later write fails.
+ *
+ * A route gaining only hosts no route of this resource holds is left to the
+ * final pass: there is nothing to keep routed, and an extra write would cost
+ * a proxy reload (D30). That also leaves a one-route resource — image or git —
+ * with exactly the writes it had before.
+ *
+ * `current` and `final` map route id to hosts, lower-cased.
+ */
+export function gainFirstHosts(
+  current: ReadonlyMap<string, readonly string[]>,
+  final: ReadonlyMap<string, readonly string[]>,
+): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const [id, hosts] of final) {
+    const mine = current.get(id) ?? []
+    const gainsHeldHost = hosts.some(
+      (h) =>
+        !mine.includes(h) &&
+        [...current].some(([other, held]) => other !== id && held.includes(h)),
+    )
+    if (gainsHeldHost) out.set(id, unionHosts(hosts, mine))
+  }
+  return out
 }
 
 /**

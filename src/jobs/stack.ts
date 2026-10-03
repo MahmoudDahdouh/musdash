@@ -1,6 +1,12 @@
 import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs"
+import { isIP } from "node:net"
 import { resolve } from "node:path"
-import { caddy, isRouteOfResource } from "../caddy/client.ts"
+import {
+  type CaddyClient,
+  caddy,
+  isRouteOfResource,
+  routeIdForService,
+} from "../caddy/client.ts"
 import { config } from "../config.ts"
 import {
   isStackContainer,
@@ -11,6 +17,11 @@ import {
 import { composeCli, composeHome } from "../docker/compose.ts"
 import { docker } from "../docker/impl.ts"
 import { logger } from "../log.ts"
+import {
+  gainFirstHosts,
+  type RoutingPlan,
+  serviceContainerName,
+} from "./compose-plan.ts"
 
 /**
  * What the stack deploy, stop, remove, the scheduler and boot share: the one
@@ -119,16 +130,91 @@ export function stackContainersOf(
 }
 
 /**
- * Deletes every route of a resource — its own and each service's. Best-effort
- * per route, like the other route deletions: a missing route is the goal.
+ * Makes a stack's routes match its plan: one route per routed service, dialling
+ * the service's container BY NAME on its port (D48), and no other route of
+ * this resource. Returns the hosts new to Caddy — the ones that need a first
+ * certificate — leaving out IP literals, which never get one.
+ *
+ * A host never goes unrouted on the way, even between two writes or after a
+ * failed one — B moving from `--web`, which keeps other hosts, to `--api`
+ * would otherwise be dropped from `--web` before `--api` has it. So the
+ * writes go in three passes:
+ *
+ * 1. Gain: every route that gains a host another route of this resource holds
+ *    now is written with its final hosts PLUS its current ones
+ *    (gainFirstHosts). B is then on both routes.
+ * 2. Final: every planned route is written with exactly its hosts. B leaves
+ *    `--web` only now that `--api` has it.
+ * 3. Delete: this resource's routes the plan no longer has.
+ *
+ * A write that throws fails the deploy where it stands, which at worst leaves
+ * a host on two routes, never on none. Each new route is PUT at index 0 and an
+ * existing one PATCHed in place (upsertRoute), so the dashboard's tail stays
+ * last (C-1, D55) and is never deleted: deleteResourceRoutes only matches this
+ * resource's ids. ensureRoute skips a write that changes nothing — every admin
+ * write reloads the whole proxy (D30).
+ *
+ * `client` is injectable for the tests; production callers use the default.
+ */
+export async function applyStackRoutes(
+  resourceId: string,
+  plan: RoutingPlan,
+  emit: (s: string) => void,
+  client: CaddyClient = caddy,
+): Promise<string[]> {
+  // What this resource's routes hold before anything is written.
+  const current = new Map<string, string[]>()
+  for (const id of await client.listRouteIds()) {
+    if (!isRouteOfResource(id, resourceId)) continue
+    const stored = await client.readRoute(id)
+    if (stored !== null) current.set(id, stored.hosts)
+  }
+  const known = new Set([...current.values()].flat())
+
+  const wanted = new Map<string, { hosts: string[]; upstream: string }>()
+  for (const [service, route] of plan.routes) {
+    wanted.set(routeIdForService(resourceId, service), {
+      hosts: route.hosts,
+      upstream: `${serviceContainerName(resourceId, service)}:${route.port}`,
+    })
+  }
+
+  const finalHosts = new Map([...wanted].map(([id, w]) => [id, w.hosts]))
+  for (const [id, hosts] of gainFirstHosts(current, finalHosts)) {
+    const upstream = wanted.get(id)?.upstream
+    if (upstream !== undefined)
+      await client.ensureRoute({ id, hosts, upstream })
+  }
+
+  const newHosts: string[] = []
+  for (const [id, { hosts, upstream }] of wanted) {
+    await client.ensureRoute({ id, hosts, upstream })
+    // New to Caddy means on none of this resource's routes before: a host
+    // that only moved between services already has its certificate.
+    for (const host of hosts) {
+      if (isIP(host) === 0 && !known.has(host) && !newHosts.includes(host)) {
+        newHosts.push(host)
+      }
+    }
+    emit(`Route switched to ${upstream} for ${hosts.join(", ")}`)
+  }
+  await deleteResourceRoutes(resourceId, new Set(wanted.keys()), client)
+  return newHosts
+}
+
+/**
+ * Deletes every route of a resource — its own and each service's — except the
+ * ids in `keep`. Best-effort per route, like the other route deletions: a
+ * missing route is the goal.
  */
 export async function deleteResourceRoutes(
   resourceId: string,
   keep: ReadonlySet<string> = new Set(),
+  client: CaddyClient = caddy,
 ): Promise<void> {
   let ids: string[]
   try {
-    ids = await caddy.listRouteIds()
+    ids = await client.listRouteIds()
   } catch (err) {
     logger.warn(
       { resourceId, err: (err as Error).message },
@@ -138,7 +224,7 @@ export async function deleteResourceRoutes(
   }
   for (const id of ids) {
     if (!isRouteOfResource(id, resourceId) || keep.has(id)) continue
-    await caddy.deleteRoute(id).catch((err: unknown) => {
+    await client.deleteRoute(id).catch((err: unknown) => {
       logger.warn(
         { resourceId, route: id, err: (err as Error).message },
         "could not delete the Caddy route",

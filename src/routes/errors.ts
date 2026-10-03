@@ -29,6 +29,11 @@ export const ERROR_KEYS = [
   "compose-refused",
   "compose-public-unknown",
   "compose-port-required",
+  "compose-public-name",
+  "domain-service-unknown",
+  "domain-service-name",
+  "domain-port-required",
+  "domain-port-conflict",
 ] as const
 
 export type ErrorKey = (typeof ERROR_KEYS)[number]

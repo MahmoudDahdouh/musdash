@@ -28,3 +28,28 @@ textarea.compose-file {
 .stack-services {
   margin-bottom: var(--s-4);
 }
+
+/* Domains tab: a domain's service and port are form controls in its table
+   row. The port box fits five digits so the service keeps the width, and the
+   buttons stay on one line. */
+.domain-table select {
+  min-width: 10rem;
+}
+.domain-table input[type="number"] {
+  width: 7rem;
+}
+.domain-table td:last-child {
+  white-space: nowrap;
+}
+
+/* The add form's service and port side by side, tops aligned: a .row centres
+   its items, and the two fields need not be the same height. */
+.domain-target {
+  align-items: flex-start;
+}
+.domain-target > .field:first-child {
+  flex: 1 1 12rem;
+}
+.domain-target > .field:last-child {
+  flex: 0 1 8rem;
+}

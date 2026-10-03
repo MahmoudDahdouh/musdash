@@ -155,24 +155,34 @@
         <span class="muted">No domain yet. Add one on the <a href="?tab=domains">Domains</a> tab.</span>
         <% } else if (it.domains.length === 0) { %>
         <span class="muted">No domain yet. Name a public service and its port in Settings to give the stack an address.</span>
-        <% } else if (!routed) { %>
-        <%/* With no public service and port, a deploy writes no route, so
-             these hosts do not reach the stack: listed, not linked. */%>
-        <ul class="plain">
-          <% it.domains.forEach(function (d) { %>
-          <li class="mono"><%= d.host %></li>
-          <% }) %>
-        </ul>
-        <p class="muted">
-          Not routed: this stack has no public service and port.
-          <a href="/r/<%= it.resource.id %>?tab=settings">Set them in Settings</a>, then deploy.
-        </p>
         <% } else { %>
+        <%/* Linked only when the routing plan sends the host somewhere: a
+             row on a service, or one following a public service that is set.
+             Anything else (no public service, a refused second port) gets no
+             route, so it is listed, not linked. */
+          var planned = (it.compose && it.compose.routedHosts) || []
+          var unrouted = it.domains.filter(function (d) { return planned.indexOf(d.host.toLowerCase()) === -1 })
+        %>
         <ul class="plain">
           <% it.domains.forEach(function (d) { %>
+          <% if (planned.indexOf(d.host.toLowerCase()) !== -1) { %>
           <li><a class="mono" href="https://<%= d.host %>" target="_blank" rel="noopener"><%= d.host %></a></li>
+          <% } else { %>
+          <li class="mono"><%= d.host %></li>
+          <% } %>
           <% }) %>
         </ul>
+        <% if (unrouted.length > 0) { %>
+        <p class="muted">
+          <%= unrouted.length === it.domains.length ? 'Not routed.' : 'Unlinked hosts are not routed.' %>
+          <% if (!routed) { %>
+          A domain with no service follows the public service, and this stack has none.
+          <a href="/r/<%= it.resource.id %>?tab=settings">Set one in Settings</a>, then deploy.
+          <% } else { %>
+          See the <a href="/r/<%= it.resource.id %>?tab=domains">Domains</a> tab.
+          <% } %>
+        </p>
+        <% } %>
         <% } %>
         <% } else if (it.domains.length === 0) { %>
         <span class="muted">No domain yet. Set a container port and add a domain to expose it.</span>
@@ -462,14 +472,17 @@
 <div class="card stack">
   <h2 class="card-title">Domains</h2>
   <% if (isCompose) { %>
-  <% if (it.domains.length > 0 && !routed) { %>
+  <%/* A row with no service follows the public service, as the auto row
+       does once Settings clears it; with no public service such rows go
+       nowhere. Rows that name a service are routed whatever Settings says. */%>
+  <% if (!routed && it.domains.some(function (d) { return d.serviceName === null })) { %>
   <div class="notice notice-warn">
     <svg class="icon" aria-hidden="true"><use href="#i-alert" /></svg>
     <div>
-      These domains are not routed: this stack has no public service and port,
-      so a deploy has nothing to send their traffic to.
-      <a href="/r/<%= it.resource.id %>?tab=settings">Set them in Settings</a>,
-      then deploy.
+      Domains marked not routed follow the public service, and this stack has
+      none. Point a custom domain at a service below, or
+      <a href="/r/<%= it.resource.id %>?tab=settings">set a public service in Settings</a>
+      and deploy — the automatic domain follows it.
     </div>
   </div>
   <% } %>
@@ -492,6 +505,162 @@
     <code>MUSDASH_WILDCARD_DOMAIN</code> to enable it.
   </p>
   <% } %>
+<% if (isCompose) { %>
+<%
+  /* A stack's domains each name a service and the port it listens on (D66).
+     A custom domain's service and port are controls of the form in its last
+     cell, tied to it by `form=` because a form cannot wrap a table row. The
+     auto row follows the public service, which only Settings changes. A
+     service whose name cannot be part of a hostname is listed but cannot be
+     chosen. data-port is the one port a service already answers on, which
+     stack.js fills in when the service is chosen; the server checks it. */
+  var services = cs ? cs.services : []
+  var ports = it.compose ? it.compose.servicePorts : {}
+  var routable = it.compose ? it.compose.routableServices : []
+  var portOf = function (name) { return Object.hasOwn(ports, name) ? ports[name] : null }
+  var canRoute = function (name) { return routable.indexOf(name) !== -1 }
+  var hasUnroutable = services.some(function (s) { return !canRoute(s) })
+  var addService = cs && cs.publicService && canRoute(cs.publicService)
+    ? cs.publicService
+    : (routable.length === 1 ? routable[0] : null)
+  var addPort = addService !== null && portOf(addService) !== null ? portOf(addService) : ''
+%>
+  <% if (!cs) { %>
+  <p class="muted">This stack's saved settings could not be read, so its domains cannot be pointed at services here.</p>
+  <% } %>
+  <% if (it.domains.length > 0) { %>
+  <div class="table-scroll">
+    <table class="table domain-table">
+      <thead>
+        <tr>
+          <th>Domain</th>
+          <th>Service</th>
+          <th>Port</th>
+          <th><span class="vh">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <% it.domains.forEach(function (d) {
+          var editable = !d.isAuto && !!cs
+          var formId = 'dt-' + d.id
+          var followsPublic = d.serviceName === null && routed
+        %>
+        <tr>
+          <td class="mono"><%= d.host %><%= d.isAuto ? ' (auto)' : '' %></td>
+          <% if (!editable) { %>
+          <% if (d.serviceName !== null) { %>
+          <td class="mono"><%= d.serviceName %></td>
+          <td><%= d.containerPort === null ? '—' : d.containerPort %></td>
+          <% } else if (followsPublic) { %>
+          <td>public service (<span class="mono"><%= cs.publicService %></span>)</td>
+          <td><%= cs.publicPort %></td>
+          <% } else { %>
+          <td class="muted">Not routed</td>
+          <td class="muted">—</td>
+          <% } %>
+          <% } else { %>
+          <td>
+            <select name="serviceName" form="<%= formId %>" required aria-label="Service for <%= d.host %>">
+              <% if (d.serviceName === null) { %>
+              <option value="" selected disabled><%= followsPublic ? 'public service (' + cs.publicService + ')' : 'Not routed' %></option>
+              <% } else if (services.indexOf(d.serviceName) === -1) { %>
+              <option value="" selected disabled><%= d.serviceName %> (not in the file)</option>
+              <% } %>
+              <% services.forEach(function (s) { var p = portOf(s) %>
+              <option value="<%= s %>"<% if (p !== null) { %> data-port="<%= p %>"<% } %><% if (!canRoute(s)) { %> disabled<% } %><% if (s === d.serviceName) { %> selected<% } %>><%= s %><%= canRoute(s) ? '' : ' (name cannot carry a domain)' %></option>
+              <% }) %>
+            </select>
+          </td>
+          <td>
+            <input name="containerPort" form="<%= formId %>" type="number" min="1" max="65535" required value="<%= d.containerPort !== null ? d.containerPort : (followsPublic ? cs.publicPort : '') %>" aria-label="Port for <%= d.host %>" />
+          </td>
+          <% } %>
+          <td>
+            <div class="row end">
+              <% if (editable) { %>
+              <form id="<%= formId %>" method="post" action="/r/<%= it.resource.id %>/domains/<%= d.id %>/target" class="inline">
+                <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+                <button class="btn btn-sm" type="submit">
+                  <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+                  Save
+                </button>
+              </form>
+              <% } else if (d.isAuto) { %>
+              <a class="btn btn-sm" href="/r/<%= it.resource.id %>?tab=settings">Change in Settings</a>
+              <% } %>
+              <%/* The auto domain follows the public service whether or not
+                   its row exists (D66), so removing it would change nothing;
+                   clearing the public service in Settings is how it stops. */%>
+              <% if (!d.isAuto) { %>
+              <form
+                method="post"
+                action="/r/<%= it.resource.id %>/domains/<%= d.id %>/delete"
+                class="inline"
+                data-confirm
+                data-confirm-danger
+                data-confirm-title="Remove this domain?"
+                data-confirm-body="Traffic to this hostname will stop being routed here as soon as the change applies."
+                data-confirm-label="Remove domain"
+              >
+                <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+                <button class="btn btn-danger btn-sm" type="submit">
+                  <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
+                  Remove
+                </button>
+              </form>
+              <% } %>
+            </div>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+  <% } %>
+  <% if (cs) { %>
+  <form method="post" action="/r/<%= it.resource.id %>/domains" class="stack">
+    <input type="hidden" name="csrf" value="<%= it.csrf %>" />
+    <div class="field">
+      <label class="label" for="res-domain">Custom domain</label>
+      <%/* The same pattern as the image and git form below. */%>
+      <input id="res-domain" name="host" placeholder="app.example.com" required pattern="(?=.{1,253}$)[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)+" autocapitalize="none" spellcheck="false" aria-describedby="res-domain-hint" />
+      <p class="hint" id="res-domain-hint">An A or AAAA record for it must point at this server. Its first certificate takes a few seconds to a minute after the name is added or deployed.</p>
+      <p class="error">Enter a bare hostname such as app.example.com, without https:// or a path.</p>
+    </div>
+    <div class="row gap wrap domain-target">
+      <div class="field">
+        <label class="label" for="res-domain-service">Service</label>
+        <select id="res-domain-service" name="serviceName" required aria-describedby="res-domain-service-hint">
+          <option value="" disabled<% if (addService === null) { %> selected<% } %>>Choose a service</option>
+          <% services.forEach(function (s) { var p = portOf(s) %>
+          <option value="<%= s %>"<% if (p !== null) { %> data-port="<%= p %>"<% } %><% if (!canRoute(s)) { %> disabled<% } %><% if (s === addService) { %> selected<% } %>><%= s %><%= canRoute(s) ? '' : ' (name cannot carry a domain)' %></option>
+          <% }) %>
+        </select>
+      </div>
+      <div class="field">
+        <label class="label" for="res-domain-port">Port</label>
+        <input id="res-domain-port" name="containerPort" type="number" min="1" max="65535" required value="<%= addPort %>" placeholder="80" />
+      </div>
+    </div>
+    <p class="hint" id="res-domain-service-hint">
+      The service this domain sends its traffic to, and the port that service
+      listens on. A service has one port for all its domains. Pointing a domain
+      at a service no domain reached at the last deploy redeploys a running
+      stack, so that service can join the proxy's network.
+      <% if (hasUnroutable) { %>
+      A service whose name is longer than 26 characters, or uses anything but
+      lowercase letters, digits and dashes, cannot carry a domain.
+      <% } %>
+    </p>
+    <div class="row end">
+      <button class="btn" type="submit">
+        <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+        Add domain
+      </button>
+    </div>
+  </form>
+  <% } %>
+<% } else { %>
   <ul class="plain">
     <% it.domains.forEach(function (d) { %>
     <li class="row between">
@@ -532,6 +701,7 @@
       <p class="error">Enter a bare hostname such as app.example.com, without https:// or a path.</p>
     </div>
   </form>
+<% } %>
 </div>
 <% } %>
 
@@ -686,7 +856,7 @@
     <div class="field">
       <label class="label" for="res-compose-service">Public service <span class="opt">optional</span></label>
       <input id="res-compose-service" name="publicService" value="<%= serviceText %>" placeholder="web" autocapitalize="none" spellcheck="false" aria-describedby="res-compose-service-hint" />
-      <p class="hint" id="res-compose-service-hint">The service that gets this resource's address. Leave it empty for a stack with no website.</p>
+      <p class="hint" id="res-compose-service-hint">The service that gets this resource's address. Leave it empty for a stack with no website. Its name must be at most 26 lowercase letters, digits and dashes. A change reaches the address after the next Deploy.</p>
     </div>
     <div class="field">
       <label class="label" for="res-compose-port">Public port <span class="opt">optional</span></label>

@@ -54,6 +54,7 @@ export type RefusalCode =
   | "external-links"
   | "routed-unknown"
   | "routed-network-mode"
+  | "routed-name"
   // both: a key no one has reviewed; `field` is its path, e.g. "label_file"
   | "unsupported-key"
   // model: a network that picks its own subnet, gateway or IPAM driver
@@ -84,6 +85,12 @@ export interface ComposeSource {
   publicService: string | null
   /** The container port of publicService that Caddy dials; null with it. */
   publicPort: number | null
+  /**
+   * Services the last `compose up` joined to the musdash network. A domain
+   * moved onto a service not in this list needs a deploy, because only a
+   * deploy joins a service to the network Caddy dials it on (D66).
+   */
+  routedServices: string[]
   /** Per-service limit in MiB from the last successful deploy; absent before it. */
   memoryMb?: Record<string, number>
 }
